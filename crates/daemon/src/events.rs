@@ -120,6 +120,8 @@ pub(crate) enum DaemonEvent {
     /// animation workers are idle. Armed by `finish_daemon_event`; the
     /// handler re-arms while consume still reports `Waiting`.
     IdleLayoutReapply,
+    /// Retry a display-change placement after the monitor topology settles.
+    DisplayChangeApplyRetry,
     /// Debounced persist trigger. Emitted by the background save task
     /// after a quiet period following one or more persisted-state
     /// changes. Handled on the main loop, which builds the snapshot JSON

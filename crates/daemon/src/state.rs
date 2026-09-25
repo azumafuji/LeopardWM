@@ -127,6 +127,7 @@ pub(crate) const DRAG_PLACEHOLDER_HWND: u64 = u64::MAX;
 /// Genuinely hung windows hit Windows' own ~5s hung-app timeout anyway, so
 /// this doesn't materially weaken responsiveness guarantees.
 pub(crate) const APPLY_LAYOUT_TIMEOUT: Duration = Duration::from_millis(5000);
+pub(crate) const DISPLAY_CHANGE_APPLY_RETRY_DELAY: Duration = Duration::from_secs(3);
 /// Suppress MovedOrResized events after placements are applied, so the
 /// target window's own WM_SIZE-driven EVENT_OBJECT_LOCATIONCHANGE (which is
 /// our own feedback) is not re-interpreted as a user-initiated move.
@@ -517,6 +518,9 @@ pub(crate) struct AppState {
     /// Suppress MovedOrResized snap-backs while a display change is being debounced.
     /// Set on WM_DISPLAYCHANGE, cleared after the debounced handler runs.
     pub(crate) display_change_pending: bool,
+    pub(crate) display_change_apply_in_progress: bool,
+    pub(crate) display_change_apply_retry_pending: bool,
+    pub(crate) display_change_apply_retry_used: bool,
     /// Whether the pending debounced change needs the full topology/DPI
     /// reconcile (clearing stale min-size constraints, resizing the thumbnail
     /// host) vs a lightweight work-area-only refit. A real display change sets
@@ -1080,6 +1084,9 @@ impl AppState {
             applying_layout: false,
             reapplying_after_violation: false,
             display_change_pending: false,
+            display_change_apply_in_progress: false,
+            display_change_apply_retry_pending: false,
+            display_change_apply_retry_used: false,
             display_change_needs_full: false,
             drag_state: None,
             resize_hwnd: None,

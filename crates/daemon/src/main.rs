@@ -714,6 +714,7 @@ struct EventLoopCtx<'a> {
     focus_follows_mouse_timer: &'a mut Option<tokio::task::JoinHandle<()>>,
     display_change_timer: &'a mut Option<tokio::task::JoinHandle<()>>,
     idle_layout_reapply_timer: &'a mut Option<tokio::task::JoinHandle<()>>,
+    display_change_apply_retry_timer: &'a mut Option<tokio::task::JoinHandle<()>>,
     mouse_hook_handle: &'a mut Option<MouseHookHandle>,
 }
 
@@ -3402,6 +3403,14 @@ fn abort_join_handle(handle: Option<tokio::task::JoinHandle<()>>) {
     }
 }
 
+fn abort_event_timers(ctx: &mut EventLoopCtx<'_>) {
+    abort_join_handle(ctx.snap_hint_timer_handle.take());
+    abort_join_handle(ctx.focus_follows_mouse_timer.take());
+    abort_join_handle(ctx.display_change_timer.take());
+    abort_join_handle(ctx.idle_layout_reapply_timer.take());
+    abort_join_handle(ctx.display_change_apply_retry_timer.take());
+}
+
 fn arm_idle_layout_reapply_timer(ctx: &mut EventLoopCtx<'_>) {
     if ctx.idle_layout_reapply_timer.is_some() {
         return;
@@ -3426,17 +3435,45 @@ async fn handle_idle_layout_reapply(ctx: &mut EventLoopCtx<'_>) {
     }
 }
 
+fn arm_display_change_apply_retry_timer(ctx: &mut EventLoopCtx<'_>) {
+    if ctx.display_change_apply_retry_timer.is_some() {
+        return;
+    }
+    let tx = ctx.event_tx.clone();
+    *ctx.display_change_apply_retry_timer = Some(tokio::spawn(async move {
+        tokio::time::sleep(crate::state::DISPLAY_CHANGE_APPLY_RETRY_DELAY).await;
+        let _ = tx.send(DaemonEvent::DisplayChangeApplyRetry).await;
+    }));
+}
+
+async fn handle_display_change_apply_retry(ctx: &mut EventLoopCtx<'_>) {
+    if let Some(handle) = ctx.display_change_apply_retry_timer.take() {
+        handle.abort();
+    }
+    let result = {
+        let mut state = ctx.state.lock().await;
+        state.run_display_change_apply_retry()
+    };
+    if let Err(error) = result {
+        warn!("Display-change layout retry failed: {}", error);
+    }
+}
+
 /// Finish each processed event before waiting for the next one.
 async fn finish_daemon_event(ctx: &mut EventLoopCtx<'_>) {
     sync_pending_layout_apply_timeout_ui(ctx.state, ctx.tray_manager, &*ctx.hotkey_state).await;
-    let should_arm_idle_reapply = {
+    let (should_arm_idle_reapply, should_arm_display_change_retry) = {
         let mut state = ctx.state.lock().await;
         let timer_needed = state.idle_layout_reapply_timer_needed();
+        let display_retry_pending = state.display_change_apply_retry_pending;
         state.publish_workspace_state_if_subscribed();
-        timer_needed
+        (timer_needed, display_retry_pending)
     };
     if should_arm_idle_reapply {
         arm_idle_layout_reapply_timer(ctx);
+    }
+    if should_arm_display_change_retry {
+        arm_display_change_apply_retry_timer(ctx);
     }
 }
 
@@ -3657,6 +3694,7 @@ async fn main() -> Result<()> {
     // transient work area.
     let mut display_change_timer: Option<tokio::task::JoinHandle<()>> = None;
     let mut idle_layout_reapply_timer: Option<tokio::task::JoinHandle<()>> = None;
+    let mut display_change_apply_retry_timer: Option<tokio::task::JoinHandle<()>> = None;
 
     let mut ctx = EventLoopCtx {
         state: &state,
@@ -3673,6 +3711,7 @@ async fn main() -> Result<()> {
         focus_follows_mouse_timer: &mut focus_follows_mouse_timer,
         display_change_timer: &mut display_change_timer,
         idle_layout_reapply_timer: &mut idle_layout_reapply_timer,
+        display_change_apply_retry_timer: &mut display_change_apply_retry_timer,
         mouse_hook_handle: &mut mouse_hook_handle,
     };
 
@@ -3791,6 +3830,9 @@ async fn main() -> Result<()> {
                 handle_display_change_settled(&mut ctx).await;
             }
             DaemonEvent::IdleLayoutReapply => handle_idle_layout_reapply(&mut ctx).await,
+            DaemonEvent::DisplayChangeApplyRetry => {
+                handle_display_change_apply_retry(&mut ctx).await
+            }
             DaemonEvent::Shutdown => {
                 info!("Shutdown signal received");
                 run_shutdown_cleanup(&state, ShutdownMode::Graceful).await;
@@ -3803,12 +3845,8 @@ async fn main() -> Result<()> {
 
     // Stop the update-checker worker so it doesn't hold up shutdown.
     update_check_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    abort_event_timers(&mut ctx);
     stop_animation_worker_and_run_recovery(animation_worker, &state, event_rx).await;
-
-    abort_join_handle(snap_hint_timer_handle);
-    abort_join_handle(focus_follows_mouse_timer);
-    abort_join_handle(display_change_timer);
-    abort_join_handle(idle_layout_reapply_timer);
 
     // Join forwarding threads with timeout for graceful shutdown
     info!("Waiting for forwarding threads to exit...");

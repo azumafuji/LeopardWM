@@ -15201,6 +15201,121 @@ fn test_failed_resume_does_not_park_or_sync_taskbar() {
 }
 
 #[test]
+fn test_display_change_timeout_schedules_retry_without_pausing() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.injected_display_monitors = Some(test_monitors());
+    state.paused = false;
+    state.layout_apply_timeout = Duration::from_millis(10);
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(40),
+    ));
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert!(
+        !state.paused,
+        "display-change timeout should not pause tiling"
+    );
+    assert!(
+        state.pending_layout_apply_timeout_report.is_none(),
+        "display-change timeout should not create a timeout report"
+    );
+    assert!(
+        state.display_change_apply_retry_pending,
+        "display-change timeout should schedule its one retry"
+    );
+    join_pending_test_apply_workers(&mut state);
+}
+
+#[test]
+fn test_display_change_apply_retry_timeout_uses_normal_pause_path() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.injected_display_monitors = Some(test_monitors());
+    state.paused = false;
+    state.layout_apply_timeout = Duration::from_millis(10);
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(40),
+    ));
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+    assert!(state.display_change_apply_retry_pending);
+    std::thread::sleep(Duration::from_millis(50));
+
+    state
+        .run_display_change_apply_retry()
+        .expect_err("the retry placement should also time out");
+
+    assert!(state.paused, "a second timeout should pause tiling");
+    assert!(!state.display_change_apply_retry_pending);
+    let report = state
+        .take_layout_apply_timeout_report()
+        .expect("the retry timeout should create the normal timeout report");
+    assert_eq!(report.timeout, Duration::from_millis(10));
+    join_pending_test_apply_workers(&mut state);
+}
+
+#[test]
+fn test_display_change_apply_retry_success_resets_allowance() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.injected_display_monitors = Some(test_monitors());
+    state.paused = false;
+    state.layout_apply_timeout = Duration::from_millis(10);
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(40),
+    ));
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+    assert!(state.display_change_apply_retry_pending);
+    std::thread::sleep(Duration::from_millis(50));
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(1),
+    ));
+
+    state
+        .run_display_change_apply_retry()
+        .expect("the retry placement should succeed");
+
+    assert!(!state.paused);
+    assert!(!state.display_change_apply_retry_pending);
+    assert!(!state.display_change_apply_retry_used);
+
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(40),
+    ));
+    state.handle_window_event(WindowEvent::DisplayChange);
+    assert!(!state.paused);
+    assert!(state.display_change_apply_retry_pending);
+    assert!(state.display_change_apply_retry_used);
+    assert!(state.pending_layout_apply_timeout_report.is_none());
+    join_pending_test_apply_workers(&mut state);
+}
+
+#[test]
+fn test_display_change_apply_retry_while_paused_does_not_apply() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.injected_display_monitors = Some(test_monitors());
+    state.paused = false;
+    state.layout_apply_timeout = Duration::from_millis(10);
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(40),
+    ));
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+    assert!(state.display_change_apply_retry_pending);
+    state.paused = true;
+    let apply_epoch = state.apply_epoch.load(Ordering::SeqCst);
+
+    state
+        .run_display_change_apply_retry()
+        .expect("a paused retry should be ignored");
+
+    assert!(state.paused);
+    assert!(!state.display_change_apply_retry_pending);
+    assert_eq!(state.apply_epoch.load(Ordering::SeqCst), apply_epoch);
+    join_pending_test_apply_workers(&mut state);
+}
+
+#[test]
 fn test_display_change_event_parks_inactive_windows_and_syncs_taskbar() {
     let active = ParkProbeWindow::new(false);
     let inactive_tiled = ParkProbeWindow::new(false);

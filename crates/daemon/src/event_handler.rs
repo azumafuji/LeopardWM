@@ -3150,7 +3150,10 @@ impl AppState {
                 self.prepare_inactive_workspace_windows();
 
                 // Re-apply layout with updated monitor configuration
-                if let Err(e) = self.apply_layout() {
+                self.display_change_apply_in_progress = true;
+                let result = self.apply_layout();
+                self.display_change_apply_in_progress = false;
+                if let Err(e) = result {
                     warn!("Failed to apply layout after display change: {}", e);
                 }
                 self.sync_taskbar_buttons();

@@ -7,6 +7,7 @@ All notable changes to LeopardWM will be documented in this file.
 ### Fixes
 
 - **Apps that reopen maximized are restored without activation instead of staying maximized over the layout.** When the new window takes focus, its column fills the visible viewport; otherwise, it uses its usual width, including any per-app `column_width` setting.
+- **Tiling no longer pauses when windows are slow to move after a monitor or dock change.** A placement timeout during display reconciliation schedules one retry after the displays settle; tiling pauses and recovers only if that retry also times out.
 
 ## 0.2.11
 

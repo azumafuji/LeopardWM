@@ -584,6 +584,7 @@ impl AppState {
             && !bypass_fast_path
         {
             self.applying_layout = false;
+            self.display_change_apply_retry_used = false;
             self.request_save_if_changed();
             return Ok(LayoutApplyOutcome::Completed);
         }
@@ -606,6 +607,7 @@ impl AppState {
             );
             self.abandon_physical_request(physical_request_id, physical_invalidation_id);
             self.applying_layout = false;
+            self.display_change_apply_retry_used = false;
             self.finalize_layout_success();
             return Ok(LayoutApplyOutcome::Completed);
         }
@@ -717,35 +719,61 @@ impl AppState {
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 self.abandon_physical_request(physical_request_id, physical_invalidation_id);
-                self.paused = true;
                 // Invalidate this apply epoch so late-starting workers bail before placement calls.
                 self.apply_epoch.fetch_add(1, Ordering::SeqCst);
                 self.pending_apply_workers.push(worker_handle);
                 self.moved_or_resized_suppression.clear();
-                let msg = layout_apply_timeout_message(timeout);
-                let report = LayoutApplyTimeoutReport {
-                    timeout,
-                    candidates: self
-                        .collect_layout_apply_timeout_candidates(&timeout_candidate_ids),
-                };
-                warn!(
-                    "{} Timed-out placement batch contained {} candidate window(s); batch membership does not prove which window blocked placement.",
-                    msg,
-                    report.candidates.len()
-                );
-                for candidate in &report.candidates {
-                    warn!(
-                        "Timed-out placement batch candidate (not a proven blocker): hwnd={:#x} class={:?} title={:?} executable={:?}",
-                        candidate.hwnd,
-                        candidate.class_name,
-                        candidate.title,
-                        candidate.executable
+                let candidates =
+                    self.collect_layout_apply_timeout_candidates(&timeout_candidate_ids);
+                if self.display_change_apply_in_progress && !self.display_change_apply_retry_used {
+                    self.display_change_apply_retry_pending = true;
+                    self.display_change_apply_retry_used = true;
+                    let msg = format!(
+                        "Layout application timed out after {} ms during display reconciliation; retrying once in {} s before pausing tiling",
+                        timeout.as_millis(),
+                        crate::state::DISPLAY_CHANGE_APPLY_RETRY_DELAY.as_secs()
                     );
+                    warn!(
+                        "{} Timed-out placement batch contained {} candidate window(s); batch membership does not prove which window blocked placement.",
+                        msg,
+                        candidates.len()
+                    );
+                    for candidate in &candidates {
+                        warn!(
+                            "Timed-out placement batch candidate (not a proven blocker): hwnd={:#x} class={:?} title={:?} executable={:?}",
+                            candidate.hwnd,
+                            candidate.class_name,
+                            candidate.title,
+                            candidate.executable
+                        );
+                    }
+                    Err(anyhow!(msg))
+                } else {
+                    self.paused = true;
+                    let msg = layout_apply_timeout_message(timeout);
+                    let report = LayoutApplyTimeoutReport {
+                        timeout,
+                        candidates,
+                    };
+                    warn!(
+                        "{} Timed-out placement batch contained {} candidate window(s); batch membership does not prove which window blocked placement.",
+                        msg,
+                        report.candidates.len()
+                    );
+                    for candidate in &report.candidates {
+                        warn!(
+                            "Timed-out placement batch candidate (not a proven blocker): hwnd={:#x} class={:?} title={:?} executable={:?}",
+                            candidate.hwnd,
+                            candidate.class_name,
+                            candidate.title,
+                            candidate.executable
+                        );
+                    }
+                    self.pending_layout_apply_timeout_report = Some(report);
+                    let managed_window_ids = self.all_managed_window_ids();
+                    run_layout_apply_recovery_pass(&managed_window_ids, "apply-timeout");
+                    Err(anyhow!(msg))
                 }
-                self.pending_layout_apply_timeout_report = Some(report);
-                let managed_window_ids = self.all_managed_window_ids();
-                run_layout_apply_recovery_pass(&managed_window_ids, "apply-timeout");
-                Err(anyhow!(msg))
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = worker_handle.join();
@@ -761,6 +789,10 @@ impl AppState {
             self.post_animation_nudge_pending = true;
         }
 
+        if result.is_ok() && !deferred_by_recovery_barrier {
+            self.display_change_apply_retry_used = false;
+        }
+
         // Reposition border to track the focused window after layout changes.
         if result.is_ok() && !deferred_by_recovery_barrier {
             self.finalize_layout_success();
@@ -771,6 +803,20 @@ impl AppState {
         } else {
             result.map(|()| LayoutApplyOutcome::Completed)
         }
+    }
+
+    pub(crate) fn run_display_change_apply_retry(&mut self) -> Result<()> {
+        if !self.display_change_apply_retry_pending {
+            return Ok(());
+        }
+        self.display_change_apply_retry_pending = false;
+        if self.paused {
+            return Ok(());
+        }
+        // Force timed-out placements past the unchanged-layout fast path.
+        self.last_placed_layout_rects.clear();
+        self.apply_layout()?;
+        Ok(())
     }
 
     /// Collect animated placements for every monitor's active workspace, with debug logging.
