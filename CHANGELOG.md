@@ -7,7 +7,7 @@ All notable changes to LeopardWM will be documented in this file.
 ### Fixes
 
 - **Apps that reopen maximized are restored without activation instead of staying maximized over the layout.** When the new window takes focus, its column fills the visible viewport; otherwise, it uses its usual width, including any per-app `column_width` setting.
-- **New windows launched from Start or a launcher open on the empty workspace you selected.** Dismissing Start or a launcher no longer restores foreground to a parked window and switches back to the previous workspace.
+- **Dismissing Start or a launcher keeps the selected empty workspace.** New windows launched there open on that workspace instead of returning focus to a parked window on another workspace.
 - **Tiling no longer pauses when windows are slow to move after a monitor or dock change.** A first timeout during display reconciliation schedules one retry after the displays settle; its late worker no longer restores windows just before the retry re-tiles them. A retry timeout pauses tiling, while a retry dropped during manual pause restores visibility.
 
 ## 0.2.11

@@ -4,11 +4,11 @@ use crate::types::Win32Error;
 use crate::window_id_to_hwnd;
 use leopardwm_core_layout::WindowId;
 use windows::Win32::Foundation::RECT;
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GetForegroundWindow, GetShellWindow, GetWindowRect, GetWindowThreadProcessId,
-    IsIconic, IsWindow, IsZoomed, PostMessageW, SetCursorPos, SetForegroundWindow, SetWindowPos,
-    ShowWindow, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE,
+    BringWindowToTop, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic,
+    IsWindow, IsZoomed, PostMessageW, SetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindow,
+    HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE,
 };
 
 /// The current OS foreground window as a `WindowId`, if any. This is
@@ -19,98 +19,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub fn get_foreground_window() -> Option<WindowId> {
     let hwnd = unsafe { GetForegroundWindow() };
     (!hwnd.0.is_null()).then_some(hwnd.0 as WindowId)
-}
-
-/// Move foreground to the shell only while `expected` remains foreground.
-/// Attaching both input threads lets Windows honor this conditional handoff.
-pub fn release_foreground_to_shell(expected: WindowId) -> Result<bool, Win32Error> {
-    let foreground = unsafe { GetForegroundWindow() };
-    if foreground.0 as WindowId != expected {
-        tracing::debug!(
-            "Foreground changed before shell release (expected={}, current={})",
-            expected,
-            foreground.0 as WindowId
-        );
-        return Ok(false);
-    }
-
-    let shell = unsafe { GetShellWindow() };
-    if shell.0.is_null() {
-        return Err(Win32Error::SetPositionFailed(
-            "GetShellWindow returned a null handle".to_string(),
-        ));
-    }
-
-    let shell_thread = unsafe { GetWindowThreadProcessId(shell, None) };
-    if shell_thread == 0 {
-        return Err(Win32Error::SetPositionFailed(
-            "GetWindowThreadProcessId returned 0 for the shell window".to_string(),
-        ));
-    }
-
-    let expected_hwnd = window_id_to_hwnd(expected)?;
-    let expected_thread = unsafe { GetWindowThreadProcessId(expected_hwnd, None) };
-    if expected_thread == 0 {
-        return Err(Win32Error::SetPositionFailed(format!(
-            "GetWindowThreadProcessId returned 0 for window {}",
-            expected
-        )));
-    }
-
-    let current_thread = unsafe { GetCurrentThreadId() };
-    let mut attached_threads = Vec::new();
-    for thread in [expected_thread, shell_thread] {
-        if thread == current_thread || attached_threads.contains(&thread) {
-            continue;
-        }
-        if !unsafe { AttachThreadInput(current_thread, thread, true) }.as_bool() {
-            for attached in attached_threads.iter().rev() {
-                if !unsafe { AttachThreadInput(current_thread, *attached, false) }.as_bool() {
-                    tracing::warn!(
-                        "AttachThreadInput detach failed (current_thread={}, other_thread={})",
-                        current_thread,
-                        attached
-                    );
-                }
-            }
-            return Err(Win32Error::SetPositionFailed(format!(
-                "AttachThreadInput attach failed (current_thread={}, other_thread={})",
-                current_thread, thread
-            )));
-        }
-        attached_threads.push(thread);
-    }
-
-    let foreground = unsafe { GetForegroundWindow() };
-    let foreground_set = if foreground == expected_hwnd {
-        let foreground_set = unsafe { SetForegroundWindow(shell).as_bool() };
-        if !foreground_set {
-            tracing::debug!(
-                "Windows refused SetForegroundWindow for shell while releasing {}",
-                expected
-            );
-        }
-        foreground_set
-    } else {
-        tracing::debug!(
-            "Foreground changed during shell release (expected={}, current={})",
-            expected,
-            foreground.0 as WindowId
-        );
-        false
-    };
-
-    for thread in attached_threads.iter().rev() {
-        if !unsafe { AttachThreadInput(current_thread, *thread, false) }.as_bool() {
-            tracing::warn!(
-                "AttachThreadInput detach failed (current_thread={}, other_thread={})",
-                current_thread,
-                thread
-            );
-        }
-    }
-
-    Ok(foreground_set)
 }
 
 /// Current time in the same wrapping millisecond domain as WinEvent timestamps.

@@ -467,6 +467,9 @@ pub(crate) struct AppState {
     pub(crate) last_prune_at: Option<std::time::Instant>,
     /// Border frame overlay for the active window.
     pub(crate) border_frame: Option<leopardwm_platform_win32::border::BorderFrame>,
+    /// Transparent foreground target used when the selected workspace is empty.
+    pub(crate) focus_placeholder:
+        Option<leopardwm_platform_win32::focus_placeholder::FocusPlaceholder>,
     #[cfg(test)]
     pub(crate) border_hide_count: AtomicUsize,
     #[cfg(test)]
@@ -1074,6 +1077,7 @@ impl AppState {
             } else {
                 leopardwm_platform_win32::border::BorderFrame::new().ok()
             },
+            focus_placeholder: None,
             #[cfg(test)]
             border_hide_count: AtomicUsize::new(0),
             #[cfg(test)]

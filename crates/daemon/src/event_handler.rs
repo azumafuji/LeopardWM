@@ -366,6 +366,24 @@ pub(crate) enum AdmitOutcome {
 impl AppState {
     /// Handle a window lifecycle event.
     pub(crate) fn handle_window_event(&mut self, event: WindowEvent) {
+        if let Some(hwnd) = match &event {
+            WindowEvent::Created(hwnd, _)
+            | WindowEvent::Destroyed(hwnd)
+            | WindowEvent::Hidden(hwnd, _)
+            | WindowEvent::Focused(hwnd, _)
+            | WindowEvent::Minimized(hwnd)
+            | WindowEvent::Restored(hwnd)
+            | WindowEvent::MovedOrResized(hwnd)
+            | WindowEvent::MoveSizeStart(hwnd)
+            | WindowEvent::MoveSizeEnd(hwnd)
+            | WindowEvent::TitleChanged(hwnd) => Some(*hwnd),
+            _ => None,
+        } {
+            if leopardwm_platform_win32::focus_placeholder::is_focus_placeholder(hwnd) {
+                return;
+            }
+        }
+
         // Get window_id from event for validation (DisplayChange and MouseEnterWindow have no validation needed)
         let window_id = match &event {
             WindowEvent::Created(id, _)
@@ -1866,16 +1884,23 @@ impl AppState {
         #[cfg(test)]
         self.foreground_release_requests.push(hwnd);
         #[cfg(not(test))]
-        match leopardwm_platform_win32::release_foreground_to_shell(hwnd) {
-            Ok(true) => {}
-            Ok(false) => debug!(
-                "Windows did not release parked foreground window {} to the shell",
-                hwnd
-            ),
-            Err(error) => debug!(
-                "Could not release parked foreground window {}: {:?}",
-                hwnd, error
-            ),
+        if let (Some(placeholder), Some(work_area)) = (
+            self.focus_placeholder.as_ref(),
+            self.monitors
+                .get(&self.focused_monitor)
+                .map(|monitor| monitor.work_area),
+        ) {
+            match placeholder.release_foreground(hwnd, work_area) {
+                Ok(true) => {}
+                Ok(false) => debug!(
+                    "Windows did not release parked foreground window {} to the focus placeholder",
+                    hwnd
+                ),
+                Err(error) => debug!(
+                    "Could not release parked foreground window {}: {:?}",
+                    hwnd, error
+                ),
+            }
         }
     }
 
@@ -3377,6 +3402,9 @@ impl AppState {
     /// Apply focus to a window for focus-follows-mouse.
     /// Returns true if focus was applied, false if the window isn't managed.
     pub(crate) fn apply_focus_follows_mouse(&mut self, hwnd: u64) -> bool {
+        if leopardwm_platform_win32::focus_placeholder::is_focus_placeholder(hwnd) {
+            return false;
+        }
         if let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) {
             // Update focused monitor to match the window's monitor
             self.focused_monitor = monitor_id;

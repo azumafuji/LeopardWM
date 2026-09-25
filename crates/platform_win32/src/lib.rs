@@ -11,6 +11,7 @@
 pub mod autostart;
 pub mod border;
 pub mod dialog;
+pub mod focus_placeholder;
 pub mod gestures;
 pub mod hotkeys;
 pub mod ipc_security;
@@ -62,8 +63,8 @@ pub use enumeration::{
 pub use event_hooks::{install_event_hooks, EventHookHandle, WindowEvent};
 pub use focus::{
     close_window, current_event_time_ms, get_foreground_window, ms_since_last_user_input,
-    raise_window_no_activate, release_foreground_to_shell, restore_maximized_window_no_activate,
-    restore_window_no_activate, set_foreground_window, warp_cursor_to_window,
+    raise_window_no_activate, restore_maximized_window_no_activate, restore_window_no_activate,
+    set_foreground_window, warp_cursor_to_window,
 };
 pub use placement::apply_cloak_state;
 pub use placement::clear_suspected_oversize;

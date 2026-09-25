@@ -696,6 +696,7 @@ pub(crate) fn should_skip_window_by_class(class_name: &str) -> bool {
         // so it fails the "no minimize *and* no maximize" test.
         "Chrome_RenderWidgetHostHWND", // Internal Electron/Chrome render widget, not a real window
         "LeopardWMSettings",           // Our own settings window
+        "LeopardWMFocusPlaceholder",   // Invisible foreground target on empty workspaces
         "LeopardWMBorderFrame",        // Our own border overlay
         "LeopardWMThumbnailHost",      // Our own DWM thumbnail host
         "LeopardWMOverview",           // Our own overview overlay
@@ -1020,12 +1021,13 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_classes_does_not_contain_application_frame_window() {
+    fn test_skip_classes_preserve_uwp_and_exclude_focus_placeholder() {
         let skip = should_skip_window_by_class("ApplicationFrameWindow");
         assert!(
             !skip,
             "ApplicationFrameWindow should NOT be in skip list (UWP apps should be tiled)"
         );
+        assert!(should_skip_window_by_class("LeopardWMFocusPlaceholder"));
     }
 
     #[test]

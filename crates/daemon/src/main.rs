@@ -3507,6 +3507,13 @@ async fn finish_daemon_event(ctx: &mut EventLoopCtx<'_>) {
     }
 }
 
+async fn install_focus_placeholder(state: &Arc<Mutex<AppState>>) {
+    match leopardwm_platform_win32::focus_placeholder::FocusPlaceholder::new() {
+        Ok(placeholder) => state.lock().await.focus_placeholder = Some(placeholder),
+        Err(error) => warn!("Focus placeholder unavailable: {error}"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -3556,6 +3563,7 @@ async fn main() -> Result<()> {
         config.clone(),
         monitors,
     )));
+    install_focus_placeholder(&state).await;
 
     // Enumerate existing windows
     info!("Enumerating windows...");
