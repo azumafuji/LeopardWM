@@ -22,13 +22,18 @@ pub fn get_foreground_window() -> Option<WindowId> {
 }
 
 /// Move foreground to the shell only while `expected` remains foreground.
+/// Attaching both input threads lets Windows honor this conditional handoff.
 pub fn release_foreground_to_shell(expected: WindowId) -> Result<bool, Win32Error> {
     let foreground = unsafe { GetForegroundWindow() };
     if foreground.0 as WindowId != expected {
+        tracing::debug!(
+            "Foreground changed before shell release (expected={}, current={})",
+            expected,
+            foreground.0 as WindowId
+        );
         return Ok(false);
     }
 
-    let expected_hwnd = window_id_to_hwnd(expected)?;
     let shell = unsafe { GetShellWindow() };
     if shell.0.is_null() {
         return Err(Win32Error::SetPositionFailed(
@@ -36,7 +41,14 @@ pub fn release_foreground_to_shell(expected: WindowId) -> Result<bool, Win32Erro
         ));
     }
 
-    let current_thread = unsafe { GetCurrentThreadId() };
+    let shell_thread = unsafe { GetWindowThreadProcessId(shell, None) };
+    if shell_thread == 0 {
+        return Err(Win32Error::SetPositionFailed(
+            "GetWindowThreadProcessId returned 0 for the shell window".to_string(),
+        ));
+    }
+
+    let expected_hwnd = window_id_to_hwnd(expected)?;
     let expected_thread = unsafe { GetWindowThreadProcessId(expected_hwnd, None) };
     if expected_thread == 0 {
         return Err(Win32Error::SetPositionFailed(format!(
@@ -45,23 +57,57 @@ pub fn release_foreground_to_shell(expected: WindowId) -> Result<bool, Win32Erro
         )));
     }
 
-    let attached = expected_thread != current_thread;
-    if attached && !unsafe { AttachThreadInput(current_thread, expected_thread, true) }.as_bool() {
-        return Err(Win32Error::SetPositionFailed(format!(
-            "AttachThreadInput attach failed (current_thread={}, other_thread={})",
-            current_thread, expected_thread
-        )));
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let mut attached_threads = Vec::new();
+    for thread in [expected_thread, shell_thread] {
+        if thread == current_thread || attached_threads.contains(&thread) {
+            continue;
+        }
+        if !unsafe { AttachThreadInput(current_thread, thread, true) }.as_bool() {
+            for attached in attached_threads.iter().rev() {
+                if !unsafe { AttachThreadInput(current_thread, *attached, false) }.as_bool() {
+                    tracing::warn!(
+                        "AttachThreadInput detach failed (current_thread={}, other_thread={})",
+                        current_thread,
+                        attached
+                    );
+                }
+            }
+            return Err(Win32Error::SetPositionFailed(format!(
+                "AttachThreadInput attach failed (current_thread={}, other_thread={})",
+                current_thread, thread
+            )));
+        }
+        attached_threads.push(thread);
     }
 
-    let still_expected = unsafe { GetForegroundWindow() == expected_hwnd };
-    let foreground_set = still_expected && unsafe { SetForegroundWindow(shell).as_bool() };
-
-    if attached && !unsafe { AttachThreadInput(current_thread, expected_thread, false) }.as_bool() {
-        tracing::warn!(
-            "AttachThreadInput detach failed (current_thread={}, other_thread={})",
-            current_thread,
-            expected_thread
+    let foreground = unsafe { GetForegroundWindow() };
+    let foreground_set = if foreground == expected_hwnd {
+        let foreground_set = unsafe { SetForegroundWindow(shell).as_bool() };
+        if !foreground_set {
+            tracing::debug!(
+                "Windows refused SetForegroundWindow for shell while releasing {}",
+                expected
+            );
+        }
+        foreground_set
+    } else {
+        tracing::debug!(
+            "Foreground changed during shell release (expected={}, current={})",
+            expected,
+            foreground.0 as WindowId
         );
+        false
+    };
+
+    for thread in attached_threads.iter().rev() {
+        if !unsafe { AttachThreadInput(current_thread, *thread, false) }.as_bool() {
+            tracing::warn!(
+                "AttachThreadInput detach failed (current_thread={}, other_thread={})",
+                current_thread,
+                thread
+            );
+        }
     }
 
     Ok(foreground_set)
