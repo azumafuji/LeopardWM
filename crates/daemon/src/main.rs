@@ -3465,7 +3465,7 @@ async fn finish_daemon_event(ctx: &mut EventLoopCtx<'_>) {
     let (should_arm_idle_reapply, should_arm_display_change_retry) = {
         let mut state = ctx.state.lock().await;
         let timer_needed = state.idle_layout_reapply_timer_needed();
-        let display_retry_pending = state.display_change_apply_retry_pending;
+        let display_retry_pending = state.display_change_apply_retry.is_some();
         state.publish_workspace_state_if_subscribed();
         (timer_needed, display_retry_pending)
     };
@@ -3474,6 +3474,8 @@ async fn finish_daemon_event(ctx: &mut EventLoopCtx<'_>) {
     }
     if should_arm_display_change_retry {
         arm_display_change_apply_retry_timer(ctx);
+    } else if ctx.display_change_apply_retry_timer.is_some() {
+        abort_join_handle(ctx.display_change_apply_retry_timer.take());
     }
 }
 

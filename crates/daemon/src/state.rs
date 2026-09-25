@@ -227,6 +227,12 @@ pub(crate) struct LayoutApplyTimeoutReport {
     pub(crate) candidates: Vec<LayoutApplyTimeoutCandidate>,
 }
 
+#[derive(Debug)]
+pub(crate) struct DisplayChangeApplyRetry {
+    pub(crate) timeout: Duration,
+    pub(crate) candidate_window_ids: Vec<u64>,
+}
+
 /// Admission-time snapshot for a window the daemon left unmanaged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ElevationBlockedRecord {
@@ -519,7 +525,7 @@ pub(crate) struct AppState {
     /// Set on WM_DISPLAYCHANGE, cleared after the debounced handler runs.
     pub(crate) display_change_pending: bool,
     pub(crate) display_change_apply_in_progress: bool,
-    pub(crate) display_change_apply_retry_pending: bool,
+    pub(crate) display_change_apply_retry: Option<DisplayChangeApplyRetry>,
     pub(crate) display_change_apply_retry_used: bool,
     /// Whether the pending debounced change needs the full topology/DPI
     /// reconcile (clearing stale min-size constraints, resizing the thumbnail
@@ -1085,7 +1091,7 @@ impl AppState {
             reapplying_after_violation: false,
             display_change_pending: false,
             display_change_apply_in_progress: false,
-            display_change_apply_retry_pending: false,
+            display_change_apply_retry: None,
             display_change_apply_retry_used: false,
             display_change_needs_full: false,
             drag_state: None,

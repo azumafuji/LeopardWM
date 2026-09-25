@@ -874,7 +874,7 @@ impl AppState {
             // Hide any visible drag ghost overlay
             self.pending_drag_hint = Some(crate::state::DragHintAction::Hide);
         } else {
-            self.display_change_apply_retry_pending = false;
+            self.display_change_apply_retry = None;
             self.pending_layout_apply_timeout_report = None;
             if let Err(error) = self.resume_layout_after_unpause() {
                 self.paused = was_paused;

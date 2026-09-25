@@ -15201,6 +15201,41 @@ fn test_failed_resume_does_not_park_or_sync_taskbar() {
 }
 
 #[test]
+fn test_display_change_retry_pauses_when_original_worker_is_still_running() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.injected_display_monitors = Some(test_monitors());
+    state.paused = false;
+    state.layout_apply_timeout = Duration::from_millis(10);
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    state
+        .injected_window_info
+        .insert(100, make_test_window_info(100));
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(250),
+    ));
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+    assert!(state.display_change_apply_retry.is_some());
+
+    state
+        .run_display_change_apply_retry()
+        .expect_err("a still-running original worker should make the retry time out");
+    let paused = state.paused;
+    let retry_pending = state.display_change_apply_retry.is_some();
+    let report = state.take_layout_apply_timeout_report();
+    join_pending_test_apply_workers(&mut state);
+
+    assert!(paused, "the blocked retry should pause tiling");
+    assert!(!retry_pending);
+    let report = report.expect("the blocked retry should create a timeout report");
+    assert_eq!(report.timeout, Duration::from_millis(10));
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].hwnd, 100);
+}
+
+#[test]
 fn test_display_change_timeout_schedules_retry_without_pausing() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     state.injected_display_monitors = Some(test_monitors());
@@ -15221,9 +15256,41 @@ fn test_display_change_timeout_schedules_retry_without_pausing() {
         "display-change timeout should not create a timeout report"
     );
     assert!(
-        state.display_change_apply_retry_pending,
+        state.display_change_apply_retry.is_some(),
         "display-change timeout should schedule its one retry"
     );
+    join_pending_test_apply_workers(&mut state);
+}
+
+#[test]
+fn test_successful_apply_clears_pending_display_change_retry() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.injected_display_monitors = Some(test_monitors());
+    state.paused = false;
+    state.layout_apply_timeout = Duration::from_millis(10);
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    state
+        .injected_window_info
+        .insert(100, make_test_window_info(100));
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(40),
+    ));
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+    assert!(state.display_change_apply_retry.is_some());
+    std::thread::sleep(Duration::from_millis(50));
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(1),
+    ));
+
+    state
+        .apply_layout()
+        .expect("the later apply should succeed");
+
+    assert!(state.display_change_apply_retry.is_none());
+    assert!(!state.display_change_apply_retry_used);
     join_pending_test_apply_workers(&mut state);
 }
 
@@ -15238,7 +15305,7 @@ fn test_display_change_apply_retry_timeout_uses_normal_pause_path() {
     ));
 
     state.handle_window_event(WindowEvent::DisplayChange);
-    assert!(state.display_change_apply_retry_pending);
+    assert!(state.display_change_apply_retry.is_some());
     std::thread::sleep(Duration::from_millis(50));
 
     state
@@ -15246,7 +15313,7 @@ fn test_display_change_apply_retry_timeout_uses_normal_pause_path() {
         .expect_err("the retry placement should also time out");
 
     assert!(state.paused, "a second timeout should pause tiling");
-    assert!(!state.display_change_apply_retry_pending);
+    assert!(state.display_change_apply_retry.is_none());
     let report = state
         .take_layout_apply_timeout_report()
         .expect("the retry timeout should create the normal timeout report");
@@ -15265,7 +15332,7 @@ fn test_display_change_apply_retry_success_resets_allowance() {
     ));
 
     state.handle_window_event(WindowEvent::DisplayChange);
-    assert!(state.display_change_apply_retry_pending);
+    assert!(state.display_change_apply_retry.is_some());
     std::thread::sleep(Duration::from_millis(50));
     state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
         Duration::from_millis(1),
@@ -15276,7 +15343,7 @@ fn test_display_change_apply_retry_success_resets_allowance() {
         .expect("the retry placement should succeed");
 
     assert!(!state.paused);
-    assert!(!state.display_change_apply_retry_pending);
+    assert!(state.display_change_apply_retry.is_none());
     assert!(!state.display_change_apply_retry_used);
 
     state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
@@ -15284,7 +15351,7 @@ fn test_display_change_apply_retry_success_resets_allowance() {
     ));
     state.handle_window_event(WindowEvent::DisplayChange);
     assert!(!state.paused);
-    assert!(state.display_change_apply_retry_pending);
+    assert!(state.display_change_apply_retry.is_some());
     assert!(state.display_change_apply_retry_used);
     assert!(state.pending_layout_apply_timeout_report.is_none());
     join_pending_test_apply_workers(&mut state);
@@ -15301,7 +15368,7 @@ fn test_display_change_apply_retry_while_paused_does_not_apply() {
     ));
 
     state.handle_window_event(WindowEvent::DisplayChange);
-    assert!(state.display_change_apply_retry_pending);
+    assert!(state.display_change_apply_retry.is_some());
     state.paused = true;
     let apply_epoch = state.apply_epoch.load(Ordering::SeqCst);
 
@@ -15310,7 +15377,7 @@ fn test_display_change_apply_retry_while_paused_does_not_apply() {
         .expect("a paused retry should be ignored");
 
     assert!(state.paused);
-    assert!(!state.display_change_apply_retry_pending);
+    assert!(state.display_change_apply_retry.is_none());
     assert_eq!(state.apply_epoch.load(Ordering::SeqCst), apply_epoch);
     join_pending_test_apply_workers(&mut state);
 }

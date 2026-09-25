@@ -352,6 +352,13 @@ impl AppState {
         reaped
     }
 
+    fn reap_finished_pending_apply_workers_with_recovery(&mut self) {
+        if self.reap_finished_pending_apply_workers() > 0 {
+            let managed_window_ids = self.all_managed_window_ids();
+            run_layout_apply_recovery_pass(&managed_window_ids, "late-apply-worker");
+        }
+    }
+
     /// Mark shutdown/revert in progress and take ownership of any timed-out apply workers.
     pub(crate) fn begin_shutdown_or_revert(&mut self) -> Vec<std::thread::JoinHandle<()>> {
         self.apply_worker_cancelled.store(true, Ordering::SeqCst);
@@ -499,15 +506,43 @@ impl AppState {
             .collect()
     }
 
+    fn pause_after_layout_apply_timeout(
+        &mut self,
+        timeout: std::time::Duration,
+        candidate_window_ids: &[u64],
+    ) -> anyhow::Error {
+        self.display_change_apply_retry = None;
+        self.paused = true;
+        let msg = layout_apply_timeout_message(timeout);
+        let report = LayoutApplyTimeoutReport {
+            timeout,
+            candidates: self.collect_layout_apply_timeout_candidates(candidate_window_ids),
+        };
+        warn!(
+            "{} Timed-out placement batch contained {} candidate window(s); batch membership does not prove which window blocked placement.",
+            msg,
+            report.candidates.len()
+        );
+        for candidate in &report.candidates {
+            warn!(
+                "Timed-out placement batch candidate (not a proven blocker): hwnd={:#x} class={:?} title={:?} executable={:?}",
+                candidate.hwnd,
+                candidate.class_name,
+                candidate.title,
+                candidate.executable
+            );
+        }
+        self.pending_layout_apply_timeout_report = Some(report);
+        let managed_window_ids = self.all_managed_window_ids();
+        run_layout_apply_recovery_pass(&managed_window_ids, "apply-timeout");
+        anyhow!(msg)
+    }
+
     /// Recalculate layout and apply placements for all monitors.
     /// Uses animated offsets if any workspace has an active animation.
     /// No-op when tiling is paused.
     pub(crate) fn apply_layout(&mut self) -> Result<LayoutApplyOutcome> {
-        let reaped_workers = self.reap_finished_pending_apply_workers();
-        if reaped_workers > 0 {
-            let managed_window_ids = self.all_managed_window_ids();
-            run_layout_apply_recovery_pass(&managed_window_ids, "late-apply-worker");
-        }
+        self.reap_finished_pending_apply_workers_with_recovery();
 
         if self.paused {
             return Ok(LayoutApplyOutcome::Completed);
@@ -585,6 +620,7 @@ impl AppState {
         {
             self.applying_layout = false;
             self.display_change_apply_retry_used = false;
+            self.display_change_apply_retry = None;
             self.request_save_if_changed();
             return Ok(LayoutApplyOutcome::Completed);
         }
@@ -608,6 +644,7 @@ impl AppState {
             self.abandon_physical_request(physical_request_id, physical_invalidation_id);
             self.applying_layout = false;
             self.display_change_apply_retry_used = false;
+            self.display_change_apply_retry = None;
             self.finalize_layout_success();
             return Ok(LayoutApplyOutcome::Completed);
         }
@@ -723,11 +760,14 @@ impl AppState {
                 self.apply_epoch.fetch_add(1, Ordering::SeqCst);
                 self.pending_apply_workers.push(worker_handle);
                 self.moved_or_resized_suppression.clear();
-                let candidates =
-                    self.collect_layout_apply_timeout_candidates(&timeout_candidate_ids);
                 if self.display_change_apply_in_progress && !self.display_change_apply_retry_used {
-                    self.display_change_apply_retry_pending = true;
                     self.display_change_apply_retry_used = true;
+                    self.display_change_apply_retry = Some(DisplayChangeApplyRetry {
+                        timeout,
+                        candidate_window_ids: timeout_candidate_ids.clone(),
+                    });
+                    let candidates =
+                        self.collect_layout_apply_timeout_candidates(&timeout_candidate_ids);
                     let msg = format!(
                         "Layout application timed out after {} ms during display reconciliation; retrying once in {} s before pausing tiling",
                         timeout.as_millis(),
@@ -749,30 +789,7 @@ impl AppState {
                     }
                     Err(anyhow!(msg))
                 } else {
-                    self.paused = true;
-                    let msg = layout_apply_timeout_message(timeout);
-                    let report = LayoutApplyTimeoutReport {
-                        timeout,
-                        candidates,
-                    };
-                    warn!(
-                        "{} Timed-out placement batch contained {} candidate window(s); batch membership does not prove which window blocked placement.",
-                        msg,
-                        report.candidates.len()
-                    );
-                    for candidate in &report.candidates {
-                        warn!(
-                            "Timed-out placement batch candidate (not a proven blocker): hwnd={:#x} class={:?} title={:?} executable={:?}",
-                            candidate.hwnd,
-                            candidate.class_name,
-                            candidate.title,
-                            candidate.executable
-                        );
-                    }
-                    self.pending_layout_apply_timeout_report = Some(report);
-                    let managed_window_ids = self.all_managed_window_ids();
-                    run_layout_apply_recovery_pass(&managed_window_ids, "apply-timeout");
-                    Err(anyhow!(msg))
+                    Err(self.pause_after_layout_apply_timeout(timeout, &timeout_candidate_ids))
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -791,6 +808,7 @@ impl AppState {
 
         if result.is_ok() && !deferred_by_recovery_barrier {
             self.display_change_apply_retry_used = false;
+            self.display_change_apply_retry = None;
         }
 
         // Reposition border to track the focused window after layout changes.
@@ -806,12 +824,17 @@ impl AppState {
     }
 
     pub(crate) fn run_display_change_apply_retry(&mut self) -> Result<()> {
-        if !self.display_change_apply_retry_pending {
+        let Some(retry) = self.display_change_apply_retry.take() else {
             return Ok(());
-        }
-        self.display_change_apply_retry_pending = false;
+        };
         if self.paused {
             return Ok(());
+        }
+        self.reap_finished_pending_apply_workers_with_recovery();
+        if !self.pending_apply_workers.is_empty() {
+            return Err(
+                self.pause_after_layout_apply_timeout(retry.timeout, &retry.candidate_window_ids)
+            );
         }
         // Force timed-out placements past the unchanged-layout fast path.
         self.last_placed_layout_rects.clear();
