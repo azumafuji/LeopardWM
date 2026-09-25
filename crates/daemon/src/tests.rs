@@ -15349,6 +15349,35 @@ fn test_manual_resume_releases_deferred_worker_recovery_when_apply_is_blocked() 
 }
 
 #[test]
+fn test_shutdown_reenables_deferred_worker_late_recovery() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.injected_display_monitors = Some(test_monitors());
+    state.paused = false;
+    state.layout_apply_timeout = Duration::from_millis(10);
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(250),
+    ));
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+    assert!(state.display_change_apply_retry.is_some());
+    assert_eq!(state.suppressed_late_recovery_workers.len(), 1);
+    assert!(!state.pending_apply_workers[0].is_finished());
+
+    let workers = state.begin_shutdown_or_revert();
+    for worker in workers {
+        worker
+            .join()
+            .expect("shutdown should join the deferred worker");
+    }
+
+    assert_eq!(
+        state.late_worker_recovery_count.load(Ordering::SeqCst),
+        1,
+        "a deferred worker finishing after shutdown begins must recover visibility"
+    );
+}
+
+#[test]
 fn test_successful_apply_clears_pending_display_change_retry() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     state.injected_display_monitors = Some(test_monitors());
