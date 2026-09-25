@@ -762,7 +762,10 @@ impl AppState {
                 self.moved_or_resized_suppression.clear();
                 if self.display_change_apply_in_progress && !self.display_change_apply_retry_used {
                     self.display_change_apply_retry_used = true;
+                    self.display_change_apply_retry_generation =
+                        self.display_change_apply_retry_generation.wrapping_add(1);
                     self.display_change_apply_retry = Some(DisplayChangeApplyRetry {
+                        generation: self.display_change_apply_retry_generation,
                         timeout,
                         candidate_window_ids: timeout_candidate_ids.clone(),
                     });
@@ -823,10 +826,18 @@ impl AppState {
         }
     }
 
-    pub(crate) fn run_display_change_apply_retry(&mut self) -> Result<()> {
-        let Some(retry) = self.display_change_apply_retry.take() else {
+    pub(crate) fn run_display_change_apply_retry(&mut self, generation: u64) -> Result<()> {
+        if !self
+            .display_change_apply_retry
+            .as_ref()
+            .is_some_and(|retry| retry.generation == generation)
+        {
             return Ok(());
-        };
+        }
+        let retry = self
+            .display_change_apply_retry
+            .take()
+            .expect("matching retry generation was checked above");
         if self.paused {
             return Ok(());
         }

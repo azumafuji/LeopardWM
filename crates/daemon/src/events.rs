@@ -121,7 +121,7 @@ pub(crate) enum DaemonEvent {
     /// handler re-arms while consume still reports `Waiting`.
     IdleLayoutReapply,
     /// Retry a display-change placement after the monitor topology settles.
-    DisplayChangeApplyRetry,
+    DisplayChangeApplyRetry(u64),
     /// Debounced persist trigger. Emitted by the background save task
     /// after a quiet period following one or more persisted-state
     /// changes. Handled on the main loop, which builds the snapshot JSON

@@ -10435,6 +10435,14 @@ fn join_pending_test_apply_workers(state: &mut AppState) {
     }
 }
 
+fn pending_display_change_retry_generation(state: &AppState) -> u64 {
+    state
+        .display_change_apply_retry
+        .as_ref()
+        .expect("a display-change retry should be pending")
+        .generation
+}
+
 #[test]
 fn test_apply_layout_timeout_auto_pauses_and_records_batch() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
@@ -15218,10 +15226,20 @@ fn test_display_change_retry_pauses_when_original_worker_is_still_running() {
 
     state.handle_window_event(WindowEvent::DisplayChange);
     assert!(state.display_change_apply_retry.is_some());
+    let generation = pending_display_change_retry_generation(&state);
+    let apply_epoch = state.apply_epoch.load(Ordering::SeqCst);
 
     state
-        .run_display_change_apply_retry()
-        .expect_err("a still-running original worker should make the retry time out");
+        .run_display_change_apply_retry(generation.wrapping_add(1))
+        .expect("a stale retry generation should be ignored");
+    assert!(!state.paused);
+    assert!(!state.applying_layout);
+    assert_eq!(state.apply_epoch.load(Ordering::SeqCst), apply_epoch);
+    assert_eq!(pending_display_change_retry_generation(&state), generation);
+
+    state
+        .run_display_change_apply_retry(generation)
+        .expect_err("a still-running original worker should make the matching retry time out");
     let paused = state.paused;
     let retry_pending = state.display_change_apply_retry.is_some();
     let report = state.take_layout_apply_timeout_report();
@@ -15309,7 +15327,7 @@ fn test_display_change_apply_retry_timeout_uses_normal_pause_path() {
     std::thread::sleep(Duration::from_millis(50));
 
     state
-        .run_display_change_apply_retry()
+        .run_display_change_apply_retry(pending_display_change_retry_generation(&state))
         .expect_err("the retry placement should also time out");
 
     assert!(state.paused, "a second timeout should pause tiling");
@@ -15339,7 +15357,7 @@ fn test_display_change_apply_retry_success_resets_allowance() {
     ));
 
     state
-        .run_display_change_apply_retry()
+        .run_display_change_apply_retry(pending_display_change_retry_generation(&state))
         .expect("the retry placement should succeed");
 
     assert!(!state.paused);
@@ -15373,7 +15391,7 @@ fn test_display_change_apply_retry_while_paused_does_not_apply() {
     let apply_epoch = state.apply_epoch.load(Ordering::SeqCst);
 
     state
-        .run_display_change_apply_retry()
+        .run_display_change_apply_retry(pending_display_change_retry_generation(&state))
         .expect("a paused retry should be ignored");
 
     assert!(state.paused);

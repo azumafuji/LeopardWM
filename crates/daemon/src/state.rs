@@ -229,6 +229,7 @@ pub(crate) struct LayoutApplyTimeoutReport {
 
 #[derive(Debug)]
 pub(crate) struct DisplayChangeApplyRetry {
+    pub(crate) generation: u64,
     pub(crate) timeout: Duration,
     pub(crate) candidate_window_ids: Vec<u64>,
 }
@@ -526,6 +527,7 @@ pub(crate) struct AppState {
     pub(crate) display_change_pending: bool,
     pub(crate) display_change_apply_in_progress: bool,
     pub(crate) display_change_apply_retry: Option<DisplayChangeApplyRetry>,
+    pub(crate) display_change_apply_retry_generation: u64,
     pub(crate) display_change_apply_retry_used: bool,
     /// Whether the pending debounced change needs the full topology/DPI
     /// reconcile (clearing stale min-size constraints, resizing the thumbnail
@@ -1092,6 +1094,7 @@ impl AppState {
             display_change_pending: false,
             display_change_apply_in_progress: false,
             display_change_apply_retry: None,
+            display_change_apply_retry_generation: 0,
             display_change_apply_retry_used: false,
             display_change_needs_full: false,
             drag_state: None,
