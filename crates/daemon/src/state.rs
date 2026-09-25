@@ -734,6 +734,8 @@ pub(crate) struct AppState {
     #[cfg(test)]
     pub(crate) injected_foreground_hwnd: Option<Option<u64>>,
     #[cfg(test)]
+    pub(crate) foreground_release_requests: Vec<u64>,
+    #[cfg(test)]
     pub(crate) injected_foreground_is_valid: Option<bool>,
     #[cfg(test)]
     pub(crate) injected_next_foreground_hwnd: Option<Option<u64>>,
@@ -1167,6 +1169,8 @@ impl AppState {
             injected_visible_hwnds: HashSet::new(),
             #[cfg(test)]
             injected_foreground_hwnd: None,
+            #[cfg(test)]
+            foreground_release_requests: Vec::new(),
             #[cfg(test)]
             injected_foreground_is_valid: None,
             #[cfg(test)]

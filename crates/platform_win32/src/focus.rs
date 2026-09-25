@@ -6,9 +6,9 @@ use leopardwm_core_layout::WindowId;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic,
-    IsWindow, IsZoomed, PostMessageW, SetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindow,
-    HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE,
+    BringWindowToTop, GetForegroundWindow, GetShellWindow, GetWindowRect, GetWindowThreadProcessId,
+    IsIconic, IsWindow, IsZoomed, PostMessageW, SetCursorPos, SetForegroundWindow, SetWindowPos,
+    ShowWindow, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE,
 };
 
 /// The current OS foreground window as a `WindowId`, if any. This is
@@ -19,6 +19,23 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub fn get_foreground_window() -> Option<WindowId> {
     let hwnd = unsafe { GetForegroundWindow() };
     (!hwnd.0.is_null()).then_some(hwnd.0 as WindowId)
+}
+
+/// Move foreground to the shell, but only while `expected` is still foreground.
+pub fn release_foreground_to_shell(expected: WindowId) -> Result<bool, Win32Error> {
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.0 as WindowId != expected {
+        return Ok(false);
+    }
+
+    let shell = unsafe { GetShellWindow() };
+    if shell.0.is_null() {
+        return Err(Win32Error::SetPositionFailed(
+            "GetShellWindow returned a null handle".to_string(),
+        ));
+    }
+
+    set_foreground_window(shell.0 as WindowId)
 }
 
 /// Current time in the same wrapping millisecond domain as WinEvent timestamps.

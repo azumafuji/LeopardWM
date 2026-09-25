@@ -1838,11 +1838,53 @@ impl AppState {
             .is_none_or(workspace_is_genuinely_empty)
     }
 
+    pub(crate) fn release_parked_foreground_for_empty_selection(&mut self) {
+        if !self.selected_workspace_is_genuinely_empty() {
+            return;
+        }
+
+        #[cfg(test)]
+        let foreground = self.injected_foreground_hwnd.flatten();
+        #[cfg(not(test))]
+        let foreground = leopardwm_platform_win32::get_foreground_window();
+        let Some(hwnd) = foreground else {
+            return;
+        };
+        let Some((monitor, workspace_idx)) = self.find_window_workspace(hwnd) else {
+            return;
+        };
+        if self.active_workspace_idx(monitor) == workspace_idx
+            || self
+                .workspaces
+                .get(&monitor)
+                .and_then(|workspaces| workspaces.get(workspace_idx))
+                .is_some_and(|workspace| workspace.is_floating(hwnd))
+        {
+            return;
+        }
+
+        #[cfg(test)]
+        self.foreground_release_requests.push(hwnd);
+        #[cfg(not(test))]
+        match leopardwm_platform_win32::release_foreground_to_shell(hwnd) {
+            Ok(true) => {}
+            Ok(false) => debug!(
+                "Windows did not release parked foreground window {} to the shell",
+                hwnd
+            ),
+            Err(error) => debug!(
+                "Could not release parked foreground window {}: {:?}",
+                hwnd, error
+            ),
+        }
+    }
+
     /// Clear logical focus after the selected workspace becomes empty.
     ///
-    /// Does not call `sync_foreground_window` or steal native focus. Reconciles
+    /// Releases parked managed foreground, then clears logical focus. Reconciles
     /// tab strips directly because a layout transition defers `apply_layout`.
     pub(crate) fn clear_logical_focus_for_empty_selection(&mut self) {
+        self.release_parked_foreground_for_empty_selection();
         self.previous_focused_hwnd = None;
         self.hide_border();
         self.update_tab_strip();

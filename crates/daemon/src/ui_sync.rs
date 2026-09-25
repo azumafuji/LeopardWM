@@ -581,6 +581,7 @@ impl AppState {
             let monitor = self.focused_monitor as i64;
             self.broadcast_focused_window_if_changed(monitor, Some(hwnd));
         } else {
+            self.release_parked_foreground_for_empty_selection();
             // No focused window on the active workspace — clear stale state
             // so border/focus don't target a window that's no longer here.
             self.previous_focused_hwnd = None;

@@ -11976,6 +11976,87 @@ fn test_workspace_switch_noop_preserves_and_new_destination_clears_intent() {
 }
 
 #[test]
+fn test_empty_workspace_switch_releases_departing_tiled_foreground() {
+    let mut state = two_managed_windows();
+    state.previous_focused_hwnd = Some(100);
+    state.injected_foreground_hwnd = Some(Some(100));
+
+    assert!(matches!(
+        state.handle_command(IpcCommand::SwitchWorkspace { index: 2 }),
+        IpcResponse::Ok
+    ));
+
+    assert_eq!(state.foreground_release_requests, vec![100]);
+    assert!(state.selected_workspace_is_genuinely_empty());
+}
+
+#[test]
+fn test_focusing_monitor_with_empty_selection_releases_its_parked_foreground() {
+    let mut state = AppState::new_with_config(test_config(), two_monitors());
+    state.ensure_workspace_exists(2, 1);
+    state.workspaces.get_mut(&2).unwrap()[1]
+        .insert_window(200, Some(800))
+        .unwrap();
+    state.injected_foreground_hwnd = Some(Some(200));
+
+    assert!(matches!(
+        state.handle_command(IpcCommand::FocusMonitorRight),
+        IpcResponse::Ok
+    ));
+
+    assert_eq!(state.focused_monitor, 2);
+    assert!(state.selected_workspace_is_genuinely_empty());
+    assert_eq!(state.foreground_release_requests, vec![200]);
+}
+
+#[test]
+fn test_empty_workspace_switch_does_not_release_other_foreground() {
+    let mut floating = AppState::new_with_config(test_config(), test_monitors());
+    floating
+        .workspaces
+        .get_mut(&floating.focused_monitor)
+        .unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    float_focused_window(&mut floating, 100);
+    floating.previous_focused_hwnd = Some(100);
+    floating.injected_foreground_hwnd = Some(Some(100));
+    floating.handle_command(IpcCommand::SwitchWorkspace { index: 2 });
+    assert!(floating.foreground_release_requests.is_empty());
+
+    let mut unmanaged = AppState::new_with_config(test_config(), test_monitors());
+    unmanaged
+        .workspaces
+        .get_mut(&unmanaged.focused_monitor)
+        .unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    unmanaged.previous_focused_hwnd = Some(100);
+    unmanaged.injected_foreground_hwnd = Some(Some(999));
+    unmanaged.handle_command(IpcCommand::SwitchWorkspace { index: 2 });
+    assert!(unmanaged.foreground_release_requests.is_empty());
+
+    let mut visible_elsewhere = AppState::new_with_config(test_config(), two_monitors());
+    visible_elsewhere.workspaces.get_mut(&2).unwrap()[0]
+        .insert_window(200, Some(800))
+        .unwrap();
+    visible_elsewhere.injected_foreground_hwnd = Some(Some(200));
+    visible_elsewhere.handle_command(IpcCommand::SwitchWorkspace { index: 2 });
+    assert!(visible_elsewhere.foreground_release_requests.is_empty());
+}
+
+#[test]
+fn test_last_window_departure_releases_suppressed_parked_foreground() {
+    let mut state = last_window_cross_workspace_state();
+    state.handle_window_event(WindowEvent::Destroyed(100));
+
+    assert_eq!(state.active_workspace_idx(state.focused_monitor), 0);
+    assert_eq!(state.previous_focused_hwnd, None);
+    assert!(state.pending_last_window_departure.is_some());
+    assert_eq!(state.foreground_release_requests, vec![200]);
+}
+
+#[test]
 fn test_successful_workspace_switch_rearms_only_without_visible_destination_focus() {
     let mut state = switch_to_empty_workspace_with_pending_focus();
     let monitor = state.focused_monitor;
