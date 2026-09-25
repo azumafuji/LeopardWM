@@ -4,14 +4,15 @@ use crate::Win32Error;
 use leopardwm_core_layout::{Rect, WindowId};
 use std::ffi::c_void;
 use std::sync::mpsc;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW,
-    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, PostMessageW, RegisterClassW,
-    SetForegroundWindow, SetLayeredWindowAttributes, SetWindowPos, UnregisterClassW, HWND_TOP,
-    LWA_ALPHA, MSG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW, WM_USER, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
+    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, IsWindow, PostMessageW,
+    PostQuitMessage, PostThreadMessageW, RegisterClassW, SetForegroundWindow,
+    SetLayeredWindowAttributes, SetWindowPos, UnregisterClassW, HWND_TOP, LWA_ALPHA, MSG,
+    SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW, WM_CLOSE, WM_DESTROY, WM_QUIT, WM_USER, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const WINDOW_CLASS: &str = "LeopardWMFocusPlaceholder";
@@ -102,7 +103,7 @@ impl FocusPlaceholder {
                     WS_EX_LAYERED | WS_EX_TRANSPARENT,
                     class_name_ptr,
                     None,
-                    WS_POPUP | WS_VISIBLE,
+                    WS_POPUP,
                     0,
                     0,
                     1,
@@ -150,8 +151,7 @@ impl FocusPlaceholder {
 
                 let mut msg = MSG::default();
                 loop {
-                    let result = GetMessageW(&mut msg, None, 0, 0).0;
-                    if result <= 0 || msg.message == WM_STOP {
+                    if GetMessageW(&mut msg, None, 0, 0).0 <= 0 {
                         break;
                     }
                     let _ = DispatchMessageW(&msg);
@@ -194,11 +194,14 @@ impl FocusPlaceholder {
         work_area: Rect,
     ) -> Result<bool, Win32Error> {
         let expected_hwnd = crate::window_id_to_hwnd(expected)?;
+        let hwnd = HWND(self.hwnd as *mut c_void);
+        if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            return Err(Win32Error::WindowNotFound(self.hwnd as WindowId));
+        }
         if unsafe { GetForegroundWindow() } != expected_hwnd {
             return Ok(false);
         }
 
-        let hwnd = HWND(self.hwnd as *mut c_void);
         let (x, y) = work_area_center(work_area);
         unsafe {
             SetWindowPos(
@@ -251,16 +254,30 @@ impl FocusPlaceholder {
 
 impl Drop for FocusPlaceholder {
     fn drop(&mut self) {
-        unsafe {
-            let _ = PostMessageW(
-                Some(HWND(self.hwnd as *mut c_void)),
-                WM_STOP,
-                WPARAM(0),
-                LPARAM(0),
-            );
-        }
+        let thread_quit_posted =
+            unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)).is_ok() };
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            let window_quit_posted = if thread_quit_posted || thread.is_finished() {
+                false
+            } else {
+                unsafe {
+                    PostMessageW(
+                        Some(HWND(self.hwnd as *mut c_void)),
+                        WM_STOP,
+                        WPARAM(0),
+                        LPARAM(0),
+                    )
+                    .is_ok()
+                }
+            };
+            if thread_quit_posted || window_quit_posted || thread.is_finished() {
+                let _ = thread.join();
+            } else {
+                tracing::warn!(
+                    "Could not signal focus-placeholder thread {} to stop; detaching it",
+                    self.thread_id
+                );
+            }
         }
     }
 }
@@ -282,8 +299,19 @@ unsafe extern "system" fn placeholder_window_proc(
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    DefWindowProcW(hwnd, msg, wparam, lparam)
+) -> LRESULT {
+    match msg {
+        WM_CLOSE => LRESULT(0),
+        WM_STOP => {
+            unsafe { PostQuitMessage(0) };
+            LRESULT(0)
+        }
+        WM_DESTROY if is_focus_placeholder(hwnd.0 as WindowId) => {
+            unsafe { PostQuitMessage(0) };
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
 }
 
 #[cfg(test)]
