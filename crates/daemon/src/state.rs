@@ -737,7 +737,7 @@ pub(crate) struct AppState {
     #[cfg(test)]
     pub(crate) injected_foreground_hwnd: Option<Option<u64>>,
     #[cfg(test)]
-    pub(crate) foreground_release_requests: Vec<u64>,
+    pub(crate) foreground_release_requests: Vec<(u64, Rect)>,
     #[cfg(test)]
     pub(crate) injected_foreground_is_valid: Option<bool>,
     #[cfg(test)]

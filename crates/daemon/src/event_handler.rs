@@ -1866,6 +1866,7 @@ impl AppState {
         #[cfg(not(test))]
         let foreground = leopardwm_platform_win32::get_foreground_window();
         let Some(hwnd) = foreground else {
+            debug!("Skipping parked-foreground release because there is no OS foreground window");
             return;
         };
         let Some((monitor, workspace_idx)) = self.find_window_workspace(hwnd) else {
@@ -1881,15 +1882,16 @@ impl AppState {
             return;
         }
 
+        let work_area = self
+            .monitors
+            .get(&self.focused_monitor)
+            .map(|monitor| monitor.work_area);
         #[cfg(test)]
-        self.foreground_release_requests.push(hwnd);
+        if let Some(work_area) = work_area {
+            self.foreground_release_requests.push((hwnd, work_area));
+        }
         #[cfg(not(test))]
-        if let (Some(placeholder), Some(work_area)) = (
-            self.focus_placeholder.as_ref(),
-            self.monitors
-                .get(&self.focused_monitor)
-                .map(|monitor| monitor.work_area),
-        ) {
+        if let (Some(placeholder), Some(work_area)) = (self.focus_placeholder.as_ref(), work_area) {
             match placeholder.release_foreground(hwnd, work_area) {
                 Ok(true) => {}
                 Ok(false) => debug!(

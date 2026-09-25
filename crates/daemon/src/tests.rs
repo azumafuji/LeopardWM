@@ -11986,7 +11986,10 @@ fn test_empty_workspace_switch_releases_departing_tiled_foreground() {
         IpcResponse::Ok
     ));
 
-    assert_eq!(state.foreground_release_requests, vec![100]);
+    assert_eq!(
+        state.foreground_release_requests,
+        vec![(100, Rect::new(0, 0, 1920, 1040))]
+    );
     assert!(state.selected_workspace_is_genuinely_empty());
 }
 
@@ -12006,7 +12009,10 @@ fn test_focusing_monitor_with_empty_selection_releases_its_parked_foreground() {
 
     assert_eq!(state.focused_monitor, 2);
     assert!(state.selected_workspace_is_genuinely_empty());
-    assert_eq!(state.foreground_release_requests, vec![200]);
+    assert_eq!(
+        state.foreground_release_requests,
+        vec![(200, Rect::new(1920, 0, 1920, 1040))]
+    );
 }
 
 #[test]
@@ -12053,7 +12059,10 @@ fn test_last_window_departure_releases_suppressed_parked_foreground() {
     assert_eq!(state.active_workspace_idx(state.focused_monitor), 0);
     assert_eq!(state.previous_focused_hwnd, None);
     assert!(state.pending_last_window_departure.is_some());
-    assert_eq!(state.foreground_release_requests, vec![200]);
+    assert_eq!(
+        state.foreground_release_requests,
+        vec![(200, Rect::new(0, 0, 1920, 1040))]
+    );
 }
 
 #[test]

@@ -8,8 +8,8 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW,
-    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, IsWindow, PostMessageW,
-    PostQuitMessage, PostThreadMessageW, RegisterClassW, SetForegroundWindow,
+    GetForegroundWindow, GetMessageW, GetShellWindow, GetWindowThreadProcessId, IsWindow,
+    PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterClassW, SetForegroundWindow,
     SetLayeredWindowAttributes, SetWindowPos, UnregisterClassW, HWND_TOP, LWA_ALPHA, MSG,
     SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW, WM_CLOSE, WM_DESTROY, WM_QUIT, WM_USER, WNDCLASSW,
     WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_POPUP,
@@ -26,11 +26,19 @@ fn work_area_center(work_area: Rect) -> (i32, i32) {
     )
 }
 
+fn window_class_name(hwnd: HWND) -> Option<String> {
+    let mut class_name = [0u16; 64];
+    let length = unsafe { GetClassNameW(hwnd, &mut class_name) };
+    (length > 0).then(|| String::from_utf16_lossy(&class_name[..length as usize]))
+}
+
+fn is_focus_window_class(class_name: &str) -> bool {
+    matches!(class_name, WINDOW_CLASS | OWNER_CLASS)
+}
+
 /// Identify the internal focus target without treating it as a managed window.
 pub fn is_focus_placeholder(hwnd: WindowId) -> bool {
-    let mut class_name = [0u16; 64];
-    let length = unsafe { GetClassNameW(HWND(hwnd as *mut c_void), &mut class_name) };
-    length > 0 && String::from_utf16_lossy(&class_name[..length as usize]) == WINDOW_CLASS
+    window_class_name(HWND(hwnd as *mut c_void)).as_deref() == Some(WINDOW_CLASS)
 }
 
 /// Owns a transparent, click-through window that can safely receive foreground.
@@ -43,9 +51,6 @@ pub struct FocusPlaceholder {
 impl FocusPlaceholder {
     /// Create the placeholder and its hidden owner on a dedicated message-loop thread.
     pub fn new() -> Result<Self, Win32Error> {
-        #[cfg(test)]
-        panic!("FocusPlaceholder::new creates a native window; do not construct it in unit tests");
-        #[allow(unreachable_code)]
         let (init_tx, init_rx) = mpsc::channel::<Result<(isize, u32), Win32Error>>();
         let thread = std::thread::Builder::new()
             .name("focus-placeholder".into())
@@ -156,6 +161,7 @@ impl FocusPlaceholder {
                     }
                     let _ = DispatchMessageW(&msg);
                 }
+                restore_foreground_before_destroy(placeholder);
                 let _ = DestroyWindow(placeholder);
                 let _ = DestroyWindow(owner);
                 let _ = UnregisterClassW(class_name_ptr, None);
@@ -252,6 +258,47 @@ impl FocusPlaceholder {
     }
 }
 
+fn restore_foreground_before_destroy(placeholder: HWND) {
+    if unsafe { GetForegroundWindow() } != placeholder {
+        return;
+    }
+    let shell = unsafe { GetShellWindow() };
+    if shell.0.is_null() {
+        tracing::debug!("Could not release focus placeholder during shutdown: no shell window");
+        return;
+    }
+    if unsafe { SetForegroundWindow(shell) }.as_bool() {
+        return;
+    }
+
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let shell_thread = unsafe { GetWindowThreadProcessId(shell, None) };
+    if shell_thread == 0 {
+        tracing::debug!(
+            "Could not release focus placeholder during shutdown: shell thread unavailable"
+        );
+        return;
+    }
+    if shell_thread != current_thread
+        && !unsafe { AttachThreadInput(current_thread, shell_thread, true) }.as_bool()
+    {
+        tracing::debug!("Could not attach to shell input thread during focus-placeholder shutdown");
+        return;
+    }
+
+    let released = unsafe { SetForegroundWindow(shell) }.as_bool();
+    if shell_thread != current_thread
+        && !unsafe { AttachThreadInput(current_thread, shell_thread, false) }.as_bool()
+    {
+        tracing::debug!(
+            "Could not detach from shell input thread during focus-placeholder shutdown"
+        );
+    }
+    if !released {
+        tracing::debug!("Windows refused the focus-placeholder shutdown handoff to the shell");
+    }
+}
+
 impl Drop for FocusPlaceholder {
     fn drop(&mut self) {
         let thread_quit_posted =
@@ -306,7 +353,7 @@ unsafe extern "system" fn placeholder_window_proc(
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
-        WM_DESTROY if is_focus_placeholder(hwnd.0 as WindowId) => {
+        WM_DESTROY if window_class_name(hwnd).is_some_and(|name| is_focus_window_class(&name)) => {
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
@@ -316,7 +363,7 @@ unsafe extern "system" fn placeholder_window_proc(
 
 #[cfg(test)]
 mod tests {
-    use super::work_area_center;
+    use super::{is_focus_window_class, work_area_center, OWNER_CLASS, WINDOW_CLASS};
     use leopardwm_core_layout::Rect;
 
     #[test]
@@ -325,5 +372,12 @@ mod tests {
             work_area_center(Rect::new(-1920, 100, 1920, 800)),
             (-960, 500)
         );
+    }
+
+    #[test]
+    fn either_focus_window_class_stops_its_message_loop_on_destroy() {
+        assert!(is_focus_window_class(WINDOW_CLASS));
+        assert!(is_focus_window_class(OWNER_CLASS));
+        assert!(!is_focus_window_class("UnrelatedWindow"));
     }
 }
