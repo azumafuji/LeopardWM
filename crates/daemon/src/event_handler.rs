@@ -44,6 +44,23 @@ pub(crate) fn defer_snapback_while_settling(
     settling && recently_maximized
 }
 
+fn restore_maximized_at_admission(
+    hwnd: u64,
+    restore: &mut impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
+    is_maximized: &mut impl FnMut(u64) -> bool,
+) -> bool {
+    match restore(hwnd) {
+        Ok(()) => false,
+        Err(error) => {
+            debug!(
+                "Could not restore maximized window {} without activation: {:?}",
+                hwnd, error
+            );
+            is_maximized(hwnd)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct MoveSizeCancelResult {
     pub cancelled_resize: bool,
@@ -649,11 +666,34 @@ impl AppState {
         kind: AdmissionKind,
         admitted_at_event_ms: Option<u32>,
     ) -> AdmitOutcome {
+        self.try_admit_window_at_with_native_ops(
+            hwnd,
+            kind,
+            admitted_at_event_ms,
+            leopardwm_platform_win32::is_window_maximized,
+            leopardwm_platform_win32::restore_maximized_window_no_activate,
+        )
+    }
+
+    pub(crate) fn try_admit_window_at_with_native_ops(
+        &mut self,
+        hwnd: u64,
+        kind: AdmissionKind,
+        admitted_at_event_ms: Option<u32>,
+        is_maximized: impl FnMut(u64) -> bool,
+        restore_maximized: impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
+    ) -> AdmitOutcome {
         // Depart before the body. Its own duplicate check then sees a non-member
         // and does not sample foreground a second time. Reconcile only a real
         // replaced departure: an ordinary Created must not touch tracked focus.
         let replaced = self.depart_replaced_managed_lifetime(hwnd);
-        let outcome = self.admit_window_after_replaced_departure(hwnd, kind, admitted_at_event_ms);
+        let outcome = self.admit_window_after_replaced_departure(
+            hwnd,
+            kind,
+            admitted_at_event_ms,
+            is_maximized,
+            restore_maximized,
+        );
         if replaced {
             self.reconcile_replaced_lifetime_admission(hwnd);
         }
@@ -665,6 +705,8 @@ impl AppState {
         hwnd: u64,
         kind: AdmissionKind,
         admitted_at_event_ms: Option<u32>,
+        mut is_maximized: impl FnMut(u64) -> bool,
+        mut restore_maximized: impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
     ) -> AdmitOutcome {
         // Recycle departs before suppression and the ignore gate. A cloak Hidden
         // can mark this HWND transient, and that entry must not reject the replacement.
@@ -850,6 +892,8 @@ impl AppState {
             let take_workspace_focus = kind == AdmissionKind::ExplicitReadmit
                 || self.config.behavior.focus_new_windows
                 || opens_in_background;
+            let native_maximized_at_admission =
+                action == config::WindowAction::Tile && is_maximized(hwnd);
 
             if let Some(workspace) = self
                 .workspaces
@@ -925,7 +969,10 @@ impl AppState {
                         // Per-app open_maximized: only when the new
                         // window's column is the focused one (always
                         // true for the focused new-column path).
-                        if ok && rule_maximized && workspace.focused_window() == Some(hwnd) {
+                        if ok
+                            && (rule_maximized || native_maximized_at_admission)
+                            && workspace.focused_window() == Some(hwnd)
+                        {
                             workspace.maximize_focused_column(viewport_width);
                         }
                         ok
@@ -936,11 +983,15 @@ impl AppState {
                 if added {
                     let now = std::time::Instant::now();
                     self.window_managed_at.insert(hwnd, now);
-                    // Seed maximize intent if it opened maximized, so a window
-                    // born maximized is protected from the settling snap-back
-                    // even if its first event is a transient restore (before any
-                    // maximized location event is observed).
-                    if leopardwm_platform_win32::is_window_maximized(hwnd) {
+                    let still_maximized = native_maximized_at_admission
+                        && restore_maximized_at_admission(
+                            hwnd,
+                            &mut restore_maximized,
+                            &mut is_maximized,
+                        );
+                    // Only an unsuccessful native restore needs maximize grace;
+                    // a restored window must be placed at its layout bounds.
+                    if still_maximized {
                         self.window_last_maximized_at.insert(hwnd, now);
                     }
                     info!(

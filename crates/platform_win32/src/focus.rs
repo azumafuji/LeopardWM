@@ -7,8 +7,8 @@ use windows::Win32::Foundation::RECT;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic,
-    IsWindow, PostMessageW, SetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOP,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE,
+    IsWindow, IsZoomed, PostMessageW, SetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindow,
+    HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE,
 };
 
 /// The current OS foreground window as a `WindowId`, if any. This is
@@ -87,6 +87,49 @@ pub fn restore_window_no_activate(window_id: WindowId) -> Result<(), Win32Error>
             },
         )
     }
+}
+
+/// Restore a maximized window to its normal bounds without activating it.
+///
+/// `ShowWindow` reports the previous visibility state rather than restore success,
+/// so success is determined by checking whether the window remains maximized afterward.
+pub fn restore_maximized_window_no_activate(window_id: WindowId) -> Result<(), Win32Error> {
+    let hwnd = window_id_to_hwnd(window_id)?;
+    unsafe {
+        restore_maximized_window_no_activate_with(
+            window_id,
+            || IsWindow(Some(hwnd)).as_bool(),
+            || IsZoomed(hwnd).as_bool(),
+            || {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            },
+        )
+    }
+}
+
+fn restore_maximized_window_no_activate_with(
+    window_id: WindowId,
+    is_window: impl Fn() -> bool,
+    is_zoomed: impl Fn() -> bool,
+    show_window: impl FnOnce(),
+) -> Result<(), Win32Error> {
+    if !is_window() {
+        return Err(Win32Error::WindowNotFound(window_id));
+    }
+    if !is_zoomed() {
+        return Ok(());
+    }
+    show_window();
+    if !is_window() {
+        return Err(Win32Error::WindowNotFound(window_id));
+    }
+    if is_zoomed() {
+        return Err(Win32Error::SetPositionFailed(format!(
+            "Failed to restore maximized window {} without activation",
+            window_id
+        )));
+    }
+    Ok(())
 }
 
 fn restore_window_no_activate_with(
@@ -286,6 +329,38 @@ pub fn close_window(hwnd: WindowId) -> Result<(), Win32Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_maximized_without_activation_verifies_restored_state() {
+        let zoomed = std::cell::Cell::new(true);
+        restore_maximized_window_no_activate_with(
+            42,
+            || true,
+            || zoomed.get(),
+            || zoomed.set(false),
+        )
+        .unwrap();
+        assert!(!zoomed.get());
+    }
+
+    #[test]
+    fn restore_maximized_without_activation_reports_window_that_stays_zoomed() {
+        let result = restore_maximized_window_no_activate_with(42, || true, || true, || {});
+        assert!(matches!(result, Err(Win32Error::SetPositionFailed(_))));
+    }
+
+    #[test]
+    fn restore_maximized_without_activation_skips_normal_window() {
+        let show_calls = std::cell::Cell::new(0);
+        restore_maximized_window_no_activate_with(
+            42,
+            || true,
+            || false,
+            || show_calls.set(show_calls.get() + 1),
+        )
+        .unwrap();
+        assert_eq!(show_calls.get(), 0);
+    }
 
     #[test]
     fn restore_without_activation_skips_visible_window() {

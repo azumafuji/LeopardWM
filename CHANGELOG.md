@@ -2,6 +2,12 @@
 
 All notable changes to LeopardWM will be documented in this file.
 
+## 0.2.12
+
+### Fixes
+
+- **Apps that reopen maximized now fill their tiled column instead of staying maximized over the layout.** The native window is restored without activation and its column opens at the visible viewport width.
+
 ## 0.2.11
 
 ### Fixes

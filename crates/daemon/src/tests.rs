@@ -10828,6 +10828,98 @@ fn test_lookup_window_info_missing_returns_none() {
 }
 
 #[test]
+fn test_maximized_tiled_admission_restores_and_opens_full_width_column() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    let monitor = state.focused_monitor;
+    let viewport_width = state.viewport_width_for(monitor);
+    state
+        .injected_window_info
+        .insert(100, make_test_window_info(100));
+    let maximized = std::cell::Cell::new(true);
+    let maximize_queries = std::cell::Cell::new(0);
+    let restore_calls = std::cell::Cell::new(0);
+
+    let outcome = state.try_admit_window_at_with_native_ops(
+        100,
+        crate::event_handler::AdmissionKind::Automatic,
+        None,
+        |_| {
+            maximize_queries.set(maximize_queries.get() + 1);
+            maximized.get()
+        },
+        |_| {
+            restore_calls.set(restore_calls.get() + 1);
+            maximized.set(false);
+            Ok(())
+        },
+    );
+
+    assert_eq!(outcome, crate::event_handler::AdmitOutcome::Admitted);
+    let workspace = &state.workspaces[&monitor][state.active_workspace_idx(monitor)];
+    assert_eq!(
+        workspace.columns()[0].width(),
+        workspace.visible_width(viewport_width)
+    );
+    assert_eq!(
+        maximize_queries.get(),
+        1,
+        "sample native maximize before insertion"
+    );
+    assert_eq!(restore_calls.get(), 1);
+    assert!(!state.window_last_maximized_at.contains_key(&100));
+}
+
+#[test]
+fn test_failed_maximized_admission_restore_keeps_settling_grace() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state
+        .injected_window_info
+        .insert(100, make_test_window_info(100));
+    let outcome = state.try_admit_window_at_with_native_ops(
+        100,
+        crate::event_handler::AdmissionKind::Automatic,
+        None,
+        |_| true,
+        |_| {
+            Err(leopardwm_platform_win32::Win32Error::SetPositionFailed(
+                "injected restore failure".into(),
+            ))
+        },
+    );
+
+    assert_eq!(outcome, crate::event_handler::AdmitOutcome::Admitted);
+    assert!(state.window_last_maximized_at.contains_key(&100));
+}
+
+#[test]
+fn test_non_maximized_tiled_admission_keeps_normal_column_width() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    let monitor = state.focused_monitor;
+    let viewport_width = state.viewport_width_for(monitor);
+    state
+        .injected_window_info
+        .insert(100, make_test_window_info(100));
+    let restore_calls = std::cell::Cell::new(0);
+
+    let outcome = state.try_admit_window_at_with_native_ops(
+        100,
+        crate::event_handler::AdmissionKind::Automatic,
+        None,
+        |_| false,
+        |_| {
+            restore_calls.set(restore_calls.get() + 1);
+            Ok(())
+        },
+    );
+
+    assert_eq!(outcome, crate::event_handler::AdmitOutcome::Admitted);
+    let workspace = &state.workspaces[&monitor][state.active_workspace_idx(monitor)];
+    assert_ne!(workspace.columns()[0].width(), viewport_width);
+    assert_eq!(restore_calls.get(), 0);
+    assert!(!state.window_last_maximized_at.contains_key(&100));
+}
+
+#[test]
 fn test_created_event_with_injected_window_info() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
 
