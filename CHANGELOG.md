@@ -6,7 +6,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
-- **Apps that reopen maximized are restored without activation instead of staying maximized over the layout.** When the new window takes focus, its column opens at the full visible viewport width; otherwise it tiles at the normal width.
+- **Apps that reopen maximized are restored without activation instead of staying maximized over the layout.** When the new window takes focus, its column fills the visible viewport; otherwise, it uses its usual width, including any per-app `column_width` setting.
 
 ## 0.2.11
 
