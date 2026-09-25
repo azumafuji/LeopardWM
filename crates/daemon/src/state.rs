@@ -589,6 +589,8 @@ pub(crate) struct AppState {
     pub(crate) apply_epoch: Arc<AtomicU64>,
     /// Timed-out placement workers retained for join during shutdown/revert.
     pub(crate) pending_apply_workers: Vec<std::thread::JoinHandle<()>>,
+    /// Workers whose late visibility recovery is deferred to a replacement apply.
+    pub(crate) suppressed_late_recovery_workers: HashMap<std::thread::ThreadId, Arc<AtomicBool>>,
     /// Max time allowed for Win32 placement calls before auto-pausing tiling.
     pub(crate) layout_apply_timeout: Duration,
     /// One-shot report consumed by the main loop after an automatic timeout pause.
@@ -800,6 +802,12 @@ pub(crate) struct AppState {
     /// Number of late-worker recovery passes executed after cancellation.
     #[cfg(test)]
     pub(crate) late_worker_recovery_count: Arc<AtomicUsize>,
+    /// Number of paused display retries that request layout recovery.
+    #[cfg(test)]
+    pub(crate) paused_display_retry_recovery_count: Arc<AtomicUsize>,
+    /// Number of late-worker reaping recovery passes requested, including test no-ops.
+    #[cfg(test)]
+    pub(crate) late_apply_worker_reap_recovery_count: Arc<AtomicUsize>,
     /// Test-only display-change topology so `on_display_change` does not
     /// enumerate the physical desktop.
     #[cfg(test)]
@@ -1124,6 +1132,7 @@ impl AppState {
             apply_worker_cancelled: Arc::new(AtomicBool::new(false)),
             apply_epoch: Arc::new(AtomicU64::new(0)),
             pending_apply_workers: Vec::new(),
+            suppressed_late_recovery_workers: HashMap::new(),
             layout_apply_timeout: APPLY_LAYOUT_TIMEOUT,
             pending_layout_apply_timeout_report: None,
             start_time: std::time::Instant::now(),
@@ -1214,6 +1223,10 @@ impl AppState {
             released_window_id_batches: Vec::new(),
             #[cfg(test)]
             late_worker_recovery_count: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            paused_display_retry_recovery_count: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            late_apply_worker_reap_recovery_count: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
             injected_display_monitors: None,
             #[cfg(test)]

@@ -335,27 +335,41 @@ impl AppState {
     /// Join any finished timed-out apply workers so the pending list does not grow indefinitely.
     /// Returns the number of workers reaped in this pass.
     pub(crate) fn reap_finished_pending_apply_workers(&mut self) -> usize {
+        self.reap_finished_pending_apply_workers_inner().0
+    }
+
+    fn reap_finished_pending_apply_workers_inner(&mut self) -> (usize, bool) {
         if self.pending_apply_workers.is_empty() {
-            return 0;
+            return (0, false);
         }
         let mut still_running = Vec::with_capacity(self.pending_apply_workers.len());
         let mut reaped = 0usize;
+        let mut needs_recovery = false;
         for handle in self.pending_apply_workers.drain(..) {
             if handle.is_finished() {
+                let is_suppressed = self
+                    .suppressed_late_recovery_workers
+                    .remove(&handle.thread().id())
+                    .is_some();
                 let _ = handle.join();
                 reaped += 1;
+                needs_recovery |= !is_suppressed;
             } else {
                 still_running.push(handle);
             }
         }
         self.pending_apply_workers = still_running;
-        reaped
+        (reaped, needs_recovery)
     }
 
     fn reap_finished_pending_apply_workers_with_recovery(&mut self) {
-        if self.reap_finished_pending_apply_workers() > 0 {
+        let (_, needs_recovery) = self.reap_finished_pending_apply_workers_inner();
+        if needs_recovery {
             let managed_window_ids = self.all_managed_window_ids();
             run_layout_apply_recovery_pass(&managed_window_ids, "late-apply-worker");
+            #[cfg(test)]
+            self.late_apply_worker_reap_recovery_count
+                .fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -364,6 +378,7 @@ impl AppState {
         self.apply_worker_cancelled.store(true, Ordering::SeqCst);
         self.apply_epoch.fetch_add(1, Ordering::SeqCst);
         let pending_apply_workers = std::mem::take(&mut self.pending_apply_workers);
+        self.suppressed_late_recovery_workers.clear();
         self.clear_matching_ignore_lifetime_tokens();
         pending_apply_workers
     }
@@ -506,6 +521,13 @@ impl AppState {
             .collect()
     }
 
+    pub(crate) fn resume_deferred_apply_worker_recovery(&mut self) {
+        for suppress_late_recovery in self.suppressed_late_recovery_workers.values() {
+            suppress_late_recovery.store(false, Ordering::SeqCst);
+        }
+        self.suppressed_late_recovery_workers.clear();
+    }
+
     fn pause_after_layout_apply_timeout(
         &mut self,
         timeout: std::time::Duration,
@@ -513,6 +535,7 @@ impl AppState {
     ) -> anyhow::Error {
         self.display_change_apply_retry = None;
         self.paused = true;
+        self.resume_deferred_apply_worker_recovery();
         let msg = layout_apply_timeout_message(timeout);
         let report = LayoutApplyTimeoutReport {
             timeout,
@@ -661,17 +684,18 @@ impl AppState {
         );
 
         let timeout = self.layout_apply_timeout;
-        let (rx, worker_handle) = match self.spawn_apply_worker(dispatched_placements) {
-            Ok(worker) => worker,
-            Err(error) => {
-                self.abandon_physical_request(physical_request_id, physical_invalidation_id);
-                self.applying_layout = false;
-                if preserve_recovery_post_animation_nudge {
-                    self.post_animation_nudge_pending = true;
+        let (rx, worker_handle, suppress_late_recovery) =
+            match self.spawn_apply_worker(dispatched_placements) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    self.abandon_physical_request(physical_request_id, physical_invalidation_id);
+                    self.applying_layout = false;
+                    if preserve_recovery_post_animation_nudge {
+                        self.post_animation_nudge_pending = true;
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
-        };
+            };
 
         let mut deferred_by_recovery_barrier = false;
         let result = match rx.recv_timeout(timeout) {
@@ -755,12 +779,21 @@ impl AppState {
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let defer_to_display_retry =
+                    self.display_change_apply_in_progress && !self.display_change_apply_retry_used;
+                if defer_to_display_retry {
+                    // Publish suppression before invalidating the epoch so the worker cannot
+                    // observe this timeout's cancellation without also observing this policy.
+                    suppress_late_recovery.store(true, Ordering::SeqCst);
+                    self.suppressed_late_recovery_workers
+                        .insert(worker_handle.thread().id(), suppress_late_recovery.clone());
+                }
                 self.abandon_physical_request(physical_request_id, physical_invalidation_id);
                 // Invalidate this apply epoch so late-starting workers bail before placement calls.
                 self.apply_epoch.fetch_add(1, Ordering::SeqCst);
                 self.pending_apply_workers.push(worker_handle);
                 self.moved_or_resized_suppression.clear();
-                if self.display_change_apply_in_progress && !self.display_change_apply_retry_used {
+                if defer_to_display_retry {
                     self.display_change_apply_retry_used = true;
                     self.display_change_apply_retry_generation =
                         self.display_change_apply_retry_generation.wrapping_add(1);
@@ -839,6 +872,15 @@ impl AppState {
             .take()
             .expect("matching retry generation was checked above");
         if self.paused {
+            self.resume_deferred_apply_worker_recovery();
+            let managed_window_ids = self.all_managed_window_ids();
+            run_layout_apply_recovery_pass(
+                &managed_window_ids,
+                "display-change-retry-dropped-while-paused",
+            );
+            #[cfg(test)]
+            self.paused_display_retry_recovery_count
+                .fetch_add(1, Ordering::SeqCst);
             return Ok(());
         }
         self.reap_finished_pending_apply_workers_with_recovery();
@@ -960,6 +1002,7 @@ impl AppState {
     ) -> Result<(
         std::sync::mpsc::Receiver<ApplyWorkerMsg>,
         std::thread::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
     )> {
         let platform_config = self.platform_config.clone();
         let apply_worker_cancelled = self.apply_worker_cancelled.clone();
@@ -982,6 +1025,8 @@ impl AppState {
         #[cfg(test)]
         let late_worker_recovery_count = self.late_worker_recovery_count.clone();
 
+        let suppress_late_recovery = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let suppress_late_recovery_worker = suppress_late_recovery.clone();
         let (tx, rx) = std::sync::mpsc::channel::<ApplyWorkerMsg>();
         let spawn_result = std::thread::Builder::new()
             .name("leopardwm-apply-layout".to_string())
@@ -1079,12 +1124,14 @@ impl AppState {
                             }
                         };
                     if should_cancel() {
-                        run_layout_apply_recovery_pass(
-                            &apply_window_ids,
-                            "apply-cancelled-late-worker",
-                        );
-                        #[cfg(test)]
-                        late_worker_recovery_count.fetch_add(1, Ordering::SeqCst);
+                        if !suppress_late_recovery_worker.load(Ordering::SeqCst) {
+                            run_layout_apply_recovery_pass(
+                                &apply_window_ids,
+                                "apply-cancelled-late-worker",
+                            );
+                            #[cfg(test)]
+                            late_worker_recovery_count.fetch_add(1, Ordering::SeqCst);
+                        }
                         let _ = tx.send((Ok(()), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
                         return;
                     }
@@ -1130,12 +1177,14 @@ impl AppState {
                     ),
                 };
                 if should_cancel() {
-                    run_layout_apply_recovery_pass(
-                        &apply_window_ids,
-                        "apply-cancelled-late-worker",
-                    );
-                    #[cfg(test)]
-                    late_worker_recovery_count.fetch_add(1, Ordering::SeqCst);
+                    if !suppress_late_recovery_worker.load(Ordering::SeqCst) {
+                        run_layout_apply_recovery_pass(
+                            &apply_window_ids,
+                            "apply-cancelled-late-worker",
+                        );
+                        #[cfg(test)]
+                        late_worker_recovery_count.fetch_add(1, Ordering::SeqCst);
+                    }
                     let _ = tx.send((Ok(()), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
                     return;
                 }
@@ -1149,7 +1198,7 @@ impl AppState {
             });
 
         match spawn_result {
-            Ok(handle) => Ok((rx, handle)),
+            Ok(handle) => Ok((rx, handle, suppress_late_recovery)),
             Err(e) => {
                 self.applying_layout = false;
                 Err(anyhow!("Failed to spawn layout worker thread: {}", e))

@@ -15277,6 +15277,74 @@ fn test_display_change_timeout_schedules_retry_without_pausing() {
         state.display_change_apply_retry.is_some(),
         "display-change timeout should schedule its one retry"
     );
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !state.pending_apply_workers[0].is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "deferred worker should finish"
+        );
+        std::thread::yield_now();
+    }
+    state.injected_apply_placements_behavior =
+        Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
+    state
+        .apply_layout()
+        .expect("a later placement should reap the deferred worker and succeed");
+    assert!(state.pending_apply_workers.is_empty());
+    assert_eq!(
+        state.late_worker_recovery_count.load(Ordering::SeqCst),
+        0,
+        "a deferred display-change worker must not recover before its retry"
+    );
+    assert_eq!(
+        state
+            .late_apply_worker_reap_recovery_count
+            .load(Ordering::SeqCst),
+        0,
+        "reaping the deferred worker must not request late-worker recovery"
+    );
+}
+
+#[test]
+fn test_manual_resume_releases_deferred_worker_recovery_when_apply_is_blocked() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.injected_display_monitors = Some(test_monitors());
+    state.paused = false;
+    state.layout_apply_timeout = Duration::from_millis(10);
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        Duration::from_millis(250),
+    ));
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+    assert!(state.display_change_apply_retry.is_some());
+    assert_eq!(state.suppressed_late_recovery_workers.len(), 1);
+
+    state
+        .toggle_pause("test pause")
+        .expect("manual pause should succeed");
+    state
+        .toggle_pause("test resume")
+        .expect_err("resume must not overlap the still-running apply worker");
+
+    assert!(
+        state.paused,
+        "failed resume should restore the paused state"
+    );
+    assert!(state.display_change_apply_retry.is_none());
+    assert!(state.suppressed_late_recovery_workers.is_empty());
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !state.pending_apply_workers[0].is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "deferred worker should finish"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        state.late_worker_recovery_count.load(Ordering::SeqCst),
+        1,
+        "a deferred worker must recover late if manual resume drops its retry"
+    );
     join_pending_test_apply_workers(&mut state);
 }
 
@@ -15397,6 +15465,13 @@ fn test_display_change_apply_retry_while_paused_does_not_apply() {
     assert!(state.paused);
     assert!(state.display_change_apply_retry.is_none());
     assert_eq!(state.apply_epoch.load(Ordering::SeqCst), apply_epoch);
+    assert_eq!(
+        state
+            .paused_display_retry_recovery_count
+            .load(Ordering::SeqCst),
+        1,
+        "dropping a retry while paused must request visibility recovery"
+    );
     join_pending_test_apply_workers(&mut state);
 }
 
