@@ -530,13 +530,14 @@ fn apply_placements_inner(
     // overlap and the layout gaps disappear. Zero the insets to keep correct spacing.
     let high_contrast = crate::is_high_contrast_enabled();
     let force_positioning = !allow_landing_measurement_retry;
-    let (entries, skipped, maximized_skipped_window_ids) = build_defer_entries(
-        placements,
-        cache,
-        async_flag,
-        high_contrast,
-        force_positioning,
-    );
+    let (entries, skipped, maximized_skipped_window_ids, async_recovery_window_ids) =
+        build_defer_entries(
+            placements,
+            cache,
+            async_flag,
+            high_contrast,
+            force_positioning,
+        );
     // Uncloak before positioning so DWM composites returning windows at their
     // new rect before the landing measurement. The retry can repeat this safely.
     uncloak_becoming_visible(&entries);
@@ -648,7 +649,12 @@ fn apply_placements_inner(
     }
 
     let landings = if async_flag == SET_WINDOW_POS_FLAGS(0) {
-        collect_placement_landings(placements, &failed_window_ids, &pending_window_ids)
+        collect_placement_landings(
+            placements,
+            &failed_window_ids,
+            &pending_window_ids,
+            &async_recovery_window_ids,
+        )
     } else {
         Vec::new()
     };
@@ -679,23 +685,26 @@ fn collect_placement_landings(
     placements: &[WindowPlacement],
     failed_window_ids: &HashSet<u64>,
     pending_window_ids: &HashSet<WindowId>,
+    unmeasured_window_ids: &HashSet<WindowId>,
 ) -> Vec<PlacementLanding> {
     placements
         .iter()
         .map(|placement| {
-            let pending = pending_window_ids.contains(&placement.window_id);
-            let actual_visible_rect = (!pending)
+            let unmeasured = pending_window_ids.contains(&placement.window_id)
+                || unmeasured_window_ids.contains(&placement.window_id);
+            let actual_visible_rect = (!unmeasured)
                 .then(|| crate::get_window_visible_rect(placement.window_id))
                 .flatten();
-            let actual_outer_rect = (!pending)
+            let actual_outer_rect = (!unmeasured)
                 .then(|| crate::get_window_chrome_rect(placement.window_id))
                 .flatten();
+            let async_recovery = unmeasured_window_ids.contains(&placement.window_id);
             PlacementLanding {
                 window_id: placement.window_id,
                 requested_rect: placement.rect,
                 requested_visibility: placement.visibility,
-                failed: failed_window_ids.contains(&placement.window_id),
-                unreadable: pending
+                failed: !async_recovery && failed_window_ids.contains(&placement.window_id),
+                unreadable: unmeasured
                     || (actual_visible_rect.is_none() && actual_outer_rect.is_none()),
                 actual_visible_rect,
                 actual_outer_rect,
@@ -717,9 +726,19 @@ pub fn get_window_style_bits(window_id: WindowId) -> Option<u32> {
     }
 }
 
+fn recovery_flags(async_flag: SET_WINDOW_POS_FLAGS, pending: bool) -> SET_WINDOW_POS_FLAGS {
+    let flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | async_flag;
+    if async_flag == SET_WINDOW_POS_FLAGS(0) && pending {
+        flags | SWP_ASYNCWINDOWPOS
+    } else {
+        flags
+    }
+}
+
 fn recover_placement_parked<F>(
     window_id: WindowId,
     async_flag: SET_WINDOW_POS_FLAGS,
+    pending: bool,
     position: F,
 ) -> bool
 where
@@ -728,7 +747,7 @@ where
     if !is_placement_parked(window_id) {
         return false;
     }
-    let flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | async_flag;
+    let flags = recovery_flags(async_flag, pending);
     if !position(flags) {
         return false;
     }
@@ -747,6 +766,7 @@ fn skip_visible_tiled_maximized(
     is_zoomed: bool,
     cache: Option<&mut PlacementCache>,
     async_flag: SET_WINDOW_POS_FLAGS,
+    async_recovery: &mut bool,
 ) -> bool {
     let skip = placement.visibility == Visibility::Visible
         && placement.column_index != usize::MAX
@@ -761,14 +781,19 @@ fn skip_visible_tiled_maximized(
         // the layout. Return a placement-parked maximized HWND before
         // releasing that cloak. SWP_NOSIZE deliberately preserves maximized
         // dimensions and does not restore ordinary visible maximized windows.
-        let _ = recover_placement_parked(placement.window_id, async_flag, |flags| {
-            let Ok(hwnd) = window_id_to_hwnd(placement.window_id) else {
-                return false;
-            };
-            unsafe {
-                SetWindowPos(hwnd, None, placement.rect.x, placement.rect.y, 0, 0, flags).is_ok()
-            }
-        });
+        let pending = async_flag == SET_WINDOW_POS_FLAGS(0)
+            && is_placement_parked(placement.window_id)
+            && pending_async_position(placement.window_id);
+        *async_recovery =
+            recover_placement_parked(placement.window_id, async_flag, pending, |flags| {
+                let Ok(hwnd) = window_id_to_hwnd(placement.window_id) else {
+                    return false;
+                };
+                unsafe {
+                    SetWindowPos(hwnd, None, placement.rect.x, placement.rect.y, 0, 0, flags)
+                        .is_ok()
+                }
+            }) && pending;
     }
     skip
 }
@@ -780,10 +805,11 @@ fn build_defer_entries(
     async_flag: SET_WINDOW_POS_FLAGS,
     high_contrast: bool,
     force_positioning: bool,
-) -> (Vec<DeferEntry>, u32, Vec<WindowId>) {
+) -> (Vec<DeferEntry>, u32, Vec<WindowId>, HashSet<WindowId>) {
     let mut skipped = 0u32;
     let mut entries: Vec<DeferEntry> = Vec::with_capacity(placements.len());
     let mut maximized_skipped_window_ids = Vec::new();
+    let mut async_recovery_window_ids = HashSet::new();
 
     for placement in placements {
         let Ok(hwnd) = window_id_to_hwnd(placement.window_id) else {
@@ -795,8 +821,18 @@ fn build_defer_entries(
             }
             IsZoomed(hwnd).as_bool()
         };
-        if skip_visible_tiled_maximized(placement, is_zoomed, cache.as_deref_mut(), async_flag) {
+        let mut async_recovery = false;
+        if skip_visible_tiled_maximized(
+            placement,
+            is_zoomed,
+            cache.as_deref_mut(),
+            async_flag,
+            &mut async_recovery,
+        ) {
             maximized_skipped_window_ids.push(placement.window_id);
+            if async_recovery {
+                async_recovery_window_ids.insert(placement.window_id);
+            }
             continue;
         }
         if !force_positioning
@@ -884,7 +920,12 @@ fn build_defer_entries(
         }
     }
 
-    (entries, skipped, maximized_skipped_window_ids)
+    (
+        entries,
+        skipped,
+        maximized_skipped_window_ids,
+        async_recovery_window_ids,
+    )
 }
 
 /// Uncloak entries becoming visible and drop them from the tracking set.
@@ -1031,17 +1072,14 @@ fn pending_async_entries(entries: &[DeferEntry]) -> HashSet<WindowId> {
         let mut rect = RECT::default();
         let current =
             unsafe { GetWindowRect(entry.hwnd, &mut rect).ok() }.map(|_| (rect.left, rect.top));
-        let Some(submission) = async_position_after_observation(previous, current) else {
-            submissions.remove(&entry.window_id);
-            continue;
-        };
-        if async_position_is_pending(
-            (submission.x, submission.y),
-            submission.first_submitted,
-            current,
-            now,
-        ) {
-            pending.insert(entry.window_id);
+        match async_position_state(previous, current, now) {
+            AsyncPositionState::Drained => {
+                submissions.remove(&entry.window_id);
+            }
+            AsyncPositionState::Pending => {
+                pending.insert(entry.window_id);
+            }
+            AsyncPositionState::Expired => {}
         }
     }
     pending
@@ -1078,21 +1116,50 @@ fn async_position_submission(
     }
 }
 
-fn async_position_after_observation(
-    submission: AsyncPositionSubmission,
-    current_position: Option<(i32, i32)>,
-) -> Option<AsyncPositionSubmission> {
-    (current_position != Some((submission.x, submission.y))).then_some(submission)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AsyncPositionState {
+    Drained,
+    Pending,
+    Expired,
 }
 
-fn async_position_is_pending(
-    recorded_position: (i32, i32),
-    first_submitted: std::time::Instant,
+fn async_position_state(
+    submission: AsyncPositionSubmission,
     current_position: Option<(i32, i32)>,
     now: std::time::Instant,
-) -> bool {
-    current_position != Some(recorded_position)
-        && now.saturating_duration_since(first_submitted) < ASYNC_POSITION_PENDING_LIMIT
+) -> AsyncPositionState {
+    if current_position == Some((submission.x, submission.y)) {
+        AsyncPositionState::Drained
+    } else if now.saturating_duration_since(submission.first_submitted)
+        < ASYNC_POSITION_PENDING_LIMIT
+    {
+        AsyncPositionState::Pending
+    } else {
+        AsyncPositionState::Expired
+    }
+}
+
+fn pending_async_position(window_id: WindowId) -> bool {
+    let now = std::time::Instant::now();
+    let mut guard = lock_async_positions();
+    let Some(submissions) = guard.as_mut() else {
+        return false;
+    };
+    let Some(submission) = submissions.get(&window_id).copied() else {
+        return false;
+    };
+    let current = window_id_to_hwnd(window_id).ok().and_then(|hwnd| {
+        let mut rect = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut rect).ok() }.map(|_| (rect.left, rect.top))
+    });
+    match async_position_state(submission, current, now) {
+        AsyncPositionState::Drained => {
+            submissions.remove(&window_id);
+            false
+        }
+        AsyncPositionState::Pending => true,
+        AsyncPositionState::Expired => false,
+    }
 }
 
 fn clear_async_position(window_id: WindowId) {
@@ -1970,24 +2037,31 @@ mod tests {
         let recent = submitted + Duration::from_secs(1);
         let expired = submitted + ASYNC_POSITION_PENDING_LIMIT + Duration::from_millis(1);
 
-        assert!(async_position_is_pending(
-            position,
-            submitted,
-            Some((100, 100)),
-            recent,
-        ));
-        assert!(!async_position_is_pending(
-            position,
-            submitted,
-            Some((100, 100)),
-            expired,
-        ));
-        assert!(!async_position_is_pending(
-            position,
-            submitted,
-            Some(position),
-            recent,
-        ));
+        let submission = AsyncPositionSubmission {
+            x: position.0,
+            y: position.1,
+            first_submitted: submitted,
+        };
+        assert_eq!(
+            async_position_state(submission, Some(position), recent),
+            AsyncPositionState::Drained,
+        );
+        assert_eq!(
+            async_position_state(submission, Some((100, 100)), recent),
+            AsyncPositionState::Pending,
+        );
+        assert_eq!(
+            async_position_state(submission, None, recent),
+            AsyncPositionState::Pending,
+        );
+        assert_eq!(
+            async_position_state(submission, Some((100, 100)), expired),
+            AsyncPositionState::Expired,
+        );
+        assert_eq!(
+            async_position_state(submission, None, expired),
+            AsyncPositionState::Expired,
+        );
 
         let updated_position = (300, 100);
         let updated = async_position_submission(
@@ -2001,7 +2075,24 @@ mod tests {
         );
         assert_eq!((updated.x, updated.y), updated_position);
         assert_eq!(updated.first_submitted, submitted);
-        assert!(async_position_after_observation(updated, Some(updated_position)).is_none());
+        assert_eq!(
+            async_position_state(updated, Some(updated_position), recent),
+            AsyncPositionState::Drained,
+        );
+    }
+
+    #[test]
+    fn recovery_adds_async_only_for_pending_synchronous_moves() {
+        let synchronous = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+        assert_eq!(
+            recovery_flags(SET_WINDOW_POS_FLAGS(0), true),
+            synchronous | SWP_ASYNCWINDOWPOS,
+        );
+        assert_eq!(recovery_flags(SET_WINDOW_POS_FLAGS(0), false), synchronous);
+        assert_eq!(
+            recovery_flags(SWP_ASYNCWINDOWPOS, true),
+            synchronous | SWP_ASYNCWINDOWPOS,
+        );
     }
 
     #[test]
@@ -3321,11 +3412,13 @@ mod tests {
         mark_placement_parked(parked);
         apply_placements(&[], &PlatformConfig::default(), None, false)
             .expect("empty apply should succeed");
+        let mut async_recovery = false;
         assert!(skip_visible_tiled_maximized(
             &visible_tiled,
             true,
             Some(&mut cache),
             SET_WINDOW_POS_FLAGS(0),
+            &mut async_recovery,
         ));
         assert!(
             !is_placement_parked(parked),
@@ -3365,11 +3458,13 @@ mod tests {
         let landing_flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
 
         let mut cache = PlacementCache::new();
+        let mut async_recovery = false;
         assert!(!skip_visible_tiled_maximized(
             &visible_tiled,
             false,
             Some(&mut cache),
             SET_WINDOW_POS_FLAGS(0),
+            &mut async_recovery,
         ));
         let offscreen = WindowPlacement {
             visibility: Visibility::OffScreenLeft,
@@ -3380,6 +3475,7 @@ mod tests {
             true,
             None,
             SET_WINDOW_POS_FLAGS(0),
+            &mut async_recovery,
         ));
 
         cache
@@ -3391,6 +3487,7 @@ mod tests {
             true,
             Some(&mut cache),
             SET_WINDOW_POS_FLAGS(0),
+            &mut async_recovery,
         ));
         assert!(
             is_placement_parked(wid) && is_placement_cloaked(wid),
@@ -3403,6 +3500,7 @@ mod tests {
         assert!(!recover_placement_parked(
             wid,
             SET_WINDOW_POS_FLAGS(0),
+            false,
             |_| false,
         ));
         assert!(
@@ -3413,6 +3511,7 @@ mod tests {
         assert!(recover_placement_parked(
             wid,
             SET_WINDOW_POS_FLAGS(0),
+            false,
             |flags| flags == landing_flags,
         ));
         assert!(
@@ -3422,14 +3521,18 @@ mod tests {
         assert!(!recover_placement_parked(
             wid,
             SET_WINDOW_POS_FLAGS(0),
+            false,
             |_| true,
         ));
 
         mark_placement_parked(wid);
         mark_ghost_cloaked(wid);
-        assert!(recover_placement_parked(wid, SWP_ASYNCWINDOWPOS, |flags| {
-            flags == (landing_flags | SWP_ASYNCWINDOWPOS)
-        }));
+        assert!(recover_placement_parked(
+            wid,
+            SWP_ASYNCWINDOWPOS,
+            false,
+            |flags| { flags == (landing_flags | SWP_ASYNCWINDOWPOS) }
+        ));
         assert!(!is_placement_parked(wid));
         assert!(
             is_placement_cloaked(wid),
@@ -3512,7 +3615,7 @@ mod tests {
         let mut cache = PlacementCache::new();
         cache.insets.insert(placement.window_id, insets);
         let mut cache_opt = Some(&mut cache);
-        let (entries, skipped, _) = build_defer_entries(
+        let (entries, skipped, _, _) = build_defer_entries(
             &[placement],
             &mut cache_opt,
             SET_WINDOW_POS_FLAGS(0),
