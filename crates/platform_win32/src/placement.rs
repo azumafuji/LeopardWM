@@ -438,6 +438,7 @@ struct ResolvedInsets {
     generation: u64,
 }
 
+#[derive(Clone)]
 struct DeferEntry {
     hwnd: HWND,
     window_id: u64,
@@ -530,8 +531,12 @@ fn apply_placements_inner(
     // Uncloak before positioning so DWM composites returning windows at their
     // new rect before the landing measurement. The retry can repeat this safely.
     uncloak_becoming_visible(&entries);
-    let (applied, failed_window_ids) =
-        position_entries(&entries, cache.is_none() && post_animation_landing);
+    let pending_window_ids = pending_async_entries(&entries);
+    let (applied, failed_window_ids) = position_entries_for_pending(
+        &entries,
+        cache.is_none() && post_animation_landing,
+        &pending_window_ids,
+    );
 
     // On the synchronous landing pass, compare the DWM visible measurement to
     // both the layout request and the expanded SetWindowPos frame request. A
@@ -545,6 +550,7 @@ fn apply_placements_inner(
         detect_size_violations(
             &entries,
             &failed_window_ids,
+            &pending_window_ids,
             allow_landing_measurement_retry,
         )
     } else {
@@ -611,6 +617,7 @@ fn apply_placements_inner(
                 e.visibility == Visibility::Visible
                     && e.w > 1
                     && !failed_window_ids.contains(&e.window_id)
+                    && !pending_window_ids.contains(&e.window_id)
             })
             .map(|e| NudgeTarget {
                 hwnd: e.hwnd,
@@ -624,7 +631,7 @@ fn apply_placements_inner(
     }
 
     let landings = if async_flag == SET_WINDOW_POS_FLAGS(0) {
-        collect_placement_landings(placements, &failed_window_ids)
+        collect_placement_landings(placements, &failed_window_ids, &pending_window_ids)
     } else {
         Vec::new()
     };
@@ -654,18 +661,25 @@ fn apply_placements_inner(
 fn collect_placement_landings(
     placements: &[WindowPlacement],
     failed_window_ids: &HashSet<u64>,
+    pending_window_ids: &HashSet<WindowId>,
 ) -> Vec<PlacementLanding> {
     placements
         .iter()
         .map(|placement| {
-            let actual_visible_rect = crate::get_window_visible_rect(placement.window_id);
-            let actual_outer_rect = crate::get_window_chrome_rect(placement.window_id);
+            let pending = pending_window_ids.contains(&placement.window_id);
+            let actual_visible_rect = (!pending)
+                .then(|| crate::get_window_visible_rect(placement.window_id))
+                .flatten();
+            let actual_outer_rect = (!pending)
+                .then(|| crate::get_window_chrome_rect(placement.window_id))
+                .flatten();
             PlacementLanding {
                 window_id: placement.window_id,
                 requested_rect: placement.rect,
                 requested_visibility: placement.visibility,
                 failed: failed_window_ids.contains(&placement.window_id),
-                unreadable: actual_visible_rect.is_none() && actual_outer_rect.is_none(),
+                unreadable: pending
+                    || (actual_visible_rect.is_none() && actual_outer_rect.is_none()),
                 actual_visible_rect,
                 actual_outer_rect,
             }
@@ -734,9 +748,18 @@ fn skip_visible_tiled_maximized(
             let Ok(hwnd) = window_id_to_hwnd(placement.window_id) else {
                 return false;
             };
-            unsafe {
+            let flags = if async_position_pending(hwnd, placement.window_id) {
+                flags | SWP_ASYNCWINDOWPOS
+            } else {
+                flags
+            };
+            let succeeded = unsafe {
                 SetWindowPos(hwnd, None, placement.rect.x, placement.rect.y, 0, 0, flags).is_ok()
+            };
+            if succeeded && flags.contains(SWP_ASYNCWINDOWPOS) {
+                record_async_coordinates(placement.window_id, placement.rect.x, placement.rect.y);
             }
+            succeeded
         });
     }
     skip
@@ -876,10 +899,21 @@ fn uncloak_becoming_visible(entries: &[DeferEntry]) {
 }
 
 /// Position all entries in one DeferWindowPos batch; returns (applied, failed ids).
+#[cfg(test)]
 fn position_entries(entries: &[DeferEntry], post_animation_landing: bool) -> (u32, HashSet<u64>) {
-    position_entries_with(
+    let pending = pending_async_entries(entries);
+    position_entries_for_pending(entries, post_animation_landing, &pending)
+}
+
+fn position_entries_for_pending(
+    entries: &[DeferEntry],
+    post_animation_landing: bool,
+    pending: &HashSet<WindowId>,
+) -> (u32, HashSet<u64>) {
+    position_entries_with_pending(
         entries,
         post_animation_landing,
+        pending,
         |entry| unsafe {
             SetWindowPos(
                 entry.hwnd,
@@ -895,9 +929,30 @@ fn position_entries(entries: &[DeferEntry], post_animation_landing: bool) -> (u3
     )
 }
 
+#[cfg(test)]
 fn position_entries_with<Q, P>(
     entries: &[DeferEntry],
     post_animation_landing: bool,
+    queue_endpoint: Q,
+    position_batch: P,
+) -> (u32, HashSet<u64>)
+where
+    Q: FnMut(&DeferEntry) -> windows::core::Result<()>,
+    P: FnOnce(&[DeferEntry]) -> HashSet<u64>,
+{
+    position_entries_with_pending(
+        entries,
+        post_animation_landing,
+        &HashSet::new(),
+        queue_endpoint,
+        position_batch,
+    )
+}
+
+fn position_entries_with_pending<Q, P>(
+    entries: &[DeferEntry],
+    post_animation_landing: bool,
+    pending_window_ids: &HashSet<WindowId>,
     mut queue_endpoint: Q,
     position_batch: P,
 ) -> (u32, HashSet<u64>)
@@ -905,20 +960,80 @@ where
     Q: FnMut(&DeferEntry) -> windows::core::Result<()>,
     P: FnOnce(&[DeferEntry]) -> HashSet<u64>,
 {
-    let mut endpoint_failures = HashSet::new();
-    if post_animation_landing {
-        // A synchronous move can overtake older async frames on the owner thread.
-        // Queue the endpoint last as well, so those frames cannot undo the landing.
-        for entry in entries {
-            if let Err(error) = queue_endpoint(entry) {
-                tracing::warn!(window_id = entry.window_id, %error, "Could not queue animation endpoint");
-                endpoint_failures.insert(entry.window_id);
-            }
+    let mut failures = HashSet::new();
+    for entry in entries
+        .iter()
+        .filter(|entry| post_animation_landing || pending_window_ids.contains(&entry.window_id))
+    {
+        if let Err(error) = queue_endpoint(entry) {
+            tracing::warn!(window_id = entry.window_id, %error, "Could not queue animation endpoint");
+            failures.insert(entry.window_id);
+        } else {
+            record_async_position(entry);
         }
     }
-    let mut failures = position_batch(entries);
-    failures.extend(endpoint_failures);
+
+    // A pending owner-thread move must not be overtaken by this pass's synchronous batch.
+    let synchronous_entries: Vec<_> = entries
+        .iter()
+        .filter(|entry| !pending_window_ids.contains(&entry.window_id))
+        .cloned()
+        .collect();
+    let batch_failures = position_batch(&synchronous_entries);
+    for entry in &synchronous_entries {
+        if batch_failures.contains(&entry.window_id) {
+            continue;
+        }
+        if entry.flags.contains(SWP_ASYNCWINDOWPOS) {
+            record_async_position(entry);
+        } else if !post_animation_landing {
+            clear_async_position(entry.window_id);
+        }
+    }
+    failures.extend(batch_failures);
     ((entries.len() - failures.len()) as u32, failures)
+}
+
+fn pending_async_entries(entries: &[DeferEntry]) -> HashSet<WindowId> {
+    let submissions = lock_async_positions();
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let submitted = submissions.as_ref()?.get(&entry.window_id)?;
+            let mut rect = RECT::default();
+            let matches = unsafe { GetWindowRect(entry.hwnd, &mut rect).is_ok() }
+                && (rect.left, rect.top) == *submitted;
+            (!matches).then_some(entry.window_id)
+        })
+        .collect()
+}
+
+fn record_async_position(entry: &DeferEntry) {
+    record_async_coordinates(entry.window_id, entry.x, entry.y);
+}
+
+fn record_async_coordinates(window_id: WindowId, x: i32, y: i32) {
+    let mut guard = lock_async_positions();
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(window_id, (x, y));
+}
+
+fn async_position_pending(hwnd: HWND, window_id: WindowId) -> bool {
+    let Some(submitted) = lock_async_positions()
+        .as_ref()
+        .and_then(|positions| positions.get(&window_id).copied())
+    else {
+        return false;
+    };
+    let mut rect = RECT::default();
+    !unsafe { GetWindowRect(hwnd, &mut rect).is_ok() } || (rect.left, rect.top) != submitted
+}
+
+fn clear_async_position(window_id: WindowId) {
+    if let Some(positions) = lock_async_positions().as_mut() {
+        positions.remove(&window_id);
+    }
 }
 
 fn position_entries_batch(entries: &[DeferEntry]) -> HashSet<u64> {
@@ -1016,6 +1131,14 @@ fn position_entries_batch(entries: &[DeferEntry]) -> HashSet<u64> {
 
 type SuspectedSizes = (Option<i32>, Option<i32>);
 
+static ASYNC_POSITIONS: Mutex<Option<HashMap<WindowId, (i32, i32)>>> = Mutex::new(None);
+
+fn lock_async_positions() -> std::sync::MutexGuard<'static, Option<HashMap<WindowId, (i32, i32)>>> {
+    ASYNC_POSITIONS
+        .lock()
+        .unwrap_or_else(crate::recover_poisoned_mutex)
+}
+
 /// Keep measured width/height candidates across the bounded landing retry.
 /// Two changing oversize samples must not become a native minimum. Destroy
 /// cleanup prevents a recycled HWND from inheriting another window's candidate.
@@ -1035,6 +1158,7 @@ pub fn clear_suspected_oversize(window_id: WindowId) {
     if let Some(map) = guard.as_mut() {
         map.remove(&window_id);
     }
+    clear_async_position(window_id);
 }
 
 const VISIBLE_SIZE_TOLERANCE: i32 = 2;
@@ -1192,6 +1316,7 @@ fn classify_measurements_and_update_suspects(
 fn detect_size_violations(
     entries: &[DeferEntry],
     failed_window_ids: &HashSet<u64>,
+    pending_window_ids: &HashSet<WindowId>,
     allow_landing_measurement_retry: bool,
 ) -> SizeViolationDetection {
     // Synchronize with composition, but do not treat this as an owner-thread
@@ -1206,6 +1331,7 @@ fn detect_size_violations(
         if entry.column_index == usize::MAX
             || entry.visibility != Visibility::Visible
             || failed_window_ids.contains(&entry.window_id)
+            || pending_window_ids.contains(&entry.window_id)
         {
             continue;
         }
@@ -1765,8 +1891,257 @@ mod tests {
     }
 
     #[test]
+    fn test_landing_stays_after_queued_frames_while_owner_waits_for_sent_messages() {
+        let trajectory = queued_landing_while_owner_waits();
+        let first_endpoint = trajectory
+            .iter()
+            .position(|x| *x == 10)
+            .expect("landing endpoint was never applied; trajectory: {trajectory:?}");
+        assert!(
+            trajectory[first_endpoint..].iter().all(|x| *x == 10),
+            "window departed from landing endpoint; trajectory: {trajectory:?}"
+        );
+        assert_eq!(trajectory.last(), Some(&10), "trajectory: {trajectory:?}");
+    }
+
+    #[test]
     fn test_synchronous_correction_after_landing() {
         assert_eq!(queued_landing_rect(true), (20, 100, 200, 200));
+    }
+
+    fn queued_landing_while_owner_waits() -> Vec<i32> {
+        use std::sync::{mpsc, Condvar, Mutex, OnceLock};
+        use std::time::{Duration, Instant};
+        use windows::core::w;
+        use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+            GetQueueStatus, GetWindowRect, PeekMessageW, PostThreadMessageW, RegisterClassW,
+            SendMessageTimeoutW, MSG, PM_REMOVE, QS_ALLINPUT, SEND_MESSAGE_TIMEOUT_FLAGS,
+            SMTO_ABORTIFHUNG, WM_APP, WM_WINDOWPOSCHANGED, WNDCLASSW, WS_POPUP,
+        };
+
+        static TRAJECTORY: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+        static HELPER_WAIT: OnceLock<(Mutex<(bool, bool)>, Condvar)> = OnceLock::new();
+        const HELPER_ENTER: u32 = WM_APP + 41;
+        let helper_wait = HELPER_WAIT.get_or_init(|| (Mutex::new((false, false)), Condvar::new()));
+        *helper_wait.0.lock().unwrap() = (false, false);
+        TRAJECTORY.lock().unwrap().clear();
+
+        unsafe extern "system" fn owner_proc(
+            hwnd: HWND,
+            message: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            let result = DefWindowProcW(hwnd, message, wparam, lparam);
+            if message == WM_WINDOWPOSCHANGED {
+                let mut rect = RECT::default();
+                if GetWindowRect(hwnd, &mut rect).is_ok() {
+                    TRAJECTORY.lock().unwrap().push(rect.left);
+                }
+            }
+            result
+        }
+
+        unsafe extern "system" fn helper_proc(
+            hwnd: HWND,
+            message: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            if message == HELPER_ENTER {
+                let (state, changed) = HELPER_WAIT.get().unwrap();
+                let mut state = state.lock().unwrap();
+                state.0 = true;
+                changed.notify_all();
+                let deadline = Instant::now() + Duration::from_secs(8);
+                while !state.1 {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    let (next, timeout) = changed.wait_timeout(state, remaining).unwrap();
+                    state = next;
+                    if timeout.timed_out() {
+                        break;
+                    }
+                }
+                return LRESULT(0);
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
+
+        fn register_test_class(
+            name: windows::core::PCWSTR,
+            proc: windows::Win32::UI::WindowsAndMessaging::WNDPROC,
+        ) {
+            let class = WNDCLASSW {
+                lpfnWndProc: proc,
+                lpszClassName: name,
+                ..Default::default()
+            };
+            assert_ne!(unsafe { RegisterClassW(&class) }, 0);
+        }
+
+        let (helper_tx, helper_rx) = mpsc::channel();
+        let helper_thread = std::thread::spawn(move || unsafe {
+            register_test_class(w!("LeopardWMLandingWaitHelper"), Some(helper_proc));
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                w!("LeopardWMLandingWaitHelper"),
+                None,
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            helper_tx
+                .send((hwnd.0 as usize, GetCurrentThreadId()))
+                .unwrap();
+            let mut message = MSG::default();
+            while GetMessageW(&mut message, None, 0, 0).as_bool() {
+                DispatchMessageW(&message);
+            }
+            DestroyWindow(hwnd).unwrap();
+        });
+        let (helper_hwnd, helper_thread_id) =
+            helper_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        struct HelperReleaseGuard(u32);
+        impl Drop for HelperReleaseGuard {
+            fn drop(&mut self) {
+                if let Some((state, changed)) = HELPER_WAIT.get() {
+                    state.lock().unwrap().1 = true;
+                    changed.notify_all();
+                }
+                unsafe {
+                    let _ = PostThreadMessageW(self.0, 0x0012, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
+        let _helper_release_guard = HelperReleaseGuard(helper_thread_id);
+        let helper_hwnd_value = helper_hwnd;
+
+        let (owner_tx, owner_rx) = mpsc::channel();
+        let owner = std::thread::spawn(move || unsafe {
+            let helper_hwnd = HWND(helper_hwnd_value as *mut _);
+            register_test_class(w!("LeopardWMLandingWaitOwner"), Some(owner_proc));
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                w!("LeopardWMLandingWaitOwner"),
+                None,
+                WS_POPUP,
+                100,
+                100,
+                200,
+                200,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            owner_tx.send(hwnd.0 as usize as u64).unwrap();
+            let mut result = 0usize;
+            let _ = SendMessageTimeoutW(
+                helper_hwnd,
+                HELPER_ENTER,
+                WPARAM(0),
+                LPARAM(0),
+                SEND_MESSAGE_TIMEOUT_FLAGS(SMTO_ABORTIFHUNG.0),
+                8_000,
+                Some(&mut result),
+            );
+            let deadline = Instant::now() + Duration::from_secs(8);
+            let mut settled_since = None;
+            let mut rect = RECT::default();
+            loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "owner did not drain queued positions"
+                );
+                let mut message = MSG::default();
+                while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                    DispatchMessageW(&message);
+                }
+                GetWindowRect(hwnd, &mut rect).unwrap();
+                let queue_empty = GetQueueStatus(QS_ALLINPUT) >> 16 & QS_ALLINPUT.0 == 0;
+                if rect.left == 10 && queue_empty {
+                    let since = settled_since.get_or_insert_with(Instant::now);
+                    if since.elapsed() >= Duration::from_millis(50) {
+                        break;
+                    }
+                } else {
+                    settled_since = None;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            DestroyWindow(hwnd).unwrap();
+            rect.left
+        });
+        let window_id = owner_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let release = || {
+            let mut state = helper_wait.0.lock().unwrap();
+            state.1 = true;
+            helper_wait.1.notify_all();
+        };
+        let result = std::panic::catch_unwind(|| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut state = helper_wait.0.lock().unwrap();
+            while !state.0 {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(!remaining.is_zero(), "helper did not enter its wait");
+                let (next, timeout) = helper_wait.1.wait_timeout(state, remaining).unwrap();
+                state = next;
+                assert!(!timeout.timed_out(), "helper did not enter its wait");
+            }
+            drop(state);
+
+            let position = |x, flags, landing| {
+                let entry = DeferEntry {
+                    hwnd: window_id_to_hwnd(window_id).unwrap(),
+                    window_id,
+                    x,
+                    y: 100,
+                    w: 200,
+                    h: 200,
+                    layout_w: 200,
+                    layout_h: 200,
+                    insets: (0, 0, 0, 0),
+                    inset_source: InsetSource::Fresh,
+                    inset_generation: 0,
+                    visibility: Visibility::Visible,
+                    flags,
+                    column_index: 0,
+                };
+                position_entries(&[entry], landing)
+            };
+            let flags = SWP_NOACTIVATE | SWP_NOZORDER;
+            assert_eq!(
+                position(400, flags | SWP_ASYNCWINDOWPOS, false),
+                (1, HashSet::new())
+            );
+            assert_eq!(
+                position(300, flags | SWP_ASYNCWINDOWPOS, false),
+                (1, HashSet::new())
+            );
+            assert_eq!(position(10, flags, true), (1, HashSet::new()));
+        });
+
+        release();
+        let _ = unsafe { PostThreadMessageW(helper_thread_id, 0x0012, WPARAM(0), LPARAM(0)) };
+        result.unwrap();
+        assert_eq!(owner.join().unwrap(), 10);
+        helper_thread.join().unwrap();
+        TRAJECTORY.lock().unwrap().clone()
     }
 
     fn queued_landing_rect(correct_after_landing: bool) -> (i32, i32, i32, i32) {
@@ -1862,7 +2237,7 @@ mod tests {
         let flags = SWP_NOACTIVATE | SWP_NOZORDER;
         let intermediate = position(400, flags | SWP_ASYNCWINDOWPOS, false);
         let landing = position(10, flags, true);
-        // The owner is pumping by now: this covers sender lifetime, not every queue interleaving.
+        // A later synchronous correction remains authoritative after the landing queue drains.
         let correction = correct_after_landing.then(|| position(20, flags, false));
         unsafe { PostThreadMessageW(thread_id, WM_APP, WPARAM(0), LPARAM(0)).unwrap() };
         let observed = owner.join().unwrap();
