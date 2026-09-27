@@ -477,7 +477,15 @@ pub fn apply_placements(
     mut cache: Option<&mut PlacementCache>,
     post_animation_landing: bool,
 ) -> Result<ApplyPlacementsResult, Win32Error> {
-    apply_placements_inner(placements, config, &mut cache, post_animation_landing, true)
+    let mut queued_endpoints = HashSet::new();
+    apply_placements_inner(
+        placements,
+        config,
+        &mut cache,
+        post_animation_landing,
+        true,
+        &mut queued_endpoints,
+    )
 }
 
 fn apply_placements_inner(
@@ -486,6 +494,7 @@ fn apply_placements_inner(
     cache: &mut Option<&mut PlacementCache>,
     post_animation_landing: bool,
     allow_landing_measurement_retry: bool,
+    queued_endpoints: &mut HashSet<WindowId>,
 ) -> Result<ApplyPlacementsResult, Win32Error> {
     let empty_result = ApplyPlacementsResult::default();
     if placements.is_empty() {
@@ -536,6 +545,7 @@ fn apply_placements_inner(
         &entries,
         cache.is_none() && post_animation_landing,
         &pending_window_ids,
+        queued_endpoints,
     );
 
     // On the synchronous landing pass, compare the DWM visible measurement to
@@ -563,7 +573,14 @@ fn apply_placements_inner(
             detection.suspect_confirmation_windows.len(),
         );
         evict_cached_border_insets(&detection.inset_artifact_windows, cache);
-        return apply_placements_inner(placements, _config, cache, post_animation_landing, false);
+        return apply_placements_inner(
+            placements,
+            _config,
+            cache,
+            post_animation_landing,
+            false,
+            queued_endpoints,
+        );
     }
 
     finalize_cached_border_insets(&entries, &detection.inset_artifact_windows, cache);
@@ -893,18 +910,26 @@ fn uncloak_becoming_visible(entries: &[DeferEntry]) {
 #[cfg(test)]
 fn position_entries(entries: &[DeferEntry], post_animation_landing: bool) -> (u32, HashSet<u64>) {
     let pending = pending_async_entries(entries);
-    position_entries_for_pending(entries, post_animation_landing, &pending)
+    let mut queued_endpoints = HashSet::new();
+    position_entries_for_pending(
+        entries,
+        post_animation_landing,
+        &pending,
+        &mut queued_endpoints,
+    )
 }
 
 fn position_entries_for_pending(
     entries: &[DeferEntry],
     post_animation_landing: bool,
     pending: &HashSet<WindowId>,
+    queued_endpoints: &mut HashSet<WindowId>,
 ) -> (u32, HashSet<u64>) {
     position_entries_with_pending(
         entries,
         post_animation_landing,
         pending,
+        queued_endpoints,
         |entry| unsafe {
             SetWindowPos(
                 entry.hwnd,
@@ -931,10 +956,12 @@ where
     Q: FnMut(&DeferEntry) -> windows::core::Result<()>,
     P: FnOnce(&[DeferEntry]) -> HashSet<u64>,
 {
+    let mut queued_endpoints = HashSet::new();
     position_entries_with_pending(
         entries,
         post_animation_landing,
         &HashSet::new(),
+        &mut queued_endpoints,
         queue_endpoint,
         position_batch,
     )
@@ -944,6 +971,7 @@ fn position_entries_with_pending<Q, P>(
     entries: &[DeferEntry],
     post_animation_landing: bool,
     pending_window_ids: &HashSet<WindowId>,
+    queued_endpoints: &mut HashSet<WindowId>,
     mut queue_endpoint: Q,
     position_batch: P,
 ) -> (u32, HashSet<u64>)
@@ -952,14 +980,17 @@ where
     P: FnOnce(&[DeferEntry]) -> HashSet<u64>,
 {
     let mut failures = HashSet::new();
-    for entry in entries
-        .iter()
-        .filter(|entry| post_animation_landing || pending_window_ids.contains(&entry.window_id))
-    {
+    for entry in entries {
+        if !(post_animation_landing || pending_window_ids.contains(&entry.window_id))
+            || queued_endpoints.contains(&entry.window_id)
+        {
+            continue;
+        }
         if let Err(error) = queue_endpoint(entry) {
             tracing::warn!(window_id = entry.window_id, %error, "Could not queue animation endpoint");
             failures.insert(entry.window_id);
         } else {
+            queued_endpoints.insert(entry.window_id);
             record_async_position(entry);
         }
     }
@@ -987,23 +1018,32 @@ where
 
 fn pending_async_entries(entries: &[DeferEntry]) -> HashSet<WindowId> {
     let now = std::time::Instant::now();
-    let submissions = lock_async_positions();
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let submission = submissions.as_ref()?.get(&entry.window_id)?;
-            let mut rect = RECT::default();
-            let current =
-                unsafe { GetWindowRect(entry.hwnd, &mut rect).ok() }.map(|_| (rect.left, rect.top));
-            async_position_is_pending(
-                (submission.x, submission.y),
-                submission.first_submitted,
-                current,
-                now,
-            )
-            .then_some(entry.window_id)
-        })
-        .collect()
+    let mut guard = lock_async_positions();
+    let Some(submissions) = guard.as_mut() else {
+        return HashSet::new();
+    };
+    let mut pending = HashSet::new();
+    for entry in entries {
+        let Some(previous) = submissions.get(&entry.window_id).copied() else {
+            continue;
+        };
+        let mut rect = RECT::default();
+        let current =
+            unsafe { GetWindowRect(entry.hwnd, &mut rect).ok() }.map(|_| (rect.left, rect.top));
+        let Some(submission) = async_position_after_observation(previous, current) else {
+            submissions.remove(&entry.window_id);
+            continue;
+        };
+        if async_position_is_pending(
+            (submission.x, submission.y),
+            submission.first_submitted,
+            current,
+            now,
+        ) {
+            pending.insert(entry.window_id);
+        }
+    }
+    pending
 }
 
 fn record_async_position(entry: &DeferEntry) {
@@ -1024,13 +1064,24 @@ fn async_position_submission(
     now: std::time::Instant,
 ) -> AsyncPositionSubmission {
     match previous {
-        Some(previous) if (previous.x, previous.y) == position => previous,
-        _ => AsyncPositionSubmission {
+        Some(previous) => AsyncPositionSubmission {
+            x: position.0,
+            y: position.1,
+            first_submitted: previous.first_submitted,
+        },
+        None => AsyncPositionSubmission {
             x: position.0,
             y: position.1,
             first_submitted: now,
         },
     }
+}
+
+fn async_position_after_observation(
+    submission: AsyncPositionSubmission,
+    current_position: Option<(i32, i32)>,
+) -> Option<AsyncPositionSubmission> {
+    (current_position != Some((submission.x, submission.y))).then_some(submission)
 }
 
 fn async_position_is_pending(
@@ -1937,16 +1988,19 @@ mod tests {
             recent,
         ));
 
-        let repeated = async_position_submission(
+        let updated_position = (300, 100);
+        let updated = async_position_submission(
             Some(AsyncPositionSubmission {
                 x: position.0,
                 y: position.1,
                 first_submitted: submitted,
             }),
-            position,
+            updated_position,
             recent,
         );
-        assert_eq!(repeated.first_submitted, submitted);
+        assert_eq!((updated.x, updated.y), updated_position);
+        assert_eq!(updated.first_submitted, submitted);
+        assert!(async_position_after_observation(updated, Some(updated_position)).is_none());
     }
 
     #[test]
@@ -2202,9 +2256,15 @@ mod tests {
 
         release();
         let _ = unsafe { PostThreadMessageW(helper_thread_id, 0x0012, WPARAM(0), LPARAM(0)) };
-        result.unwrap();
-        assert_eq!(owner.join().unwrap(), 10);
-        helper_thread.join().unwrap();
+        let owner_result = owner.join();
+        let helper_result = helper_thread.join();
+        if let Err(panic) = result {
+            let _ = owner_result;
+            let _ = helper_result;
+            std::panic::resume_unwind(panic);
+        }
+        assert_eq!(owner_result.unwrap(), 10);
+        helper_result.unwrap();
         TRAJECTORY.lock().unwrap().clone()
     }
 
@@ -2916,33 +2976,53 @@ mod tests {
     }
 
     #[test]
-    fn ordered_retry_must_queue_endpoints_again_to_resolve_failure() {
-        let entries = [fresh_inset_entry(10, 0)];
-        for queue_succeeds in [false, true] {
-            let (applied, failed) = position_entries_with(
-                &entries,
-                true,
-                |_| {
-                    if queue_succeeds {
-                        Ok(())
-                    } else {
-                        Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-                            -1,
-                        )))
-                    }
-                },
-                |_| HashSet::new(),
-            );
-            assert_eq!(applied, u32::from(queue_succeeds));
-            assert_eq!(failed.contains(&10), !queue_succeeds);
-        }
+    fn ordered_retry_skips_queued_endpoints_and_retries_failures() {
+        let entries = [fresh_inset_entry(10, 0), fresh_inset_entry(20, 0)];
+        let mut queued_endpoints = HashSet::new();
+        let mut queued = Vec::new();
+        let (applied, failed) = position_entries_with_pending(
+            &entries,
+            true,
+            &HashSet::new(),
+            &mut queued_endpoints,
+            |entry| {
+                queued.push(entry.window_id);
+                if entry.window_id == 10 {
+                    Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                        -1,
+                    )))
+                } else {
+                    Ok(())
+                }
+            },
+            |_| HashSet::new(),
+        );
+        assert_eq!(queued, [10, 20]);
+        assert_eq!(applied, 1);
+        assert_eq!(failed, HashSet::from([10]));
+
+        let (applied, failed) = position_entries_with_pending(
+            &entries,
+            true,
+            &HashSet::new(),
+            &mut queued_endpoints,
+            |entry| {
+                queued.push(entry.window_id);
+                Ok(())
+            },
+            |_| HashSet::new(),
+        );
+        assert_eq!(queued, [10, 20, 10]);
+        assert_eq!(applied, 2);
+        assert!(failed.is_empty());
+
         let (applied, failed) = position_entries_with(
             &entries,
             false,
             |_| panic!("ordinary positioning must not queue an endpoint"),
             |_| HashSet::new(),
         );
-        assert_eq!(applied, 1);
+        assert_eq!(applied, 2);
         assert!(failed.is_empty());
     }
 
