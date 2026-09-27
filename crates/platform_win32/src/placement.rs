@@ -649,11 +649,26 @@ fn apply_placements_inner(
     }
 
     let landings = if async_flag == SET_WINDOW_POS_FLAGS(0) {
-        collect_placement_landings(
+        let mut queued_recoveries = lock_queued_recoveries();
+        let submissions = queued_recoveries.get_or_insert_with(HashMap::new);
+        collect_placement_landings_with_recoveries(
             placements,
             &failed_window_ids,
             &pending_window_ids,
             &async_recovery_window_ids,
+            submissions,
+            |window_id| {
+                window_id_to_hwnd(window_id).ok().and_then(|hwnd| {
+                    let mut rect = RECT::default();
+                    unsafe { GetWindowRect(hwnd, &mut rect).ok() }.map(|_| (rect.left, rect.top))
+                })
+            },
+            |window_id| {
+                (
+                    crate::get_window_visible_rect(window_id),
+                    crate::get_window_chrome_rect(window_id),
+                )
+            },
         )
     } else {
         Vec::new()
@@ -681,29 +696,46 @@ fn apply_placements_inner(
     })
 }
 
-fn collect_placement_landings(
+fn collect_placement_landings_with_recoveries(
     placements: &[WindowPlacement],
     failed_window_ids: &HashSet<u64>,
     pending_window_ids: &HashSet<WindowId>,
     unmeasured_window_ids: &HashSet<WindowId>,
+    recoveries: &mut HashMap<WindowId, AsyncPositionSubmission>,
+    mut current_position: impl FnMut(WindowId) -> Option<(i32, i32)>,
+    mut measure: impl FnMut(WindowId) -> (Option<Rect>, Option<Rect>),
 ) -> Vec<PlacementLanding> {
+    let now = std::time::Instant::now();
+    let mut unmeasured_window_ids = unmeasured_window_ids.clone();
+    for placement in placements {
+        if !recoveries.contains_key(&placement.window_id) {
+            continue;
+        }
+        if queued_recovery_is_pending(
+            recoveries,
+            placement.window_id,
+            current_position(placement.window_id),
+            now,
+        ) {
+            unmeasured_window_ids.insert(placement.window_id);
+        }
+    }
+
     placements
         .iter()
         .map(|placement| {
-            let unmeasured = pending_window_ids.contains(&placement.window_id)
-                || unmeasured_window_ids.contains(&placement.window_id);
-            let actual_visible_rect = (!unmeasured)
-                .then(|| crate::get_window_visible_rect(placement.window_id))
-                .flatten();
-            let actual_outer_rect = (!unmeasured)
-                .then(|| crate::get_window_chrome_rect(placement.window_id))
-                .flatten();
-            let async_recovery = unmeasured_window_ids.contains(&placement.window_id);
+            let queued_recovery = unmeasured_window_ids.contains(&placement.window_id);
+            let unmeasured = pending_window_ids.contains(&placement.window_id) || queued_recovery;
+            let (actual_visible_rect, actual_outer_rect) = if unmeasured {
+                (None, None)
+            } else {
+                measure(placement.window_id)
+            };
             PlacementLanding {
                 window_id: placement.window_id,
                 requested_rect: placement.rect,
                 requested_visibility: placement.visibility,
-                failed: !async_recovery && failed_window_ids.contains(&placement.window_id),
+                failed: !queued_recovery && failed_window_ids.contains(&placement.window_id),
                 unreadable: unmeasured
                     || (actual_visible_rect.is_none() && actual_outer_rect.is_none()),
                 actual_visible_rect,
@@ -784,7 +816,7 @@ fn skip_visible_tiled_maximized(
         let pending = async_flag == SET_WINDOW_POS_FLAGS(0)
             && is_placement_parked(placement.window_id)
             && pending_async_position(placement.window_id);
-        *async_recovery =
+        let recovered =
             recover_placement_parked(placement.window_id, async_flag, pending, |flags| {
                 let Ok(hwnd) = window_id_to_hwnd(placement.window_id) else {
                     return false;
@@ -793,7 +825,11 @@ fn skip_visible_tiled_maximized(
                     SetWindowPos(hwnd, None, placement.rect.x, placement.rect.y, 0, 0, flags)
                         .is_ok()
                 }
-            }) && pending;
+            });
+        *async_recovery = recovered && pending;
+        if *async_recovery {
+            record_queued_recovery(placement.window_id, placement.rect.x, placement.rect.y);
+        }
     }
     skip
 }
@@ -1166,6 +1202,9 @@ fn clear_async_position(window_id: WindowId) {
     if let Some(positions) = lock_async_positions().as_mut() {
         positions.remove(&window_id);
     }
+    if let Some(recoveries) = lock_queued_recoveries().as_mut() {
+        recoveries.remove(&window_id);
+    }
 }
 
 fn position_entries_batch(entries: &[DeferEntry]) -> HashSet<u64> {
@@ -1274,6 +1313,44 @@ struct AsyncPositionSubmission {
 const ASYNC_POSITION_PENDING_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 static ASYNC_POSITIONS: Mutex<Option<HashMap<WindowId, AsyncPositionSubmission>>> =
     Mutex::new(None);
+static QUEUED_RECOVERIES: Mutex<Option<HashMap<WindowId, AsyncPositionSubmission>>> =
+    Mutex::new(None);
+
+fn lock_queued_recoveries(
+) -> std::sync::MutexGuard<'static, Option<HashMap<WindowId, AsyncPositionSubmission>>> {
+    QUEUED_RECOVERIES
+        .lock()
+        .unwrap_or_else(crate::recover_poisoned_mutex)
+}
+
+fn record_queued_recovery(window_id: WindowId, x: i32, y: i32) {
+    let submission = AsyncPositionSubmission {
+        x,
+        y,
+        first_submitted: std::time::Instant::now(),
+    };
+    lock_queued_recoveries()
+        .get_or_insert_with(HashMap::new)
+        .insert(window_id, submission);
+}
+
+fn queued_recovery_is_pending(
+    submissions: &mut HashMap<WindowId, AsyncPositionSubmission>,
+    window_id: WindowId,
+    current_position: Option<(i32, i32)>,
+    now: std::time::Instant,
+) -> bool {
+    let Some(submission) = submissions.get(&window_id).copied() else {
+        return false;
+    };
+    match async_position_state(submission, current_position, now) {
+        AsyncPositionState::Drained | AsyncPositionState::Expired => {
+            submissions.remove(&window_id);
+            false
+        }
+        AsyncPositionState::Pending => true,
+    }
+}
 
 fn lock_async_positions(
 ) -> std::sync::MutexGuard<'static, Option<HashMap<WindowId, AsyncPositionSubmission>>> {
@@ -2079,6 +2156,83 @@ mod tests {
             async_position_state(updated, Some(updated_position), recent),
             AsyncPositionState::Drained,
         );
+    }
+
+    #[test]
+    fn queued_recovery_remains_unmeasured_until_drained_or_expired() {
+        use std::time::{Duration, Instant};
+
+        let window_id = 0x7FFF_FF31;
+        let destination = (400, 100);
+        let submission_time = Instant::now();
+        let expired_submission_time =
+            submission_time - ASYNC_POSITION_PENDING_LIMIT - Duration::from_millis(1);
+        let placement = WindowPlacement {
+            window_id,
+            rect: Rect::new(destination.0, destination.1, 800, 600),
+            visibility: Visibility::Visible,
+            column_index: 0,
+        };
+        let placements = [placement];
+        let measured = Rect::new(100, 100, 800, 600);
+        let mut submissions = HashMap::from([(
+            window_id,
+            AsyncPositionSubmission {
+                x: destination.0,
+                y: destination.1,
+                first_submitted: submission_time,
+            },
+        )]);
+
+        let landings = collect_placement_landings_with_recoveries(
+            &placements,
+            &HashSet::from([window_id]),
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut submissions,
+            |_| Some((100, 100)),
+            |_| (Some(measured), Some(measured)),
+        );
+        assert!(landings[0].unreadable);
+        assert!(!landings[0].failed);
+        assert_eq!(landings[0].actual_visible_rect, None);
+        assert_eq!(landings[0].actual_outer_rect, None);
+        assert!(submissions.contains_key(&window_id));
+
+        let landings = collect_placement_landings_with_recoveries(
+            &placements,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut submissions,
+            |_| Some(destination),
+            |_| (Some(measured), Some(measured)),
+        );
+        assert!(!submissions.contains_key(&window_id));
+        assert!(!landings[0].unreadable);
+        assert_eq!(landings[0].actual_visible_rect, Some(measured));
+        assert_eq!(landings[0].actual_outer_rect, Some(measured));
+
+        submissions.insert(
+            window_id,
+            AsyncPositionSubmission {
+                x: destination.0,
+                y: destination.1,
+                first_submitted: expired_submission_time,
+            },
+        );
+        let landings = collect_placement_landings_with_recoveries(
+            &placements,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut submissions,
+            |_| Some((100, 100)),
+            |_| (Some(measured), Some(measured)),
+        );
+        assert!(!submissions.contains_key(&window_id));
+        assert!(!landings[0].unreadable);
+        assert_eq!(landings[0].actual_visible_rect, Some(measured));
     }
 
     #[test]
