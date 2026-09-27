@@ -748,18 +748,9 @@ fn skip_visible_tiled_maximized(
             let Ok(hwnd) = window_id_to_hwnd(placement.window_id) else {
                 return false;
             };
-            let flags = if async_position_pending(hwnd, placement.window_id) {
-                flags | SWP_ASYNCWINDOWPOS
-            } else {
-                flags
-            };
-            let succeeded = unsafe {
+            unsafe {
                 SetWindowPos(hwnd, None, placement.rect.x, placement.rect.y, 0, 0, flags).is_ok()
-            };
-            if succeeded && flags.contains(SWP_ASYNCWINDOWPOS) {
-                record_async_coordinates(placement.window_id, placement.rect.x, placement.rect.y);
             }
-            succeeded
         });
     }
     skip
@@ -995,15 +986,22 @@ where
 }
 
 fn pending_async_entries(entries: &[DeferEntry]) -> HashSet<WindowId> {
+    let now = std::time::Instant::now();
     let submissions = lock_async_positions();
     entries
         .iter()
         .filter_map(|entry| {
-            let submitted = submissions.as_ref()?.get(&entry.window_id)?;
+            let submission = submissions.as_ref()?.get(&entry.window_id)?;
             let mut rect = RECT::default();
-            let matches = unsafe { GetWindowRect(entry.hwnd, &mut rect).is_ok() }
-                && (rect.left, rect.top) == *submitted;
-            (!matches).then_some(entry.window_id)
+            let current =
+                unsafe { GetWindowRect(entry.hwnd, &mut rect).ok() }.map(|_| (rect.left, rect.top));
+            async_position_is_pending(
+                (submission.x, submission.y),
+                submission.first_submitted,
+                current,
+                now,
+            )
+            .then_some(entry.window_id)
         })
         .collect()
 }
@@ -1013,21 +1011,36 @@ fn record_async_position(entry: &DeferEntry) {
 }
 
 fn record_async_coordinates(window_id: WindowId, x: i32, y: i32) {
+    let now = std::time::Instant::now();
     let mut guard = lock_async_positions();
-    guard
-        .get_or_insert_with(HashMap::new)
-        .insert(window_id, (x, y));
+    let submissions = guard.get_or_insert_with(HashMap::new);
+    let next = async_position_submission(submissions.get(&window_id).copied(), (x, y), now);
+    submissions.insert(window_id, next);
 }
 
-fn async_position_pending(hwnd: HWND, window_id: WindowId) -> bool {
-    let Some(submitted) = lock_async_positions()
-        .as_ref()
-        .and_then(|positions| positions.get(&window_id).copied())
-    else {
-        return false;
-    };
-    let mut rect = RECT::default();
-    !unsafe { GetWindowRect(hwnd, &mut rect).is_ok() } || (rect.left, rect.top) != submitted
+fn async_position_submission(
+    previous: Option<AsyncPositionSubmission>,
+    position: (i32, i32),
+    now: std::time::Instant,
+) -> AsyncPositionSubmission {
+    match previous {
+        Some(previous) if (previous.x, previous.y) == position => previous,
+        _ => AsyncPositionSubmission {
+            x: position.0,
+            y: position.1,
+            first_submitted: now,
+        },
+    }
+}
+
+fn async_position_is_pending(
+    recorded_position: (i32, i32),
+    first_submitted: std::time::Instant,
+    current_position: Option<(i32, i32)>,
+    now: std::time::Instant,
+) -> bool {
+    current_position != Some(recorded_position)
+        && now.saturating_duration_since(first_submitted) < ASYNC_POSITION_PENDING_LIMIT
 }
 
 fn clear_async_position(window_id: WindowId) {
@@ -1131,9 +1144,20 @@ fn position_entries_batch(entries: &[DeferEntry]) -> HashSet<u64> {
 
 type SuspectedSizes = (Option<i32>, Option<i32>);
 
-static ASYNC_POSITIONS: Mutex<Option<HashMap<WindowId, (i32, i32)>>> = Mutex::new(None);
+#[derive(Clone, Copy)]
+struct AsyncPositionSubmission {
+    x: i32,
+    y: i32,
+    first_submitted: std::time::Instant,
+}
 
-fn lock_async_positions() -> std::sync::MutexGuard<'static, Option<HashMap<WindowId, (i32, i32)>>> {
+// Expire pending work so windows that clamp or reject placement resume normal handling.
+const ASYNC_POSITION_PENDING_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+static ASYNC_POSITIONS: Mutex<Option<HashMap<WindowId, AsyncPositionSubmission>>> =
+    Mutex::new(None);
+
+fn lock_async_positions(
+) -> std::sync::MutexGuard<'static, Option<HashMap<WindowId, AsyncPositionSubmission>>> {
     ASYNC_POSITIONS
         .lock()
         .unwrap_or_else(crate::recover_poisoned_mutex)
@@ -1884,6 +1908,46 @@ pub(crate) fn invisible_border_insets(hwnd: HWND) -> (i32, i32, i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn async_position_pending_expires_and_preserves_first_submission_time() {
+        use std::time::{Duration, Instant};
+
+        let submitted = Instant::now();
+        let position = (400, 100);
+        let recent = submitted + Duration::from_secs(1);
+        let expired = submitted + ASYNC_POSITION_PENDING_LIMIT + Duration::from_millis(1);
+
+        assert!(async_position_is_pending(
+            position,
+            submitted,
+            Some((100, 100)),
+            recent,
+        ));
+        assert!(!async_position_is_pending(
+            position,
+            submitted,
+            Some((100, 100)),
+            expired,
+        ));
+        assert!(!async_position_is_pending(
+            position,
+            submitted,
+            Some(position),
+            recent,
+        ));
+
+        let repeated = async_position_submission(
+            Some(AsyncPositionSubmission {
+                x: position.0,
+                y: position.1,
+                first_submitted: submitted,
+            }),
+            position,
+            recent,
+        );
+        assert_eq!(repeated.first_submitted, submitted);
+    }
 
     #[test]
     fn test_landing_outlasts_queued_animation_positions() {
