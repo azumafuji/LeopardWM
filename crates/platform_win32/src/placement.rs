@@ -477,7 +477,7 @@ pub fn apply_placements(
     mut cache: Option<&mut PlacementCache>,
     post_animation_landing: bool,
 ) -> Result<ApplyPlacementsResult, Win32Error> {
-    let mut queued_endpoints = HashSet::new();
+    let mut queued_endpoints = HashMap::new();
     apply_placements_inner(
         placements,
         config,
@@ -494,7 +494,7 @@ fn apply_placements_inner(
     cache: &mut Option<&mut PlacementCache>,
     post_animation_landing: bool,
     allow_landing_measurement_retry: bool,
-    queued_endpoints: &mut HashSet<WindowId>,
+    queued_endpoints: &mut HashMap<WindowId, (i32, i32, i32, i32)>,
 ) -> Result<ApplyPlacementsResult, Win32Error> {
     let empty_result = ApplyPlacementsResult::default();
     if placements.is_empty() {
@@ -910,7 +910,7 @@ fn uncloak_becoming_visible(entries: &[DeferEntry]) {
 #[cfg(test)]
 fn position_entries(entries: &[DeferEntry], post_animation_landing: bool) -> (u32, HashSet<u64>) {
     let pending = pending_async_entries(entries);
-    let mut queued_endpoints = HashSet::new();
+    let mut queued_endpoints = HashMap::new();
     position_entries_for_pending(
         entries,
         post_animation_landing,
@@ -923,7 +923,7 @@ fn position_entries_for_pending(
     entries: &[DeferEntry],
     post_animation_landing: bool,
     pending: &HashSet<WindowId>,
-    queued_endpoints: &mut HashSet<WindowId>,
+    queued_endpoints: &mut HashMap<WindowId, (i32, i32, i32, i32)>,
 ) -> (u32, HashSet<u64>) {
     position_entries_with_pending(
         entries,
@@ -956,7 +956,7 @@ where
     Q: FnMut(&DeferEntry) -> windows::core::Result<()>,
     P: FnOnce(&[DeferEntry]) -> HashSet<u64>,
 {
-    let mut queued_endpoints = HashSet::new();
+    let mut queued_endpoints = HashMap::new();
     position_entries_with_pending(
         entries,
         post_animation_landing,
@@ -971,7 +971,7 @@ fn position_entries_with_pending<Q, P>(
     entries: &[DeferEntry],
     post_animation_landing: bool,
     pending_window_ids: &HashSet<WindowId>,
-    queued_endpoints: &mut HashSet<WindowId>,
+    queued_endpoints: &mut HashMap<WindowId, (i32, i32, i32, i32)>,
     mut queue_endpoint: Q,
     position_batch: P,
 ) -> (u32, HashSet<u64>)
@@ -981,8 +981,9 @@ where
 {
     let mut failures = HashSet::new();
     for entry in entries {
+        let endpoint_target = (entry.x, entry.y, entry.w, entry.h);
         if !(post_animation_landing || pending_window_ids.contains(&entry.window_id))
-            || queued_endpoints.contains(&entry.window_id)
+            || queued_endpoints.get(&entry.window_id) == Some(&endpoint_target)
         {
             continue;
         }
@@ -990,7 +991,7 @@ where
             tracing::warn!(window_id = entry.window_id, %error, "Could not queue animation endpoint");
             failures.insert(entry.window_id);
         } else {
-            queued_endpoints.insert(entry.window_id);
+            queued_endpoints.insert(entry.window_id, endpoint_target);
             record_async_position(entry);
         }
     }
@@ -2978,7 +2979,7 @@ mod tests {
     #[test]
     fn ordered_retry_skips_queued_endpoints_and_retries_failures() {
         let entries = [fresh_inset_entry(10, 0), fresh_inset_entry(20, 0)];
-        let mut queued_endpoints = HashSet::new();
+        let mut queued_endpoints = HashMap::new();
         let mut queued = Vec::new();
         let (applied, failed) = position_entries_with_pending(
             &entries,
@@ -3014,6 +3015,24 @@ mod tests {
         );
         assert_eq!(queued, [10, 20, 10]);
         assert_eq!(applied, 2);
+        assert!(failed.is_empty());
+
+        let mut changed_entry = entries[1].clone();
+        changed_entry.x += 1;
+        let changed_entries = [changed_entry];
+        let (applied, failed) = position_entries_with_pending(
+            &changed_entries,
+            true,
+            &HashSet::new(),
+            &mut queued_endpoints,
+            |entry| {
+                queued.push(entry.window_id);
+                Ok(())
+            },
+            |_| HashSet::new(),
+        );
+        assert_eq!(queued, [10, 20, 10, 20]);
+        assert_eq!(applied, 1);
         assert!(failed.is_empty());
 
         let (applied, failed) = position_entries_with(
