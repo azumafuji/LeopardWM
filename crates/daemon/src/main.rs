@@ -66,12 +66,12 @@ use leopardwm_core_layout::Rect;
 use leopardwm_ipc::{pipe_name_candidates, preferred_pipe_name, IpcCommand, IpcResponse};
 use leopardwm_platform_win32::{
     enumerate_monitors, enumerate_windows, format_hotkey, install_event_hooks,
-    install_keyboard_hook, install_mouse_hook, overlay::OverlayWindow, register_gestures,
-    register_system_events, restore_windows_moved_offscreen, set_display_change_sender,
-    set_dpi_awareness, set_power_state_sender, set_recording, set_session_end_handler,
-    uncloak_all_visible_windows, wait_for_window_style_requests, GestureEvent, HotkeyBind,
-    HotkeyId, KeyboardHookEvent, KeyboardHookHandle, Modifiers, MonitorId, MonitorInfo,
-    MouseHookHandle, WindowEvent,
+    install_keyboard_hook, install_mouse_hook, overlay::OverlayWindow,
+    register_gestures_with_raw_input, register_system_events, restore_windows_moved_offscreen,
+    set_display_change_sender, set_dpi_awareness, set_power_state_sender, set_recording,
+    set_session_end_handler, uncloak_all_visible_windows, wait_for_window_style_requests,
+    GestureEvent, HotkeyBind, HotkeyId, KeyboardHookEvent, KeyboardHookHandle, Modifiers,
+    MonitorId, MonitorInfo, MouseHookHandle, WindowEvent,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1399,7 +1399,7 @@ fn setup_gestures(
         // Set scroll modifier before registering the hook
         leopardwm_platform_win32::set_scroll_modifier(&config.hotkeys.scroll_modifier);
 
-        match register_gestures() {
+        match register_gestures_with_raw_input(config.gestures.raw_input) {
             Ok((handle, gesture_receiver)) => {
                 info!("Gesture detection enabled");
                 leopardwm_platform_win32::emit_gesture_registration("registered");

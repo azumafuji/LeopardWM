@@ -338,6 +338,13 @@ Run `lwm help` (or `lwm <subcommand> --help`) for the full surface — there are
 
 ### Touchpad gesture diagnostics
 
+Precision Touchpads that do not send three-finger wheel events can opt in to
+native HID swipe detection with `raw_input = true` under `[gestures]` in
+`config.toml` (or the Gestures setting). Restart LeopardWM after changing it.
+The existing mouse hook still handles modifier-plus-scroll; if native
+registration or device capability checks fail, wheel-based swipes remain active.
+Raw Input compatibility varies by device.
+
 Failed physical gestures are diagnosed with an opt-in, short capture — not by leaving general logging at TRACE. Capture is **default off**; turning it on does not change gesture behavior.
 
 1. In `%APPDATA%\leopardwm\config\config.toml`, set a short interval under `[gestures]`:

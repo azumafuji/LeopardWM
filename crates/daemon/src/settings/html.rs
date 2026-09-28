@@ -1243,6 +1243,10 @@ input[type="range"]::-webkit-slider-thumb {
             <label class="toggle"><input type="checkbox" id="gestures-enabled"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
+            <div class="field-info"><div class="field-label">Native three-finger swipes</div><div class="field-desc">Use Precision Touchpad Raw Input. Experimental; restart LeopardWM after changing.</div></div>
+            <label class="toggle"><input type="checkbox" id="gestures-raw_input"><span class="track"></span><span class="thumb"></span></label>
+          </div>
+          <div class="field">
             <div class="field-info"><div class="field-label">Swipe left</div><div class="field-desc">Three-finger swipe left command</div></div>
             <div class="combobox" id="cb-gestures-swipe_left" data-value="focus_left"></div>
           </div>
@@ -1597,6 +1601,7 @@ function init(cfg) {
   if (cfg.window_rules) { cfg.window_rules.forEach(function(r) { addRuleRow(r); }); }
 
   setChecked('gestures-enabled', cfg.gestures.enabled);
+  setChecked('gestures-raw_input', cfg.gestures.raw_input === true);
   setCb('cb-gestures-swipe_left', cfg.gestures.swipe_left, true);
   setCb('cb-gestures-swipe_right', cfg.gestures.swipe_right, true);
   setCb('cb-gestures-swipe_up', cfg.gestures.swipe_up, true);
@@ -2229,6 +2234,7 @@ function readConfig() {
     window_rules: readRules(),
     gestures: {
       enabled: checked('gestures-enabled'),
+      raw_input: checked('gestures-raw_input'),
       swipe_left: cbVal('cb-gestures-swipe_left'), swipe_right: cbVal('cb-gestures-swipe_right'),
       swipe_up: cbVal('cb-gestures-swipe_up'), swipe_down: cbVal('cb-gestures-swipe_down'),
       scroll_up: cbVal('cb-gestures-scroll_up'), scroll_down: cbVal('cb-gestures-scroll_down'),
@@ -2446,6 +2452,9 @@ mod tests {
             "gestureCaptureSecs = (cfg.gestures && cfg.gestures.diagnostic_capture_secs) || 0;"
         ));
         assert!(SETTINGS_HTML.contains("diagnostic_capture_secs: gestureCaptureSecs"));
+        assert!(SETTINGS_HTML
+            .contains("setChecked('gestures-raw_input', cfg.gestures.raw_input === true)"));
+        assert!(SETTINGS_HTML.contains("raw_input: checked('gestures-raw_input')"));
     }
 
     #[test]

@@ -1,8 +1,11 @@
-//! Touchpad gesture detection via low-level mouse hook.
+//! Touchpad swipe detection and modifier-plus-wheel navigation.
 
-use crate::{recover_poisoned_mutex, Win32Error, WM_QUIT_LLHOOK_THREAD};
+use crate::{
+    raw_touchpad::{RawTouchpad, Swipe},
+    recover_poisoned_mutex, Win32Error, WM_QUIT_LLHOOK_THREAD,
+};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -10,6 +13,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
     SetWindowsHookExW, UnhookWindowsHookEx, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, WH_MOUSE_LL,
+    WM_INPUT,
 };
 
 /// Gesture events detected from touchpad/pointer input.
@@ -411,6 +415,7 @@ static GESTURE_SENDER: std::sync::Mutex<Option<mpsc::Sender<GestureEvent>>> =
 /// Global gesture accumulator state.
 /// Initialized to `None`; `register_gestures()` sets it to `Some(...)`.
 static GESTURE_STATE: std::sync::Mutex<Option<GestureAccumState>> = std::sync::Mutex::new(None);
+static RAW_GESTURES_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Handle for gesture detection.
 ///
@@ -491,6 +496,13 @@ pub fn set_scroll_modifier(modifier_str: &str) {
 /// Returns a handle that must be kept alive to receive gesture events,
 /// and a channel receiver for gesture events.
 pub fn register_gestures() -> Result<(GestureHandle, mpsc::Receiver<GestureEvent>), Win32Error> {
+    register_gestures_with_raw_input(false)
+}
+
+/// Register gesture detection with optional native Precision Touchpad swipes.
+pub fn register_gestures_with_raw_input(
+    raw_input: bool,
+) -> Result<(GestureHandle, mpsc::Receiver<GestureEvent>), Win32Error> {
     // Create channel for events
     let (tx, rx) = mpsc::channel();
 
@@ -545,6 +557,21 @@ pub fn register_gestures() -> Result<(GestureHandle, mpsc::Receiver<GestureEvent
                         }
                     };
 
+                let mut raw = if raw_input {
+                    match RawTouchpad::start() {
+                        Ok(backend) => {
+                            RAW_GESTURES_ACTIVE.store(true, Ordering::Release);
+                            tracing::info!("Native touchpad Raw Input enabled");
+                            Some(backend)
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "Native touchpad unavailable; wheel swipe detection retained");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 let _ = init_tx.send(Ok(thread_id));
 
                 // Message pump — required for WH_MOUSE_LL callbacks
@@ -556,9 +583,32 @@ pub fn register_gestures() -> Result<(GestureHandle, mpsc::Receiver<GestureEvent
                     if msg.message == WM_QUIT_LLHOOK_THREAD {
                         break;
                     }
+                    if msg.message == WM_INPUT {
+                        if let Some(backend) = raw.as_mut() {
+                            if let Some(swipe) = backend.process(&msg) {
+                                let event = match swipe {
+                                    Swipe::Left => GestureEvent::SwipeLeft,
+                                    Swipe::Right => GestureEvent::SwipeRight,
+                                    Swipe::Up => GestureEvent::SwipeUp,
+                                    Swipe::Down => GestureEvent::SwipeDown,
+                                };
+                                if let Some(_admission) = admit_gesture_diagnostic_capture() {
+                                    tracing::trace!(
+                                        target: GESTURE_DIAG_TARGET,
+                                        stage = GESTURE_DIAG_STAGE_RECOGNIZED,
+                                        event = event.as_diag_str(),
+                                        source = "raw_input",
+                                    );
+                                }
+                                send_gesture_event(event);
+                            }
+                        }
+                    }
                     let _ = DispatchMessageW(&msg);
                 }
 
+                RAW_GESTURES_ACTIVE.store(false, Ordering::Release);
+                drop(raw);
                 let _ = UnhookWindowsHookEx(hook);
             }
         })
@@ -687,6 +737,10 @@ fn emit_wheel_diagnostics_active(
     }
 }
 
+fn wheel_swipe_candidate(flags: u32, native_active: bool) -> bool {
+    flags & LLMHF_INJECTED != 0 && !native_active
+}
+
 /// Low-level mouse hook callback for gesture detection.
 ///
 /// Handles WM_MOUSEWHEEL and WM_MOUSEHWHEEL to normalize modifier navigation
@@ -708,7 +762,10 @@ unsafe extern "system" fn gesture_mouse_hook_proc(
             let delta = (mouse_struct.mouseData >> 16) as i16 as i32;
             let modifier_flags = SCROLL_MODIFIER_FLAGS.load(std::sync::atomic::Ordering::Relaxed);
             let mods_held = axis == WheelAxis::Vertical && scroll_modifiers_held(modifier_flags);
-            let swipe_candidate = mouse_struct.flags & LLMHF_INJECTED != 0;
+            let swipe_candidate = wheel_swipe_candidate(
+                mouse_struct.flags,
+                RAW_GESTURES_ACTIVE.load(Ordering::Acquire),
+            );
 
             let mut state_guard = GESTURE_STATE.lock().unwrap_or_else(recover_poisoned_mutex);
             if let Some(state) = state_guard.as_mut() {
@@ -791,6 +848,13 @@ unsafe extern "system" fn gesture_mouse_hook_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_backend_prevents_duplicate_wheel_swipes() {
+        assert!(wheel_swipe_candidate(LLMHF_INJECTED, false));
+        assert!(!wheel_swipe_candidate(LLMHF_INJECTED, true));
+        assert!(!wheel_swipe_candidate(0, false));
+    }
 
     static DIAGNOSTIC_GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

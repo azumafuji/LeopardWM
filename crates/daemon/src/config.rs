@@ -737,6 +737,11 @@ pub struct GestureConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
+    /// Use native Precision Touchpad Raw Input for three-finger swipes.
+    /// Takes effect on daemon restart; the wheel hook remains the fallback.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub raw_input: bool,
+
     /// Command for three-finger swipe left.
     #[serde(default = "default_swipe_left")]
     pub swipe_left: String,
@@ -804,6 +809,10 @@ fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+fn is_false_bool(value: &bool) -> bool {
+    !*value
+}
+
 /// Hard maximum for `[gestures] diagnostic_capture_secs`.
 pub const MAX_DIAGNOSTIC_CAPTURE_SECS: u64 = 120;
 
@@ -817,6 +826,7 @@ impl Default for GestureConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            raw_input: false,
             swipe_left: default_swipe_left(),
             swipe_right: default_swipe_right(),
             swipe_up: default_swipe_up(),
@@ -2502,6 +2512,17 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|w| w.field == "gestures.diagnostic_capture_secs"));
+    }
+
+    #[test]
+    fn raw_touchpad_setting_is_opt_in_and_round_trips() {
+        let default = Config::default();
+        assert!(!default.gestures.raw_input);
+        let config: Config = toml::from_str("[gestures]\nraw_input = true\n").unwrap();
+        assert!(config.gestures.raw_input);
+        let saved = toml::to_string(&config).unwrap();
+        assert!(saved.contains("raw_input = true"));
+        assert!(toml::from_str::<Config>(&saved).unwrap().gestures.raw_input);
     }
 
     #[test]
