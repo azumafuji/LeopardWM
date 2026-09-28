@@ -1444,6 +1444,7 @@ mod tests {
                             actual_outer_rect: Some(Rect::new(0, 0, 2200, 1040)),
                             failed: false,
                             unreadable: false,
+                            measurement_deferred: false,
                         }],
                     },
                 },

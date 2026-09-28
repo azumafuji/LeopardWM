@@ -690,7 +690,12 @@ impl AppState {
                         .is_some_and(|rect| parking_clears_monitors(rect, &rects)),
                     PhysicalKind::Unchanged => landing.actual_visible_rect.is_some(),
                 };
-            if !entry.confirmed {
+            if !entry.confirmed && landing.measurement_deferred && !landing.failed {
+                debug!(
+                    "Physical placement of window {} is unconfirmed until its queued async frames apply; re-checking on a later pass",
+                    window_id
+                );
+            } else if !entry.confirmed {
                 warn!(
                     "Physical placement of window {} was blocked (failed={} unreadable={})",
                     window_id, landing.failed, landing.unreadable
@@ -842,6 +847,7 @@ mod tests {
                 actual_outer_rect: Some(dispatched[0].rect),
                 failed: false,
                 unreadable: false,
+                measurement_deferred: false,
             }],
             &[],
         );
@@ -1046,6 +1052,7 @@ mod tests {
                 actual_outer_rect: None,
                 failed: true,
                 unreadable: false,
+                measurement_deferred: false,
             }],
             &[],
         );
@@ -1054,6 +1061,88 @@ mod tests {
             !state.physical_fast_path_ok(),
             "a failed unchanged placement must be retried rather than treated as native success"
         );
+    }
+
+    fn warnings_while(run: impl FnOnce()) -> Vec<String> {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::SubscriberExt;
+
+        struct Message(String);
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        struct WarnCapture(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() == tracing::Level::WARN {
+                    let mut message = Message(String::new());
+                    event.record(&mut message);
+                    self.0.lock().unwrap().push(message.0);
+                }
+            }
+        }
+
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(WarnCapture(warnings.clone()));
+        tracing::subscriber::with_default(subscriber, run);
+        let captured = warnings.lock().unwrap().clone();
+        captured
+    }
+
+    #[test]
+    fn deferred_landing_stays_unconfirmed_without_a_blocked_warning() {
+        for (deferred, failed, expect_blocked_warning) in [
+            (true, false, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
+            let mut state = AppState::new_with_config(
+                crate::config::Config::default(),
+                vec![monitor(1, 0, 0, 1920, 1080)],
+            );
+            state.workspaces.get_mut(&1).unwrap()[0]
+                .insert_window(100, Some(800))
+                .unwrap();
+            let dispatched = state.apply_physical_projection(vec![placement(
+                100,
+                Rect::new(100, 0, 400, 600),
+                Visibility::Visible,
+            )]);
+            let (request_id, invalidation_id) = state.physical_request_ids();
+            let warnings = warnings_while(|| {
+                state.consume_physical_landings(
+                    request_id,
+                    invalidation_id,
+                    &[PlacementLanding {
+                        window_id: 100,
+                        requested_rect: dispatched[0].rect,
+                        requested_visibility: Visibility::Visible,
+                        actual_visible_rect: None,
+                        actual_outer_rect: None,
+                        failed,
+                        unreadable: true,
+                        measurement_deferred: deferred,
+                    }],
+                    &[],
+                );
+            });
+            let case = format!("deferred={deferred} failed={failed}");
+            assert!(!state.last_physical_presentations[&100].confirmed, "{case}");
+            assert!(!state.physical_fast_path_ok(), "{case}");
+            assert_eq!(
+                warnings.iter().any(|w| w.contains("was blocked")),
+                expect_blocked_warning,
+                "{case}: {warnings:?}"
+            );
+        }
     }
 
     #[test]
@@ -1082,6 +1171,7 @@ mod tests {
                 actual_outer_rect: Some(dispatched[0].rect),
                 failed: false,
                 unreadable: false,
+                measurement_deferred: false,
             }],
             &[],
         );
@@ -1124,6 +1214,7 @@ mod tests {
                 actual_outer_rect: Some(actual_outer),
                 failed: false,
                 unreadable: false,
+                measurement_deferred: false,
             }],
             &[],
         );
@@ -1159,6 +1250,7 @@ mod tests {
                 actual_outer_rect: Some(dispatched[0].rect),
                 failed: false,
                 unreadable: false,
+                measurement_deferred: false,
             }],
             &[],
         );
@@ -1448,6 +1540,7 @@ mod tests {
                 actual_outer_rect: Some(logical.rect),
                 failed: false,
                 unreadable: false,
+                measurement_deferred: false,
             }],
             &[],
         );

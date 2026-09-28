@@ -1327,6 +1327,7 @@ fn test_outer_animation_pump_preserves_newer_frame_and_resumes_after_sync_supers
             actual_outer_rect: Some(newer[0].rect),
             failed: false,
             unreadable: false,
+            measurement_deferred: false,
         }],
         &[],
     );
@@ -1512,6 +1513,7 @@ fn test_interrupted_recovery_settles_ghosts_scroll_nudge_and_focus_after_retry()
                     actual_outer_rect: Some(landing.rect),
                     failed: false,
                     unreadable: false,
+                    measurement_deferred: false,
                 }],
             },
         },
@@ -1957,6 +1959,7 @@ fn test_drain_then_pending_fresh_ghost_recovers_without_exposing_stale_rects() {
             actual_outer_rect: Some(placement.rect),
             failed: false,
             unreadable: false,
+            measurement_deferred: false,
         })
         .collect();
     state.consume_physical_landings(request_id, invalidation_id, &landings, &[]);
@@ -2014,6 +2017,7 @@ fn test_drain_then_pending_fresh_ghost_recovers_without_exposing_stale_rects() {
                         actual_outer_rect: Some(source_rect),
                         failed: false,
                         unreadable: false,
+                        measurement_deferred: false,
                     },
                     leopardwm_platform_win32::PlacementLanding {
                         window_id: PEER,
@@ -2023,6 +2027,7 @@ fn test_drain_then_pending_fresh_ghost_recovers_without_exposing_stale_rects() {
                         actual_outer_rect: Some(peer_rect),
                         failed: false,
                         unreadable: false,
+                        measurement_deferred: false,
                     },
                 ],
             },
@@ -2115,6 +2120,7 @@ fn test_filtered_empty_apply_releases_only_safe_pending_ghost_sources() {
             actual_outer_rect: Some(safe_placement.rect),
             failed: false,
             unreadable: false,
+            measurement_deferred: false,
         }],
         &[],
     );
@@ -2260,6 +2266,7 @@ fn test_apply_layout_preserves_full_partial_native_width_without_parking_follow_
                     actual_outer_rect: Some(Rect::new(4320, 0, 1600, 1440)),
                     failed: false,
                     unreadable: false,
+                    measurement_deferred: false,
                 }],
             },
         },
@@ -2313,6 +2320,7 @@ fn test_primary_feedback_survives_ordinary_contained_landing() {
                     actual_outer_rect: Some(Rect::new(1920, 0, 400, 1040)),
                     failed: false,
                     unreadable: false,
+                    measurement_deferred: false,
                 }],
             },
         },
@@ -2363,6 +2371,7 @@ fn test_failed_landing_retries_before_releasing_pending_ghost() {
             actual_outer_rect: Some(dispatched[0].rect),
             failed: false,
             unreadable: false,
+            measurement_deferred: false,
         }],
         &[],
     );
@@ -2385,6 +2394,7 @@ fn test_failed_landing_retries_before_releasing_pending_ghost() {
                     actual_outer_rect: Some(placement.rect),
                     failed: false,
                     unreadable: false,
+                    measurement_deferred: false,
                 }],
             },
         },
@@ -2430,6 +2440,7 @@ fn test_landing_origin_drift() {
             actual_outer_rect: actual_visible_rect,
             failed,
             unreadable: false,
+            measurement_deferred: false,
         }
     };
 
@@ -2558,6 +2569,7 @@ fn test_animation_projection_runs_once_and_preserves_full_partial_geometry() {
             actual_outer_rect: Some(logical.rect),
             failed: false,
             unreadable: false,
+            measurement_deferred: false,
         }],
     };
     assert!(matches!(

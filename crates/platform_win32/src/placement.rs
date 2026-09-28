@@ -403,6 +403,9 @@ pub struct PlacementLanding {
     pub actual_outer_rect: Option<Rect>,
     pub failed: bool,
     pub unreadable: bool,
+    /// Left unmeasured on purpose because earlier async frames may still be
+    /// queued; the landing stays unconfirmed and is re-checked on a later pass.
+    pub measurement_deferred: bool,
 }
 
 /// Result of apply_placements, including any detected size violations.
@@ -755,6 +758,7 @@ fn collect_placement_landings_with_recoveries(
                     || (!queued_recovery && failures.window_ids.contains(&placement.window_id)),
                 unreadable: unmeasured
                     || (actual_visible_rect.is_none() && actual_outer_rect.is_none()),
+                measurement_deferred: unmeasured,
                 actual_visible_rect,
                 actual_outer_rect,
             }
@@ -2239,6 +2243,7 @@ mod tests {
             |_| (Some(measured), Some(measured)),
         );
         assert!(landings[0].unreadable);
+        assert!(landings[0].measurement_deferred);
         assert!(!landings[0].failed);
         assert_eq!(landings[0].actual_visible_rect, None);
         assert_eq!(landings[0].actual_outer_rect, None);
@@ -2258,6 +2263,7 @@ mod tests {
         );
         assert!(!submissions.contains_key(&window_id));
         assert!(!landings[0].unreadable);
+        assert!(!landings[0].measurement_deferred);
         assert_eq!(landings[0].actual_visible_rect, Some(measured));
         assert_eq!(landings[0].actual_outer_rect, Some(measured));
 

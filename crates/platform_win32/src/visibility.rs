@@ -566,6 +566,7 @@ mod tests {
                             actual_outer_rect: None,
                             failed: true,
                             unreadable: false,
+                            measurement_deferred: false,
                         },
                         crate::placement::PlacementLanding {
                             window_id: 20,
@@ -575,6 +576,7 @@ mod tests {
                             actual_outer_rect: None,
                             failed: false,
                             unreadable: true,
+                            measurement_deferred: false,
                         },
                     ],
                     ..Default::default()
@@ -604,6 +606,7 @@ mod tests {
                         actual_outer_rect: Some(Rect::new(0, 0, 804, 604)),
                         failed: false,
                         unreadable: false,
+                        measurement_deferred: false,
                     }],
                     ..Default::default()
                 })
@@ -659,6 +662,7 @@ mod tests {
                             actual_outer_rect: None,
                             failed: true,
                             unreadable: false,
+                            measurement_deferred: false,
                         },
                         crate::placement::PlacementLanding {
                             window_id: 50,
@@ -668,6 +672,7 @@ mod tests {
                             actual_outer_rect: None,
                             failed: false,
                             unreadable: true,
+                            measurement_deferred: false,
                         },
                     ],
                     ..Default::default()

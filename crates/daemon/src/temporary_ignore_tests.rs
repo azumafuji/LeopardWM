@@ -141,6 +141,7 @@ fn record_peer_placements(state: &mut AppState) {
                     actual_outer_rect: Some(Rect::new(20, 20, 400, 300)),
                     failed: false,
                     unreadable: false,
+                    measurement_deferred: false,
                 }],
             },
         },
