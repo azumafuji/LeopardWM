@@ -530,24 +530,30 @@ fn apply_placements_inner(
     // overlap and the layout gaps disappear. Zero the insets to keep correct spacing.
     let high_contrast = crate::is_high_contrast_enabled();
     let force_positioning = !allow_landing_measurement_retry;
-    let (entries, skipped, maximized_skipped_window_ids, async_recovery_window_ids) =
-        build_defer_entries(
-            placements,
-            cache,
-            async_flag,
-            high_contrast,
-            force_positioning,
-        );
+    let (
+        entries,
+        skipped,
+        maximized_skipped_window_ids,
+        async_recovery_window_ids,
+        failed_recovery_window_ids,
+    ) = build_defer_entries(
+        placements,
+        cache,
+        async_flag,
+        high_contrast,
+        force_positioning,
+    );
     // Uncloak before positioning so DWM composites returning windows at their
     // new rect before the landing measurement. The retry can repeat this safely.
     uncloak_becoming_visible(&entries);
     let pending_window_ids = pending_async_entries(&entries);
-    let (applied, failed_window_ids) = position_entries_for_pending(
+    let (applied, mut failed_window_ids) = position_entries_for_pending(
         &entries,
         cache.is_none() && post_animation_landing,
         &pending_window_ids,
         queued_endpoints,
     );
+    failed_window_ids.extend(failed_recovery_window_ids.iter().copied());
 
     // On the synchronous landing pass, compare the DWM visible measurement to
     // both the layout request and the expanded SetWindowPos frame request. A
@@ -653,7 +659,10 @@ fn apply_placements_inner(
         let submissions = queued_recoveries.get_or_insert_with(HashMap::new);
         collect_placement_landings_with_recoveries(
             placements,
-            &failed_window_ids,
+            LandingFailures {
+                window_ids: &failed_window_ids,
+                recovery_window_ids: &failed_recovery_window_ids,
+            },
             &pending_window_ids,
             &async_recovery_window_ids,
             submissions,
@@ -696,9 +705,15 @@ fn apply_placements_inner(
     })
 }
 
+#[derive(Clone, Copy)]
+struct LandingFailures<'a> {
+    window_ids: &'a HashSet<u64>,
+    recovery_window_ids: &'a HashSet<WindowId>,
+}
+
 fn collect_placement_landings_with_recoveries(
     placements: &[WindowPlacement],
-    failed_window_ids: &HashSet<u64>,
+    failures: LandingFailures<'_>,
     pending_window_ids: &HashSet<WindowId>,
     unmeasured_window_ids: &HashSet<WindowId>,
     recoveries: &mut HashMap<WindowId, AsyncPositionSubmission>,
@@ -707,11 +722,12 @@ fn collect_placement_landings_with_recoveries(
 ) -> Vec<PlacementLanding> {
     let now = std::time::Instant::now();
     let mut unmeasured_window_ids = unmeasured_window_ids.clone();
+    unmeasured_window_ids.extend(failures.recovery_window_ids.iter().copied());
     for placement in placements {
         if !recoveries.contains_key(&placement.window_id) {
             continue;
         }
-        if queued_recovery_is_pending(
+        if retain_pending_queued_recovery(
             recoveries,
             placement.window_id,
             current_position(placement.window_id),
@@ -735,7 +751,8 @@ fn collect_placement_landings_with_recoveries(
                 window_id: placement.window_id,
                 requested_rect: placement.rect,
                 requested_visibility: placement.visibility,
-                failed: !queued_recovery && failed_window_ids.contains(&placement.window_id),
+                failed: failures.recovery_window_ids.contains(&placement.window_id)
+                    || (!queued_recovery && failures.window_ids.contains(&placement.window_id)),
                 unreadable: unmeasured
                     || (actual_visible_rect.is_none() && actual_outer_rect.is_none()),
                 actual_visible_rect,
@@ -767,21 +784,28 @@ fn recovery_flags(async_flag: SET_WINDOW_POS_FLAGS, pending: bool) -> SET_WINDOW
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParkedRecoveryOutcome {
+    NotAttempted,
+    Succeeded,
+    Failed,
+}
+
 fn recover_placement_parked<F>(
     window_id: WindowId,
     async_flag: SET_WINDOW_POS_FLAGS,
     pending: bool,
     position: F,
-) -> bool
+) -> ParkedRecoveryOutcome
 where
     F: FnOnce(SET_WINDOW_POS_FLAGS) -> bool,
 {
     if !is_placement_parked(window_id) {
-        return false;
+        return ParkedRecoveryOutcome::NotAttempted;
     }
     let flags = recovery_flags(async_flag, pending);
     if !position(flags) {
-        return false;
+        return ParkedRecoveryOutcome::Failed;
     }
     let released = {
         let mut cloaked = lock_cloaked();
@@ -789,8 +813,10 @@ where
     };
     if released {
         apply_cloak_state(window_id);
+        ParkedRecoveryOutcome::Succeeded
+    } else {
+        ParkedRecoveryOutcome::NotAttempted
     }
-    released
 }
 
 fn skip_visible_tiled_maximized(
@@ -799,6 +825,7 @@ fn skip_visible_tiled_maximized(
     cache: Option<&mut PlacementCache>,
     async_flag: SET_WINDOW_POS_FLAGS,
     async_recovery: &mut bool,
+    failed_recovery: &mut bool,
 ) -> bool {
     let skip = placement.visibility == Visibility::Visible
         && placement.column_index != usize::MAX
@@ -816,7 +843,7 @@ fn skip_visible_tiled_maximized(
         let pending = async_flag == SET_WINDOW_POS_FLAGS(0)
             && is_placement_parked(placement.window_id)
             && pending_async_position(placement.window_id);
-        let recovered =
+        let recovery =
             recover_placement_parked(placement.window_id, async_flag, pending, |flags| {
                 let Ok(hwnd) = window_id_to_hwnd(placement.window_id) else {
                     return false;
@@ -826,7 +853,8 @@ fn skip_visible_tiled_maximized(
                         .is_ok()
                 }
             });
-        *async_recovery = recovered && pending;
+        *async_recovery = recovery == ParkedRecoveryOutcome::Succeeded && pending;
+        *failed_recovery = recovery == ParkedRecoveryOutcome::Failed;
         if *async_recovery {
             record_queued_recovery(placement.window_id, placement.rect.x, placement.rect.y);
         }
@@ -841,11 +869,18 @@ fn build_defer_entries(
     async_flag: SET_WINDOW_POS_FLAGS,
     high_contrast: bool,
     force_positioning: bool,
-) -> (Vec<DeferEntry>, u32, Vec<WindowId>, HashSet<WindowId>) {
+) -> (
+    Vec<DeferEntry>,
+    u32,
+    Vec<WindowId>,
+    HashSet<WindowId>,
+    HashSet<WindowId>,
+) {
     let mut skipped = 0u32;
     let mut entries: Vec<DeferEntry> = Vec::with_capacity(placements.len());
     let mut maximized_skipped_window_ids = Vec::new();
     let mut async_recovery_window_ids = HashSet::new();
+    let mut failed_recovery_window_ids = HashSet::new();
 
     for placement in placements {
         let Ok(hwnd) = window_id_to_hwnd(placement.window_id) else {
@@ -858,16 +893,21 @@ fn build_defer_entries(
             IsZoomed(hwnd).as_bool()
         };
         let mut async_recovery = false;
+        let mut failed_recovery = false;
         if skip_visible_tiled_maximized(
             placement,
             is_zoomed,
             cache.as_deref_mut(),
             async_flag,
             &mut async_recovery,
+            &mut failed_recovery,
         ) {
             maximized_skipped_window_ids.push(placement.window_id);
             if async_recovery {
                 async_recovery_window_ids.insert(placement.window_id);
+            }
+            if failed_recovery {
+                failed_recovery_window_ids.insert(placement.window_id);
             }
             continue;
         }
@@ -961,6 +1001,7 @@ fn build_defer_entries(
         skipped,
         maximized_skipped_window_ids,
         async_recovery_window_ids,
+        failed_recovery_window_ids,
     )
 }
 
@@ -1334,7 +1375,8 @@ fn record_queued_recovery(window_id: WindowId, x: i32, y: i32) {
         .insert(window_id, submission);
 }
 
-fn queued_recovery_is_pending(
+/// Drops drained or expired recovery records.
+fn retain_pending_queued_recovery(
     submissions: &mut HashMap<WindowId, AsyncPositionSubmission>,
     window_id: WindowId,
     current_position: Option<(i32, i32)>,
@@ -2186,7 +2228,10 @@ mod tests {
 
         let landings = collect_placement_landings_with_recoveries(
             &placements,
-            &HashSet::from([window_id]),
+            LandingFailures {
+                window_ids: &HashSet::from([window_id]),
+                recovery_window_ids: &HashSet::new(),
+            },
             &HashSet::new(),
             &HashSet::new(),
             &mut submissions,
@@ -2201,7 +2246,10 @@ mod tests {
 
         let landings = collect_placement_landings_with_recoveries(
             &placements,
-            &HashSet::new(),
+            LandingFailures {
+                window_ids: &HashSet::new(),
+                recovery_window_ids: &HashSet::new(),
+            },
             &HashSet::new(),
             &HashSet::new(),
             &mut submissions,
@@ -2223,7 +2271,10 @@ mod tests {
         );
         let landings = collect_placement_landings_with_recoveries(
             &placements,
-            &HashSet::new(),
+            LandingFailures {
+                window_ids: &HashSet::new(),
+                recovery_window_ids: &HashSet::new(),
+            },
             &HashSet::new(),
             &HashSet::new(),
             &mut submissions,
@@ -2233,6 +2284,43 @@ mod tests {
         assert!(!submissions.contains_key(&window_id));
         assert!(!landings[0].unreadable);
         assert_eq!(landings[0].actual_visible_rect, Some(measured));
+    }
+
+    #[test]
+    fn failed_parked_recovery_reports_unmeasured_failed_landing() {
+        let _serialize = lock_cloak_set_tests();
+        let window_id = 0x7FFF_FF32;
+        let _membership = CloakMembershipGuard::claim(window_id);
+        mark_placement_parked(window_id);
+        let outcome =
+            recover_placement_parked(window_id, SET_WINDOW_POS_FLAGS(0), false, |_| false);
+        assert_eq!(outcome, ParkedRecoveryOutcome::Failed);
+        assert!(is_placement_parked(window_id));
+
+        let failed_recovery_window_ids = HashSet::from([window_id]);
+        let failed_window_ids = HashSet::from([window_id]);
+        let placements = [WindowPlacement {
+            window_id,
+            rect: Rect::new(400, 100, 800, 600),
+            visibility: Visibility::Visible,
+            column_index: 0,
+        }];
+        let landings = collect_placement_landings_with_recoveries(
+            &placements,
+            LandingFailures {
+                window_ids: &failed_window_ids,
+                recovery_window_ids: &failed_recovery_window_ids,
+            },
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut HashMap::new(),
+            |_| Some((i32::MIN, i32::MIN)),
+            |_| panic!("failed parked recovery must not be measured"),
+        );
+
+        assert!(landings[0].failed);
+        assert_eq!(landings[0].actual_visible_rect, None);
+        assert_eq!(landings[0].actual_outer_rect, None);
     }
 
     #[test]
@@ -3567,12 +3655,14 @@ mod tests {
         apply_placements(&[], &PlatformConfig::default(), None, false)
             .expect("empty apply should succeed");
         let mut async_recovery = false;
+        let mut failed_recovery = false;
         assert!(skip_visible_tiled_maximized(
             &visible_tiled,
             true,
             Some(&mut cache),
             SET_WINDOW_POS_FLAGS(0),
             &mut async_recovery,
+            &mut failed_recovery,
         ));
         assert!(
             !is_placement_parked(parked),
@@ -3613,12 +3703,14 @@ mod tests {
 
         let mut cache = PlacementCache::new();
         let mut async_recovery = false;
+        let mut failed_recovery = false;
         assert!(!skip_visible_tiled_maximized(
             &visible_tiled,
             false,
             Some(&mut cache),
             SET_WINDOW_POS_FLAGS(0),
             &mut async_recovery,
+            &mut failed_recovery,
         ));
         let offscreen = WindowPlacement {
             visibility: Visibility::OffScreenLeft,
@@ -3630,6 +3722,7 @@ mod tests {
             None,
             SET_WINDOW_POS_FLAGS(0),
             &mut async_recovery,
+            &mut failed_recovery,
         ));
 
         cache
@@ -3642,6 +3735,7 @@ mod tests {
             Some(&mut cache),
             SET_WINDOW_POS_FLAGS(0),
             &mut async_recovery,
+            &mut failed_recovery,
         ));
         assert!(
             is_placement_parked(wid) && is_placement_cloaked(wid),
@@ -3651,42 +3745,37 @@ mod tests {
             !cache.positions.contains_key(&wid),
             "failed recovery may invalidate the position cache"
         );
-        assert!(!recover_placement_parked(
-            wid,
-            SET_WINDOW_POS_FLAGS(0),
-            false,
-            |_| false,
-        ));
+        assert_eq!(
+            recover_placement_parked(wid, SET_WINDOW_POS_FLAGS(0), false, |_| false),
+            ParkedRecoveryOutcome::Failed,
+        );
         assert!(
             is_placement_parked(wid) && is_placement_cloaked(wid),
             "failed positioning must preserve placement ownership and its effective cloak"
         );
 
-        assert!(recover_placement_parked(
-            wid,
-            SET_WINDOW_POS_FLAGS(0),
-            false,
-            |flags| flags == landing_flags,
-        ));
+        assert_eq!(
+            recover_placement_parked(wid, SET_WINDOW_POS_FLAGS(0), false, |flags| flags
+                == landing_flags),
+            ParkedRecoveryOutcome::Succeeded,
+        );
         assert!(
             !is_placement_parked(wid),
             "successful landing recovery releases placement ownership exactly once"
         );
-        assert!(!recover_placement_parked(
-            wid,
-            SET_WINDOW_POS_FLAGS(0),
-            false,
-            |_| true,
-        ));
+        assert_eq!(
+            recover_placement_parked(wid, SET_WINDOW_POS_FLAGS(0), false, |_| true),
+            ParkedRecoveryOutcome::NotAttempted,
+        );
 
         mark_placement_parked(wid);
         mark_ghost_cloaked(wid);
-        assert!(recover_placement_parked(
-            wid,
-            SWP_ASYNCWINDOWPOS,
-            false,
-            |flags| { flags == (landing_flags | SWP_ASYNCWINDOWPOS) }
-        ));
+        assert_eq!(
+            recover_placement_parked(wid, SWP_ASYNCWINDOWPOS, false, |flags| {
+                flags == (landing_flags | SWP_ASYNCWINDOWPOS)
+            },),
+            ParkedRecoveryOutcome::Succeeded,
+        );
         assert!(!is_placement_parked(wid));
         assert!(
             is_placement_cloaked(wid),
@@ -3769,7 +3858,7 @@ mod tests {
         let mut cache = PlacementCache::new();
         cache.insets.insert(placement.window_id, insets);
         let mut cache_opt = Some(&mut cache);
-        let (entries, skipped, _, _) = build_defer_entries(
+        let (entries, skipped, _, _, _) = build_defer_entries(
             &[placement],
             &mut cache_opt,
             SET_WINDOW_POS_FLAGS(0),
