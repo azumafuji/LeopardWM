@@ -6,7 +6,9 @@ use leopardwm_core_layout::WindowId;
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::mpsc::{self, Sender, SyncSender};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use windows::core::BOOL;
 use windows::Win32::Foundation::{GetLastError, SetLastError, HWND, RECT, WIN32_ERROR};
 use windows::Win32::Graphics::Dwm::{
@@ -209,40 +211,75 @@ fn log_maximizebox_geometry(
     unsafe { SetLastError(previous_error) };
 }
 
-/// Remove `WS_MAXIMIZEBOX` from a window to disable Windows 11 Snap Layouts.
-///
-/// Returns `Ok(true)` if the style was changed, `Ok(false)` if already absent.
-/// Registers the window in the global tracking set for panic recovery.
-///
-/// Uses `GetWindowLongW`/`SetWindowLongW` (32-bit) intentionally: on 64-bit
-/// Windows this disables the DWM snap layout flyout while preserving the
-/// maximize button and its click-to-maximize behavior.
-pub fn remove_maximizebox(window_id: WindowId) -> Result<bool, Win32Error> {
+#[derive(Clone, Copy)]
+enum WindowStyleOperation {
+    Remove,
+    Restore,
+}
+
+enum WindowStyleRequest {
+    Apply {
+        hwnd: usize,
+        operation: WindowStyleOperation,
+        correlation_id: u64,
+    },
+    Barrier(SyncSender<()>),
+}
+
+static WINDOW_STYLE_WORKER: OnceLock<Sender<WindowStyleRequest>> = OnceLock::new();
+
+fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
+    WINDOW_STYLE_WORKER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("leopardwm-window-style".to_string())
+            .spawn(move || {
+                while let Ok(request) = receiver.recv() {
+                    match request {
+                        WindowStyleRequest::Apply {
+                            hwnd,
+                            operation,
+                            correlation_id,
+                        } => apply_window_style(hwnd, operation, correlation_id),
+                        WindowStyleRequest::Barrier(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            })
+            .expect("failed to spawn window style worker");
+        sender
+    })
+}
+
+fn apply_window_style(hwnd_value: usize, operation: WindowStyleOperation, correlation_id: u64) {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     };
 
-    let hwnd = window_id_to_hwnd(window_id)?;
+    const WS_MAXIMIZEBOX: i32 = 0x0001_0000;
+    let hwnd = HWND(hwnd_value as *mut c_void);
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() {
-            return Err(Win32Error::WindowNotFound(window_id));
+            return;
         }
-
         let style = GetWindowLongW(hwnd, GWL_STYLE);
-        const WS_MAXIMIZEBOX: i32 = 0x0001_0000;
-        if (style & WS_MAXIMIZEBOX) == 0 {
-            return Ok(false); // Already absent
-        }
+        let (operation_name, new_style) = match operation {
+            WindowStyleOperation::Remove if style & WS_MAXIMIZEBOX != 0 => {
+                ("remove", style & !WS_MAXIMIZEBOX)
+            }
+            WindowStyleOperation::Restore if style & WS_MAXIMIZEBOX == 0 => {
+                ("restore", style | WS_MAXIMIZEBOX)
+            }
+            _ => return,
+        };
 
-        let correlation_id = MAXIMIZEBOX_GEOMETRY_CORRELATION.fetch_add(1, Ordering::Relaxed);
-        log_maximizebox_geometry("remove", "before_style", hwnd, correlation_id, None);
-
-        let new_style = style & !WS_MAXIMIZEBOX;
+        log_maximizebox_geometry(operation_name, "before_style", hwnd, correlation_id, None);
         SetWindowLongW(hwnd, GWL_STYLE, new_style);
+        log_maximizebox_geometry(operation_name, "after_style", hwnd, correlation_id, None);
 
-        log_maximizebox_geometry("remove", "after_style", hwnd, correlation_id, None);
-
+        // Frame recalculation remains synchronous, but runs off the daemon event loop.
         let frame_result = SetWindowPos(
             hwnd,
             None,
@@ -253,7 +290,7 @@ pub fn remove_maximizebox(window_id: WindowId) -> Result<bool, Win32Error> {
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
         log_maximizebox_geometry(
-            "remove",
+            operation_name,
             "after_frame",
             hwnd,
             correlation_id,
@@ -262,24 +299,50 @@ pub fn remove_maximizebox(window_id: WindowId) -> Result<bool, Win32Error> {
                 Err(error) => error.code().0,
             }),
         );
-
-        let mut guard = lock_snap_disabled();
-        guard.get_or_insert_with(HashSet::new).insert(window_id);
     }
+}
+
+/// Remove `WS_MAXIMIZEBOX` from a window to disable Windows 11 Snap Layouts.
+///
+/// Returns `Ok(true)` if removal was queued, `Ok(false)` if already absent.
+/// Registers the window in the global tracking set for panic recovery.
+///
+/// Uses `GetWindowLongW`/`SetWindowLongW` (32-bit) intentionally: on 64-bit
+/// Windows this disables the DWM snap layout flyout while preserving the
+/// maximize button and its click-to-maximize behavior.
+pub fn remove_maximizebox(window_id: WindowId) -> Result<bool, Win32Error> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE};
+
+    let hwnd = window_id_to_hwnd(window_id)?;
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return Err(Win32Error::WindowNotFound(window_id));
+        }
+        const WS_MAXIMIZEBOX: i32 = 0x0001_0000;
+        if GetWindowLongW(hwnd, GWL_STYLE) & WS_MAXIMIZEBOX == 0 {
+            return Ok(false);
+        }
+    }
+
+    let correlation_id = MAXIMIZEBOX_GEOMETRY_CORRELATION.fetch_add(1, Ordering::Relaxed);
+    lock_snap_disabled()
+        .get_or_insert_with(HashSet::new)
+        .insert(window_id);
+    window_style_worker()
+        .send(WindowStyleRequest::Apply {
+            hwnd: hwnd.0 as usize,
+            operation: WindowStyleOperation::Remove,
+            correlation_id,
+        })
+        .expect("window style worker stopped unexpectedly");
     Ok(true)
 }
 
 /// Restore `WS_MAXIMIZEBOX` on a window, re-enabling Windows 11 Snap Layouts.
 ///
-/// Returns `Ok(true)` if the style was restored, `Ok(false)` if already present.
-/// Removes the window from the global tracking set.
+/// Removes the window from the global tracking set and queues the restore.
 pub fn restore_maximizebox(window_id: WindowId) -> Result<bool, Win32Error> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    };
-
-    // Always remove from tracking set, even if the Win32 call fails
+    // Always remove from tracking set, even if the Win32 call fails.
     {
         let mut guard = lock_snap_disabled();
         if let Some(ref mut set) = *guard {
@@ -292,42 +355,29 @@ pub fn restore_maximizebox(window_id: WindowId) -> Result<bool, Win32Error> {
         if !IsWindow(Some(hwnd)).as_bool() {
             return Err(Win32Error::WindowNotFound(window_id));
         }
-
-        let style = GetWindowLongW(hwnd, GWL_STYLE);
-        const WS_MAXIMIZEBOX: i32 = 0x0001_0000;
-        if (style & WS_MAXIMIZEBOX) != 0 {
-            return Ok(false); // Already present
-        }
-
-        let correlation_id = MAXIMIZEBOX_GEOMETRY_CORRELATION.fetch_add(1, Ordering::Relaxed);
-        log_maximizebox_geometry("restore", "before_style", hwnd, correlation_id, None);
-
-        let new_style = style | WS_MAXIMIZEBOX;
-        SetWindowLongW(hwnd, GWL_STYLE, new_style);
-
-        log_maximizebox_geometry("restore", "after_style", hwnd, correlation_id, None);
-
-        let frame_result = SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-        log_maximizebox_geometry(
-            "restore",
-            "after_frame",
-            hwnd,
-            correlation_id,
-            Some(match &frame_result {
-                Ok(()) => 0,
-                Err(error) => error.code().0,
-            }),
-        );
     }
+
+    let correlation_id = MAXIMIZEBOX_GEOMETRY_CORRELATION.fetch_add(1, Ordering::Relaxed);
+    window_style_worker()
+        .send(WindowStyleRequest::Apply {
+            hwnd: hwnd.0 as usize,
+            operation: WindowStyleOperation::Restore,
+            correlation_id,
+        })
+        .expect("window style worker stopped unexpectedly");
     Ok(true)
+}
+
+/// Wait until every window style request queued before this call has completed.
+pub fn wait_for_window_style_requests(timeout: Duration) -> bool {
+    let Some(worker) = WINDOW_STYLE_WORKER.get() else {
+        return true;
+    };
+    let (done, completed) = mpsc::sync_channel(0);
+    if worker.send(WindowStyleRequest::Barrier(done)).is_err() {
+        return false;
+    }
+    completed.recv_timeout(timeout).is_ok()
 }
 
 /// Best-effort bulk restore of `WS_MAXIMIZEBOX` for multiple windows.
@@ -621,6 +671,29 @@ mod tests {
         fn exit(&self, _span: &tracing::span::Id) {}
     }
 
+    fn pump_until_window_style_idle() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            unsafe {
+                let mut message = MSG::default();
+                while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+            if wait_for_window_style_requests(Duration::from_millis(10)) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "style worker did not become idle"
+            );
+        }
+    }
+
     #[test]
     fn test_remove_restore_maximizebox_diagnostics_and_semantics() {
         use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
@@ -648,10 +721,11 @@ mod tests {
             events: events.clone(),
         };
         let window_id = fixture.window_id();
-        tracing::subscriber::with_default(subscriber, || {
-            assert!(remove_maximizebox(window_id).unwrap());
-            assert!(restore_maximizebox(window_id).unwrap());
-        });
+        tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber))
+            .expect("install geometry test subscriber");
+        assert!(remove_maximizebox(window_id).unwrap());
+        assert!(restore_maximizebox(window_id).unwrap());
+        pump_until_window_style_idle();
 
         let recorded = events.lock().unwrap();
         assert_eq!(recorded.len(), 6);
@@ -696,6 +770,7 @@ mod tests {
         assert_eq!(after_restore.window_rect, Ok(window_rect));
 
         assert!(remove_maximizebox(window_id).unwrap());
+        pump_until_window_style_idle();
         let after_remove = capture_maximizebox_geometry(fixture.hwnd());
         assert_eq!(
             after_remove.style.expect("removed style") & WS_MAXIMIZEBOX_BIT,
@@ -709,7 +784,8 @@ mod tests {
         );
 
         assert!(restore_maximizebox(window_id).unwrap());
-        assert!(!restore_maximizebox(window_id).unwrap());
+        assert!(restore_maximizebox(window_id).unwrap());
+        pump_until_window_style_idle();
         assert_eq!(
             capture_maximizebox_geometry(fixture.hwnd()).window_rect,
             Ok(window_rect)

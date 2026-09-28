@@ -2,6 +2,8 @@ use super::*;
 use leopardwm_core_layout::{Rect, Workspace};
 use std::sync::atomic::Ordering;
 
+static REAL_WINDOW_STYLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn test_config() -> Config {
     Config::default()
 }
@@ -13071,6 +13073,208 @@ fn test_reconcile_monitors_new_monitor_gets_scaled_gaps() {
 // =============================================================================
 
 #[test]
+fn test_snap_style_requests_do_not_wait_for_non_pumping_window() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use windows::core::w;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        GetWindowLongW, PostThreadMessageW, RegisterClassW, TranslateMessage, CS_HREDRAW,
+        CS_VREDRAW, GWL_STYLE, MSG, WM_APP, WM_STYLECHANGED, WNDCLASSW, WS_CAPTION,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_OVERLAPPED,
+        WS_SYSMENU, WS_THICKFRAME,
+    };
+
+    const BLOCK_OWNER: u32 = WM_APP + 41;
+    const QUIT_OWNER: u32 = WM_APP + 42;
+    const BLOCK: Duration = Duration::from_millis(2500);
+    static STYLE_CHANGES: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "system" fn fixture_wndproc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if message == WM_STYLECHANGED && wparam.0 as i32 == GWL_STYLE.0 {
+            STYLE_CHANGES.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+    }
+
+    struct Fixture {
+        thread_id: u32,
+        windows: [u64; 2],
+        join: Option<thread::JoinHandle<()>>,
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = PostThreadMessageW(self.thread_id, QUIT_OWNER, WPARAM(0), LPARAM(0));
+            }
+            if let Some(join) = self.join.take() {
+                let _ = join.join();
+            }
+        }
+    }
+
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (blocked_tx, blocked_rx) = mpsc::channel();
+    let join = thread::spawn(move || unsafe {
+        let thread_id = GetCurrentThreadId();
+        let class = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(fixture_wndproc),
+            hInstance: windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+                .unwrap()
+                .into(),
+            lpszClassName: w!("LeopardWMStyleRequestFixture"),
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        let create = || {
+            CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                w!("LeopardWMStyleRequestFixture"),
+                None,
+                WS_OVERLAPPED
+                    | WS_CAPTION
+                    | WS_SYSMENU
+                    | WS_THICKFRAME
+                    | WS_MINIMIZEBOX
+                    | WS_MAXIMIZEBOX,
+                0,
+                0,
+                200,
+                100,
+                None,
+                None,
+                Some(class.hInstance),
+                None,
+            )
+            .unwrap()
+        };
+        let windows = [create(), create()];
+        ready_tx
+            .send((
+                thread_id,
+                [windows[0].0 as usize as u64, windows[1].0 as usize as u64],
+            ))
+            .unwrap();
+        thread::sleep(BLOCK);
+        let mut message = MSG::default();
+        loop {
+            let result = GetMessageW(&mut message, None, 0, 0).0;
+            if result <= 0 || message.message == QUIT_OWNER {
+                break;
+            }
+            if message.message == BLOCK_OWNER {
+                blocked_tx.send(()).unwrap();
+                thread::sleep(BLOCK);
+                continue;
+            }
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        for hwnd in windows {
+            let _ = DestroyWindow(hwnd);
+        }
+    });
+    let (thread_id, windows) = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let fixture = Fixture {
+        thread_id,
+        windows,
+        join: Some(join),
+    };
+    STYLE_CHANGES.store(0, Ordering::SeqCst);
+
+    let mut config = test_config();
+    config.behavior.disable_snap_layouts = true;
+    let mut state = AppState::new_with_config(config, test_monitors());
+    state.paused = false;
+    let start = Instant::now();
+    state.disable_snap_for_window(fixture.windows[0]);
+    let admission_elapsed = start.elapsed();
+    let was_tracked = state.snap_disabled_hwnds.contains(&fixture.windows[0]);
+    state.disable_snap_for_window(fixture.windows[0]);
+    state.disable_snap_for_window(fixture.windows[1]);
+    let wait_timed_out =
+        !leopardwm_platform_win32::wait_for_window_style_requests(Duration::from_millis(50));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline
+        && windows.iter().any(|hwnd| unsafe { GetWindowLongW(HWND(*hwnd as *mut _), GWL_STYLE) } & WS_MAXIMIZEBOX.0 as i32 != 0)
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let removed_once = STYLE_CHANGES.load(Ordering::SeqCst) == 2;
+    let completed_after_pump =
+        leopardwm_platform_win32::wait_for_window_style_requests(Duration::from_millis(100));
+
+    unsafe {
+        let _ = PostThreadMessageW(fixture.thread_id, BLOCK_OWNER, WPARAM(0), LPARAM(0));
+    }
+    blocked_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    state.disable_snap_for_window(fixture.windows[1]);
+    let release_start = Instant::now();
+    state.restore_snap_for_window(fixture.windows[0]);
+    let release_elapsed = release_start.elapsed();
+    let pause_start = Instant::now();
+    state.restore_snap_for_all_windows();
+    let pause_elapsed = pause_start.elapsed();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline
+        && windows.iter().any(|hwnd| unsafe { GetWindowLongW(HWND(*hwnd as *mut _), GWL_STYLE) } & WS_MAXIMIZEBOX.0 as i32 == 0)
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let restored = windows.iter().all(|hwnd| unsafe {
+        GetWindowLongW(HWND(*hwnd as *mut _), GWL_STYLE) & WS_MAXIMIZEBOX.0 as i32 != 0
+    });
+    let change_count = STYLE_CHANGES.load(Ordering::SeqCst);
+    drop(fixture);
+
+    assert!(
+        admission_elapsed < Duration::from_millis(750),
+        "admission blocked for {admission_elapsed:?}"
+    );
+    assert!(was_tracked, "queued suppression must be tracked");
+    assert!(
+        wait_timed_out,
+        "the bounded wait should time out while the owner is blocked"
+    );
+    assert!(
+        completed_after_pump,
+        "the bounded wait should finish after the owner pumps"
+    );
+    assert!(
+        removed_once,
+        "suppression should produce exactly one style change"
+    );
+    assert!(
+        release_elapsed < Duration::from_millis(750),
+        "release blocked for {release_elapsed:?}"
+    );
+    assert!(
+        pause_elapsed < Duration::from_millis(750),
+        "pause restore blocked for {pause_elapsed:?}"
+    );
+    assert!(
+        restored,
+        "queued restores should eventually restore both styles"
+    );
+    assert_eq!(change_count, 4, "one remove and restore change per window");
+}
+
+#[test]
 fn test_snap_disable_on_tile() {
     let mut config = test_config();
     config.behavior.disable_snap_layouts = true;
@@ -15683,11 +15887,37 @@ fn test_paused_display_change_event_resyncs_without_moving_and_syncs_taskbar() {
 
 #[test]
 fn test_restore_structure_reapplies_snap_suppression() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     use windows::core::w;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetWindowLongW, GWL_STYLE, WS_CAPTION, WS_EX_NOACTIVATE,
+        CreateWindowExW, DestroyWindow, DispatchMessageW, GetWindowLongW, PeekMessageW,
+        TranslateMessage, GWL_STYLE, MSG, PM_REMOVE, WS_CAPTION, WS_EX_NOACTIVATE,
         WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+    };
+
+    let wait_for_style_requests = || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            unsafe {
+                let mut message = MSG::default();
+                while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+            if leopardwm_platform_win32::wait_for_window_style_requests(
+                std::time::Duration::from_millis(10),
+            ) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "window style requests did not finish"
+            );
+        }
     };
 
     struct TestWindow(HWND);
@@ -15789,6 +16019,7 @@ fn test_restore_structure_reapplies_snap_suppression() {
 
         for _ in 0..2 {
             let restored = state.restore_workspace_structure(&snapshot);
+            wait_for_style_requests();
             assert_eq!(restored, HashSet::from([(1, 0), (2, 1)]));
             assert_eq!(
                 windows.map(|window| window.style()),
@@ -15804,6 +16035,7 @@ fn test_restore_structure_reapplies_snap_suppression() {
         }
 
         state.restore_snap_for_all_windows();
+        wait_for_style_requests();
         assert!(state.snap_disabled_hwnds.is_empty());
         assert_eq!(windows.map(|window| window.style()), original_styles);
     }

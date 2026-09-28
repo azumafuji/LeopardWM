@@ -69,8 +69,9 @@ use leopardwm_platform_win32::{
     install_keyboard_hook, install_mouse_hook, overlay::OverlayWindow, register_gestures,
     register_system_events, restore_windows_moved_offscreen, set_display_change_sender,
     set_dpi_awareness, set_power_state_sender, set_recording, set_session_end_handler,
-    uncloak_all_visible_windows, GestureEvent, HotkeyBind, HotkeyId, KeyboardHookEvent,
-    KeyboardHookHandle, Modifiers, MonitorId, MonitorInfo, MouseHookHandle, WindowEvent,
+    uncloak_all_visible_windows, wait_for_window_style_requests, GestureEvent, HotkeyBind,
+    HotkeyId, KeyboardHookEvent, KeyboardHookHandle, Modifiers, MonitorId, MonitorInfo,
+    MouseHookHandle, WindowEvent,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -584,6 +585,12 @@ async fn run_shutdown_cleanup(state: &Arc<Mutex<AppState>>, mode: ShutdownMode) 
     }
     pending_workers.retain(Option::is_some);
 
+    if !wait_for_window_style_requests(apply_timeout) {
+        warn!(
+            "Timed out waiting for window style restores before {} visibility recovery; continuing",
+            mode.label()
+        );
+    }
     run_visibility_recovery_pass(&managed_window_ids, mode.label());
 
     if !pending_workers.is_empty() {
