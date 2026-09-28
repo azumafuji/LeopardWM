@@ -3,7 +3,7 @@
 use crate::types::Win32Error;
 use crate::window_id_to_hwnd;
 use leopardwm_core_layout::WindowId;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender, SyncSender};
@@ -80,12 +80,44 @@ fn is_border_color_unsupported_hresult(code: windows::core::HRESULT) -> bool {
 // Snap layout suppression (WS_MAXIMIZEBOX removal)
 // ============================================================================
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct WindowIdentity {
+    process_id: u32,
+    thread_id: u32,
+}
+
+fn capture_window_identity(hwnd: HWND) -> Option<WindowIdentity> {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    let mut process_id = 0;
+    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+    (thread_id != 0).then_some(WindowIdentity {
+        process_id,
+        thread_id,
+    })
+}
+
+fn window_identity_matches(hwnd: HWND, identity: WindowIdentity) -> bool {
+    (unsafe { IsWindow(Some(hwnd)).as_bool() }) && capture_window_identity(hwnd) == Some(identity)
+}
+
 /// Global set of window IDs whose WS_MAXIMIZEBOX style has been removed.
 /// Used for panic recovery when AppState may be poisoned/unavailable.
-static SNAP_DISABLED_HWNDS: Mutex<Option<HashSet<WindowId>>> = Mutex::new(None);
+static SNAP_DISABLED_HWNDS: Mutex<Option<HashMap<WindowId, WindowIdentity>>> = Mutex::new(None);
+static PENDING_RESTORES: OnceLock<Mutex<HashMap<(WindowId, WindowIdentity), usize>>> =
+    OnceLock::new();
 
-fn lock_snap_disabled() -> std::sync::MutexGuard<'static, Option<HashSet<WindowId>>> {
+fn lock_snap_disabled() -> std::sync::MutexGuard<'static, Option<HashMap<WindowId, WindowIdentity>>>
+{
     SNAP_DISABLED_HWNDS
+        .lock()
+        .unwrap_or_else(crate::recover_poisoned_mutex)
+}
+
+fn lock_pending_restores(
+) -> std::sync::MutexGuard<'static, HashMap<(WindowId, WindowIdentity), usize>> {
+    PENDING_RESTORES
+        .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(crate::recover_poisoned_mutex)
 }
@@ -219,7 +251,9 @@ enum WindowStyleOperation {
 
 enum WindowStyleRequest {
     Apply {
+        window_id: WindowId,
         hwnd: usize,
+        identity: WindowIdentity,
         operation: WindowStyleOperation,
         correlation_id: u64,
     },
@@ -237,10 +271,14 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
                 while let Ok(request) = receiver.recv() {
                     match request {
                         WindowStyleRequest::Apply {
+                            window_id,
                             hwnd,
+                            identity,
                             operation,
                             correlation_id,
-                        } => apply_window_style(hwnd, operation, correlation_id),
+                        } => {
+                            apply_window_style(window_id, hwnd, identity, operation, correlation_id)
+                        }
                         WindowStyleRequest::Barrier(done) => {
                             let _ = done.send(());
                         }
@@ -252,7 +290,32 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
     })
 }
 
-fn apply_window_style(hwnd_value: usize, operation: WindowStyleOperation, correlation_id: u64) {
+fn apply_window_style(
+    window_id: WindowId,
+    hwnd_value: usize,
+    identity: WindowIdentity,
+    operation: WindowStyleOperation,
+    correlation_id: u64,
+) {
+    apply_window_style_inner(window_id, hwnd_value, identity, operation, correlation_id);
+    if matches!(operation, WindowStyleOperation::Restore) {
+        let mut pending = lock_pending_restores();
+        if let Some(count) = pending.get_mut(&(window_id, identity)) {
+            *count -= 1;
+            if *count == 0 {
+                pending.remove(&(window_id, identity));
+            }
+        }
+    }
+}
+
+fn apply_window_style_inner(
+    window_id: WindowId,
+    hwnd_value: usize,
+    identity: WindowIdentity,
+    operation: WindowStyleOperation,
+    correlation_id: u64,
+) {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
@@ -260,10 +323,27 @@ fn apply_window_style(hwnd_value: usize, operation: WindowStyleOperation, correl
 
     const WS_MAXIMIZEBOX: i32 = 0x0001_0000;
     let hwnd = HWND(hwnd_value as *mut c_void);
-    unsafe {
-        if !IsWindow(Some(hwnd)).as_bool() {
-            return;
+    if !window_identity_matches(hwnd, identity) {
+        if matches!(operation, WindowStyleOperation::Remove) {
+            let mut tracking = lock_snap_disabled();
+            if let Some(set) = tracking.as_mut() {
+                if set.get(&window_id) == Some(&identity) {
+                    set.remove(&window_id);
+                }
+            }
         }
+        return;
+    }
+    if matches!(operation, WindowStyleOperation::Remove)
+        && lock_snap_disabled()
+            .as_ref()
+            .and_then(|set| set.get(&window_id))
+            != Some(&identity)
+    {
+        return;
+    }
+
+    unsafe {
         let style = GetWindowLongW(hwnd, GWL_STYLE);
         let (operation_name, new_style) = match operation {
             WindowStyleOperation::Remove if style & WS_MAXIMIZEBOX != 0 => {
@@ -304,8 +384,8 @@ fn apply_window_style(hwnd_value: usize, operation: WindowStyleOperation, correl
 
 /// Remove `WS_MAXIMIZEBOX` from a window to disable Windows 11 Snap Layouts.
 ///
-/// Returns `Ok(true)` if removal was queued, `Ok(false)` if already absent.
-/// Registers the window in the global tracking set for panic recovery.
+/// Returns `Ok(true)` if removal was queued, `Ok(false)` if already absent and
+/// no restore is pending. Registers the window for panic recovery when queued.
 ///
 /// Uses `GetWindowLongW`/`SetWindowLongW` (32-bit) intentionally: on 64-bit
 /// Windows this disables the DWM snap layout flyout while preserving the
@@ -314,57 +394,66 @@ pub fn remove_maximizebox(window_id: WindowId) -> Result<bool, Win32Error> {
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE};
 
     let hwnd = window_id_to_hwnd(window_id)?;
-    unsafe {
-        if !IsWindow(Some(hwnd)).as_bool() {
-            return Err(Win32Error::WindowNotFound(window_id));
-        }
-        const WS_MAXIMIZEBOX: i32 = 0x0001_0000;
-        if GetWindowLongW(hwnd, GWL_STYLE) & WS_MAXIMIZEBOX == 0 {
-            return Ok(false);
-        }
+    if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
+        return Err(Win32Error::WindowNotFound(window_id));
+    }
+    let identity = capture_window_identity(hwnd).ok_or(Win32Error::WindowNotFound(window_id))?;
+    let pending = lock_pending_restores();
+    if !window_identity_matches(hwnd, identity) {
+        return Err(Win32Error::WindowNotFound(window_id));
+    }
+    const WS_MAXIMIZEBOX: i32 = 0x0001_0000;
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) };
+    if style & WS_MAXIMIZEBOX == 0 && !pending.contains_key(&(window_id, identity)) {
+        return Ok(false);
     }
 
     let correlation_id = MAXIMIZEBOX_GEOMETRY_CORRELATION.fetch_add(1, Ordering::Relaxed);
     lock_snap_disabled()
-        .get_or_insert_with(HashSet::new)
-        .insert(window_id);
+        .get_or_insert_with(HashMap::new)
+        .insert(window_id, identity);
     window_style_worker()
         .send(WindowStyleRequest::Apply {
+            window_id,
             hwnd: hwnd.0 as usize,
+            identity,
             operation: WindowStyleOperation::Remove,
             correlation_id,
         })
         .expect("window style worker stopped unexpectedly");
+    drop(pending);
     Ok(true)
 }
 
 /// Restore `WS_MAXIMIZEBOX` on a window, re-enabling Windows 11 Snap Layouts.
 ///
 /// Removes the window from the global tracking set and queues the restore.
+/// Returns `Ok(true)` when the restore request was queued.
 pub fn restore_maximizebox(window_id: WindowId) -> Result<bool, Win32Error> {
     // Always remove from tracking set, even if the Win32 call fails.
-    {
-        let mut guard = lock_snap_disabled();
-        if let Some(ref mut set) = *guard {
-            set.remove(&window_id);
-        }
+    let mut pending = lock_pending_restores();
+    if let Some(ref mut set) = *lock_snap_disabled() {
+        set.remove(&window_id);
     }
 
     let hwnd = window_id_to_hwnd(window_id)?;
-    unsafe {
-        if !IsWindow(Some(hwnd)).as_bool() {
-            return Err(Win32Error::WindowNotFound(window_id));
-        }
+    if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
+        return Err(Win32Error::WindowNotFound(window_id));
     }
+    let identity = capture_window_identity(hwnd).ok_or(Win32Error::WindowNotFound(window_id))?;
 
     let correlation_id = MAXIMIZEBOX_GEOMETRY_CORRELATION.fetch_add(1, Ordering::Relaxed);
+    *pending.entry((window_id, identity)).or_default() += 1;
     window_style_worker()
         .send(WindowStyleRequest::Apply {
+            window_id,
             hwnd: hwnd.0 as usize,
+            identity,
             operation: WindowStyleOperation::Restore,
             correlation_id,
         })
         .expect("window style worker stopped unexpectedly");
+    drop(pending);
     Ok(true)
 }
 
@@ -400,7 +489,7 @@ pub fn restore_maximizebox_all(window_ids: &[WindowId]) {
 /// Drains the global tracking set and restores styles best-effort.
 /// Safe to call from panic hooks (no AppState needed).
 pub fn restore_maximizebox_panic_recovery() {
-    let window_ids: Vec<WindowId> = {
+    let window_ids: Vec<(WindowId, WindowIdentity)> = {
         let mut guard = lock_snap_disabled();
         guard
             .as_mut()
@@ -417,15 +506,18 @@ pub fn restore_maximizebox_panic_recovery() {
         window_ids.len()
     );
 
-    for wid in &window_ids {
+    for &(wid, identity) in &window_ids {
         // Direct Win32 call — don't use restore_maximizebox since tracking set is already drained
         use windows::Win32::UI::WindowsAndMessaging::{
             GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
             SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
         };
-        let Ok(hwnd) = window_id_to_hwnd(*wid) else {
+        let Ok(hwnd) = window_id_to_hwnd(wid) else {
             continue;
         };
+        if !window_identity_matches(hwnd, identity) {
+            continue;
+        }
         unsafe {
             if !IsWindow(Some(hwnd)).as_bool() {
                 continue;
@@ -595,6 +687,7 @@ mod tests {
         fn drop(&mut self) {
             if let Some(hwnd) = self.hwnd.take() {
                 let _ = restore_maximizebox(hwnd.0 as usize as u64);
+                pump_until_window_style_idle();
                 let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd) };
             }
         }
@@ -602,6 +695,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordedGeometryEvent {
+        hwnd: Option<u64>,
         event: Option<String>,
         operation: Option<String>,
         stage: Option<String>,
@@ -633,8 +727,10 @@ mod tests {
         }
 
         fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-            if field.name() == "correlation_id" {
-                self.0.correlation_id = Some(value);
+            match field.name() {
+                "correlation_id" => self.0.correlation_id = Some(value),
+                "hwnd" => self.0.hwnd = Some(value),
+                _ => {}
             }
         }
     }
@@ -695,6 +791,40 @@ mod tests {
     }
 
     #[test]
+    fn test_queued_style_request_rejects_changed_window_identity() {
+        let _guard = lock_snap_tracking_fixture();
+        let fixture = HiddenFramedFixture::create();
+        let hwnd = fixture.hwnd();
+        let window_id = fixture.window_id();
+        let actual_identity = capture_window_identity(hwnd).expect("live fixture identity");
+        let stale_identity = WindowIdentity {
+            process_id: actual_identity.process_id,
+            thread_id: actual_identity.thread_id.wrapping_add(1),
+        };
+
+        window_style_worker()
+            .send(WindowStyleRequest::Apply {
+                window_id,
+                hwnd: hwnd.0 as usize,
+                identity: stale_identity,
+                operation: WindowStyleOperation::Remove,
+                correlation_id: MAXIMIZEBOX_GEOMETRY_CORRELATION.fetch_add(1, Ordering::Relaxed),
+            })
+            .unwrap();
+        assert!(wait_for_window_style_requests(Duration::from_secs(5)));
+        assert_ne!(
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::GetWindowLongW(
+                    hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
+                ) & WS_MAXIMIZEBOX_BIT
+            },
+            0,
+            "a deferred remove for a stale HWND identity must not touch the live window"
+        );
+    }
+
+    #[test]
     fn test_remove_restore_maximizebox_diagnostics_and_semantics() {
         use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
 
@@ -721,13 +851,19 @@ mod tests {
             events: events.clone(),
         };
         let window_id = fixture.window_id();
-        tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber))
-            .expect("install geometry test subscriber");
+        let dispatcher = tracing::Dispatch::new(subscriber);
+        tracing::dispatcher::set_global_default(dispatcher)
+            .expect("geometry test must install the only global subscriber");
         assert!(remove_maximizebox(window_id).unwrap());
+        pump_until_window_style_idle();
         assert!(restore_maximizebox(window_id).unwrap());
         pump_until_window_style_idle();
 
-        let recorded = events.lock().unwrap();
+        let all_events = events.lock().unwrap();
+        let recorded: Vec<_> = all_events
+            .iter()
+            .filter(|event| event.hwnd == Some(window_id))
+            .collect();
         assert_eq!(recorded.len(), 6);
         assert!(recorded
             .iter()
@@ -760,7 +896,7 @@ mod tests {
         assert!(recorded[3..]
             .iter()
             .all(|event| event.correlation_id == Some(restore_id)));
-        drop(recorded);
+        drop(all_events);
 
         let after_restore = capture_maximizebox_geometry(fixture.hwnd());
         assert_eq!(

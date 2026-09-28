@@ -4,6 +4,31 @@ use std::sync::atomic::Ordering;
 
 static REAL_WINDOW_STYLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn pump_window_style_worker_until_idle() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        unsafe {
+            let mut message = MSG::default();
+            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        if leopardwm_platform_win32::wait_for_window_style_requests(
+            std::time::Duration::from_millis(10),
+        ) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "window style worker did not become idle"
+        );
+    }
+}
+
 fn test_config() -> Config {
     Config::default()
 }
@@ -13116,6 +13141,10 @@ fn test_snap_style_requests_do_not_wait_for_non_pumping_window() {
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
+            assert!(
+                leopardwm_platform_win32::wait_for_window_style_requests(Duration::from_secs(5)),
+                "window style requests must drain before fixture windows are destroyed"
+            );
             unsafe {
                 let _ = PostThreadMessageW(self.thread_id, QUIT_OWNER, WPARAM(0), LPARAM(0));
             }
@@ -13214,9 +13243,9 @@ fn test_snap_style_requests_do_not_wait_for_non_pumping_window() {
     {
         thread::sleep(Duration::from_millis(10));
     }
-    let removed_once = STYLE_CHANGES.load(Ordering::SeqCst) == 2;
     let completed_after_pump =
-        leopardwm_platform_win32::wait_for_window_style_requests(Duration::from_millis(100));
+        leopardwm_platform_win32::wait_for_window_style_requests(Duration::from_secs(5));
+    let removed_once = completed_after_pump && STYLE_CHANGES.load(Ordering::SeqCst) == 2;
 
     unsafe {
         let _ = PostThreadMessageW(fixture.thread_id, BLOCK_OWNER, WPARAM(0), LPARAM(0));
@@ -13229,17 +13258,82 @@ fn test_snap_style_requests_do_not_wait_for_non_pumping_window() {
     let pause_start = Instant::now();
     state.restore_snap_for_all_windows();
     let pause_elapsed = pause_start.elapsed();
+    state.disable_snap_for_window(fixture.windows[0]);
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline
-        && windows.iter().any(|hwnd| unsafe { GetWindowLongW(HWND(*hwnd as *mut _), GWL_STYLE) } & WS_MAXIMIZEBOX.0 as i32 == 0)
+        && windows.iter().any(|hwnd| unsafe {
+            let style = GetWindowLongW(HWND(*hwnd as *mut _), GWL_STYLE);
+            if *hwnd == fixture.windows[0] {
+                style & WS_MAXIMIZEBOX.0 as i32 != 0
+            } else {
+                style & WS_MAXIMIZEBOX.0 as i32 == 0
+            }
+        })
     {
         thread::sleep(Duration::from_millis(10));
     }
-    let restored = windows.iter().all(|hwnd| unsafe {
-        GetWindowLongW(HWND(*hwnd as *mut _), GWL_STYLE) & WS_MAXIMIZEBOX.0 as i32 != 0
-    });
-    let change_count = STYLE_CHANGES.load(Ordering::SeqCst);
+    let completed_after_restore =
+        leopardwm_platform_win32::wait_for_window_style_requests(Duration::from_secs(5));
+    let tracked_after_readmission = state.snap_disabled_hwnds.contains(&fixture.windows[0]);
+    let re_suppressed = unsafe {
+        GetWindowLongW(HWND(fixture.windows[0] as *mut _), GWL_STYLE) & WS_MAXIMIZEBOX.0 as i32 == 0
+    };
+    let second_restored = unsafe {
+        GetWindowLongW(HWND(fixture.windows[1] as *mut _), GWL_STYLE) & WS_MAXIMIZEBOX.0 as i32 != 0
+    };
+    let change_count = if completed_after_restore {
+        STYLE_CHANGES.load(Ordering::SeqCst)
+    } else {
+        usize::MAX
+    };
+    leopardwm_platform_win32::restore_maximizebox_panic_recovery();
+    let recovery_restored_tracked_window = unsafe {
+        GetWindowLongW(HWND(fixture.windows[0] as *mut _), GWL_STYLE) & WS_MAXIMIZEBOX.0 as i32 != 0
+    };
+
+    let target = unsafe {
+        CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            w!("STATIC"),
+            None,
+            WS_OVERLAPPED
+                | WS_CAPTION
+                | WS_SYSMENU
+                | WS_THICKFRAME
+                | WS_MINIMIZEBOX
+                | WS_MAXIMIZEBOX,
+            0,
+            0,
+            200,
+            100,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+    .unwrap();
+    let target_id = target.0 as usize as u64;
+    assert!(leopardwm_platform_win32::remove_maximizebox(fixture.windows[0]).unwrap());
+    assert!(leopardwm_platform_win32::wait_for_window_style_requests(
+        Duration::from_secs(5)
+    ));
+    unsafe {
+        let _ = PostThreadMessageW(fixture.thread_id, BLOCK_OWNER, WPARAM(0), LPARAM(0));
+    }
+    blocked_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(leopardwm_platform_win32::restore_maximizebox(fixture.windows[0]).unwrap());
+    let restore_is_blocked =
+        !leopardwm_platform_win32::wait_for_window_style_requests(Duration::from_millis(50));
+    let remove_was_queued = leopardwm_platform_win32::remove_maximizebox(target_id).unwrap();
+    leopardwm_platform_win32::restore_maximizebox_panic_recovery();
+    let target_still_has_maximizebox =
+        unsafe { GetWindowLongW(target, GWL_STYLE) & WS_MAXIMIZEBOX.0 as i32 != 0 };
+    pump_window_style_worker_until_idle();
+    let target_kept_maximizebox_after_drain =
+        unsafe { GetWindowLongW(target, GWL_STYLE) & WS_MAXIMIZEBOX.0 as i32 != 0 };
+    let _ = unsafe { DestroyWindow(target) };
     drop(fixture);
 
     assert!(
@@ -13268,10 +13362,45 @@ fn test_snap_style_requests_do_not_wait_for_non_pumping_window() {
         "pause restore blocked for {pause_elapsed:?}"
     );
     assert!(
-        restored,
-        "queued restores should eventually restore both styles"
+        tracked_after_readmission,
+        "readmission during a pending restore must track the window"
     );
-    assert_eq!(change_count, 4, "one remove and restore change per window");
+    assert!(
+        completed_after_restore,
+        "all queued restore/re-remove work must finish"
+    );
+    assert!(
+        re_suppressed,
+        "readmitted window must remain snap-suppressed"
+    );
+    assert!(
+        second_restored,
+        "pause restore must re-enable the other window"
+    );
+    assert_eq!(
+        change_count, 5,
+        "initial suppression plus restore/re-suppression and the peer restore"
+    );
+    assert!(
+        recovery_restored_tracked_window,
+        "panic recovery must find and restore the platform-tracked window"
+    );
+    assert!(
+        restore_is_blocked,
+        "the earlier restore must hold the worker"
+    );
+    assert!(
+        remove_was_queued,
+        "the target remove must queue behind the restore"
+    );
+    assert!(
+        target_still_has_maximizebox,
+        "panic recovery must restore the target before its queued remove runs"
+    );
+    assert!(
+        target_kept_maximizebox_after_drain,
+        "a queued remove must be skipped after panic recovery drains tracking"
+    );
 }
 
 #[test]
@@ -15893,32 +16022,11 @@ fn test_restore_structure_reapplies_snap_suppression() {
     use windows::core::w;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, DispatchMessageW, GetWindowLongW, PeekMessageW,
-        TranslateMessage, GWL_STYLE, MSG, PM_REMOVE, WS_CAPTION, WS_EX_NOACTIVATE,
+        CreateWindowExW, DestroyWindow, GetWindowLongW, GWL_STYLE, WS_CAPTION, WS_EX_NOACTIVATE,
         WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
     };
 
-    let wait_for_style_requests = || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            unsafe {
-                let mut message = MSG::default();
-                while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
-                    let _ = TranslateMessage(&message);
-                    DispatchMessageW(&message);
-                }
-            }
-            if leopardwm_platform_win32::wait_for_window_style_requests(
-                std::time::Duration::from_millis(10),
-            ) {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "window style requests did not finish"
-            );
-        }
-    };
+    let wait_for_style_requests = pump_window_style_worker_until_idle;
 
     struct TestWindow(HWND);
     impl TestWindow {
@@ -15957,6 +16065,7 @@ fn test_restore_structure_reapplies_snap_suppression() {
     impl Drop for TestWindow {
         fn drop(&mut self) {
             let _ = leopardwm_platform_win32::restore_maximizebox(self.id());
+            pump_window_style_worker_until_idle();
             let _ = unsafe { DestroyWindow(self.0) };
         }
     }
