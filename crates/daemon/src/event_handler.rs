@@ -2460,6 +2460,7 @@ impl AppState {
     fn on_window_restored(&mut self, hwnd: u64) {
         if let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) {
             let viewport_width = self.viewport_width_for(monitor_id);
+            let is_active_workspace = self.active_workspace_idx(monitor_id) == ws_idx;
             let snapshot = self.snapshot_layout();
             let mut should_sync_foreground = false;
             let mut was_tiled_restore = false;
@@ -2480,7 +2481,7 @@ impl AppState {
                         warn!("Failed to focus restored window {}: {}", hwnd, e);
                     } else {
                         workspace.ensure_focused_visible_animated(viewport_width);
-                        should_sync_foreground = true;
+                        should_sync_foreground = is_active_workspace;
                         was_tiled_restore = true;
                     }
                 }
@@ -3082,11 +3083,18 @@ impl AppState {
                 .get(&monitor_id)
                 .and_then(|v| v.get(ws_idx))
                 .is_none_or(|ws| ws.is_floating(hwnd));
+            let is_minimized = self
+                .workspaces
+                .get(&monitor_id)
+                .and_then(|v| v.get(ws_idx))
+                .is_some_and(|ws| ws.is_minimized(hwnd));
 
             if is_floating {
                 if self.previous_focused_hwnd == Some(hwnd) {
                     self.show_border(hwnd);
                 }
+            } else if is_minimized {
+                debug!("Ignoring MovedOrResized for minimized window {}", hwnd);
             } else if leopardwm_platform_win32::is_window_maximized(hwnd) {
                 // User maximized a tiled window — let it stay maximized. Record
                 // the maximize so a brief restore mid-burst is treated as

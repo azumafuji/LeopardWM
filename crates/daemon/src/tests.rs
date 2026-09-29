@@ -10703,6 +10703,98 @@ fn test_focus_follows_mouse_floating_then_tiled_focuses_tiled() {
 }
 
 #[test]
+fn test_inactive_minimized_window_restore_waits_for_focus_event() {
+    const RESTORED: u64 = 100;
+    const ACTIVE: u64 = 200;
+    const OTHER_MONITOR: u64 = 300;
+    const RESTORE_PEER: u64 = 400;
+
+    let mut state = AppState::new_with_config(test_config(), two_monitors());
+    state.paused = false;
+    state.ensure_workspace_exists(1, 2);
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(ACTIVE, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&1).unwrap()[2]
+        .insert_window(RESTORED, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&1).unwrap()[2]
+        .insert_window(RESTORE_PEER, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&2).unwrap()[0]
+        .insert_window(OTHER_MONITOR, Some(800))
+        .unwrap();
+    state.active_workspace.insert(1, 2);
+    state.active_workspace.insert(2, 0);
+    state.focused_monitor = 2;
+    state.previous_focused_hwnd = Some(OTHER_MONITOR);
+    state.injected_window_maximized.insert(RESTORED, false);
+    state.apply_layout().unwrap();
+    join_pending_test_apply_workers(&mut state);
+    assert!(state.last_placed_layout_rects.contains_key(&RESTORED));
+    state.active_workspace.insert(1, 0);
+    state.workspaces.get_mut(&1).unwrap()[2].mark_minimized(RESTORED);
+    state.moved_or_resized_suppression.remove(&RESTORED);
+
+    let placement_calls_before_moves = state
+        .injected_apply_placements_call_count
+        .load(Ordering::SeqCst);
+    state
+        .last_placed_layout_rects
+        .insert(ACTIVE, Rect::new(-10_000, -10_000, 1, 1));
+    for _ in 0..3 {
+        state.handle_window_event(WindowEvent::MovedOrResized(RESTORED));
+    }
+    join_pending_test_apply_workers(&mut state);
+    assert!(
+        state.last_placed_layout_rects.contains_key(&RESTORED),
+        "move/resize events must not evict a minimized window's last placement"
+    );
+    assert_eq!(
+        state
+            .injected_apply_placements_call_count
+            .load(Ordering::SeqCst),
+        placement_calls_before_moves,
+        "move/resize events must not snap back a minimized window"
+    );
+    assert!(state.workspaces.get(&1).unwrap()[2].is_minimized(RESTORED));
+
+    state.handle_window_event(WindowEvent::Restored(RESTORED));
+    join_pending_test_apply_workers(&mut state);
+    assert!(!state.workspaces.get(&1).unwrap()[2].is_minimized(RESTORED));
+    assert_eq!(
+        state.workspaces.get(&1).unwrap()[2].focused_window(),
+        Some(RESTORED),
+        "restore should focus the window within its own workspace"
+    );
+    assert_eq!(state.active_workspace_idx(1), 0);
+    assert_eq!(state.focused_monitor, 2);
+    assert_eq!(state.previous_focused_hwnd, Some(OTHER_MONITOR));
+    assert!(
+        state.layout_transition.is_some(),
+        "restore should schedule the layout transition"
+    );
+
+    state.handle_window_event(WindowEvent::Focused(RESTORED, 1_000));
+    assert_eq!(state.active_workspace_idx(1), 2);
+    assert_eq!(state.focused_monitor, 1);
+    assert_eq!(state.previous_focused_hwnd, Some(RESTORED));
+    state.handle_window_event(WindowEvent::Focused(RESTORED, 1_001));
+    assert_eq!(state.active_workspace_idx(1), 2);
+    assert_eq!(state.focused_monitor, 1);
+
+    state.workspaces.get_mut(&1).unwrap()[2].mark_minimized(RESTORED);
+    state.workspaces.get_mut(&1).unwrap()[2]
+        .focus_window(RESTORE_PEER)
+        .unwrap();
+    state.focused_monitor = 2;
+    state.previous_focused_hwnd = Some(OTHER_MONITOR);
+    state.handle_window_event(WindowEvent::Restored(RESTORED));
+    assert_eq!(state.focused_monitor, 1);
+    assert_eq!(state.previous_focused_hwnd, Some(RESTORED));
+}
+
+#[test]
 fn test_restored_floating_window_does_not_steal_tiled_focus() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     let ws = state.focused_workspace_mut().unwrap();
