@@ -433,7 +433,7 @@ impl AppState {
         changed
     }
 
-    fn stale_window_probe(&self, hwnd: u64) -> (WindowPresence, bool) {
+    pub(crate) fn stale_window_probe(&self, hwnd: u64) -> (WindowPresence, bool) {
         #[cfg(test)]
         {
             let presence = if self.injected_stale_hwnds.contains(&hwnd) {
@@ -473,10 +473,17 @@ impl AppState {
         focused_prune: Option<FocusedPruneContext>,
     ) -> StalePruneLayout {
         let mut stale: Vec<u64> = Vec::new();
+        let mut unmarked_iconic = Vec::new();
         for ws_vec in self.workspaces.values() {
             for workspace in ws_vec.iter() {
                 for &wid in &workspace.all_window_ids() {
-                    if self.window_is_stale(wid, workspace.is_minimized(wid)) {
+                    let marked_minimized = workspace.is_minimized(wid);
+                    if !marked_minimized
+                        && self.stale_window_probe(wid).0 == WindowPresence::Minimized
+                    {
+                        unmarked_iconic.push(wid);
+                    }
+                    if self.window_is_stale(wid, marked_minimized) {
                         stale.push(wid);
                     }
                 }
@@ -496,7 +503,11 @@ impl AppState {
         }
         #[cfg(test)]
         self.injected_stale_hwnds.clear();
-        self.finish_stale_window_prune(&stale, focused_prune)
+        let result = self.finish_stale_window_prune(&stale, focused_prune);
+        for hwnd in unmarked_iconic {
+            self.on_window_minimized(hwnd);
+        }
+        result
     }
 
     fn finish_stale_window_prune(

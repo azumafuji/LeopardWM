@@ -6636,6 +6636,84 @@ fn test_last_window_same_hwnd_focus_does_not_consume_stale_injection() {
     assert_eq!(state.pending_last_window_departure, None);
 }
 
+fn minimized_cross_workspace_state() -> AppState {
+    let mut state = last_window_cross_workspace_state();
+    let mon = state.focused_monitor;
+    state.workspaces.get_mut(&mon).unwrap()[0]
+        .insert_window(150, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&mon).unwrap()[0]
+        .focus_window(100)
+        .unwrap();
+    state.previous_focused_hwnd = Some(100);
+    state.injected_event_time_ms = Some(1_000);
+    state.injected_iconic_hwnds.insert(100);
+    state
+}
+
+#[test]
+fn test_iconic_tracked_focus_reconciles_before_parked_window_focus() {
+    let mut state = minimized_cross_workspace_state();
+    let mon = state.focused_monitor;
+
+    state.handle_window_event(WindowEvent::Focused(200, 999));
+
+    assert_eq!(state.active_workspace_idx(mon), 0);
+    assert_eq!(state.workspaces[&mon][0].focused_window(), Some(150));
+    assert_eq!(state.previous_focused_hwnd, Some(150));
+    assert!(state.workspaces[&mon][0].contains_window(100));
+    assert!(state.workspaces[&mon][0].is_minimized(100));
+
+    let pending = state.pending_last_window_departure;
+    state.handle_window_event(WindowEvent::Minimized(100));
+    assert!(state.workspaces[&mon][0].is_minimized(100));
+    assert_eq!(state.active_workspace_idx(mon), 0);
+    assert_eq!(state.workspaces[&mon][0].focused_window(), Some(150));
+    assert_eq!(state.previous_focused_hwnd, Some(150));
+    assert_eq!(state.pending_last_window_departure, pending);
+}
+
+#[test]
+fn test_minimize_suppresses_no_later_parked_window_focus() {
+    let mut state = minimized_cross_workspace_state();
+    let mon = state.focused_monitor;
+
+    state.handle_window_event(WindowEvent::Minimized(100));
+    let intent = state.pending_last_window_departure.unwrap();
+    assert_eq!(intent.replacement_hwnd, None);
+    assert_eq!(intent.armed_at_event_time_ms, 1_000);
+
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.active_workspace_idx(mon), 0);
+    assert_eq!(state.workspaces[&mon][0].focused_window(), Some(150));
+    assert_eq!(state.previous_focused_hwnd, Some(150));
+
+    state.handle_window_event(WindowEvent::Focused(200, 1_001));
+    assert_eq!(state.active_workspace_idx(mon), 1);
+    assert_eq!(state.workspaces[&mon][1].focused_window(), Some(200));
+    assert_eq!(state.previous_focused_hwnd, Some(200));
+}
+
+#[test]
+fn test_prune_reconciles_iconic_unmarked_focused_window() {
+    let mut state = last_window_cross_workspace_state();
+    let mon = state.focused_monitor;
+    add_liveness_test_columns(&mut state);
+    state.last_prune_at = None;
+    state.injected_iconic_hwnds.insert(150);
+    state.workspaces.get_mut(&mon).unwrap()[0]
+        .focus_window(150)
+        .unwrap();
+    state.previous_focused_hwnd = Some(100);
+
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert!(state.workspaces[&mon][0].contains_window(150));
+    assert!(state.workspaces[&mon][0].is_minimized(150));
+    assert_ne!(state.workspaces[&mon][0].focused_window(), Some(150));
+}
+
 fn last_window_liveness_state() -> AppState {
     let mut state = last_window_focus_prune_state();
     // Test AppState starts paused, which would skip the liveness check.
@@ -6653,7 +6731,7 @@ fn add_liveness_test_columns(state: &mut AppState) {
 }
 
 #[test]
-fn test_iconic_unmarked_focus_survives_focus_prune_and_restore() {
+fn test_iconic_unmarked_focus_is_reconciled_by_focus_prune_and_restored() {
     let mut state = last_window_cross_workspace_state();
     let mon = state.focused_monitor;
     add_liveness_test_columns(&mut state);
@@ -6680,6 +6758,7 @@ fn test_iconic_unmarked_focus_survives_focus_prune_and_restore() {
         workspace.contains_window(100),
         "focus prune must retain the OS-iconic window"
     );
+    assert!(workspace.is_minimized(100));
     assert_eq!(state.find_window_workspace(100), Some((mon, 0)));
     assert_eq!(workspace.find_window_location(100).unwrap().0, column);
     assert_eq!(workspace.column(column).unwrap().width(), width);
@@ -6721,7 +6800,7 @@ fn test_iconic_unmarked_tracked_focus_does_not_trigger_liveness_prune() {
 }
 
 #[test]
-fn test_liveness_prune_removes_hidden_window_but_retains_iconic_unmarked_windows() {
+fn test_liveness_prune_removes_hidden_window_and_reconciles_iconic_windows() {
     let mut state = last_window_liveness_state();
     let mon = state.focused_monitor;
     add_liveness_test_columns(&mut state);
@@ -6735,7 +6814,6 @@ fn test_liveness_prune_removes_hidden_window_but_retains_iconic_unmarked_windows
         .into_iter()
         .map(|hwnd| {
             assert!(workspace.contains_window(hwnd));
-            assert!(!workspace.is_minimized(hwnd));
             let column = workspace.find_window_location(hwnd).unwrap().0;
             (hwnd, column, workspace.column(column).unwrap().width())
         })
@@ -6751,7 +6829,7 @@ fn test_liveness_prune_removes_hidden_window_but_retains_iconic_unmarked_windows
     );
     for &(hwnd, column, width) in &iconic_columns {
         assert!(workspace.contains_window(hwnd));
-        assert!(!workspace.is_minimized(hwnd));
+        assert!(workspace.is_minimized(hwnd));
         let current_column = workspace.find_window_location(hwnd).unwrap().0;
         assert_eq!(current_column + 1, column);
         assert_eq!(workspace.column(current_column).unwrap().width(), width);

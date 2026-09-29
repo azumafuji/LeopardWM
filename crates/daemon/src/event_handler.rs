@@ -1981,10 +1981,10 @@ impl AppState {
             return false;
         }
         // Exact sampled replacement: no-later Focused is suppressed. Direct
-        // Destroyed/Hidden with no sample binds the first no-later managed HWND
-        // on another workspace of the same monitor. Same-workspace activations,
-        // newer ticks, a later different HWND, and eventless-prune None do not
-        // infer.
+        // Destroyed/Hidden and Minimized with no sample bind the first no-later
+        // managed HWND on another workspace of the same monitor. Same-workspace
+        // activations, newer ticks, a later different HWND, and eventless-prune
+        // None do not infer.
         if !event_time_is_no_later_than(event_time_ms, intent.armed_at_event_time_ms) {
             self.pending_last_window_departure = None;
             return false;
@@ -1993,7 +1993,11 @@ impl AppState {
             return true;
         }
         if intent.replacement_hwnd.is_none()
-            && intent.origin == LastWindowDepartureOrigin::DirectDestroyedOrHidden
+            && matches!(
+                intent.origin,
+                LastWindowDepartureOrigin::DirectDestroyedOrHidden
+                    | LastWindowDepartureOrigin::Minimized
+            )
             && monitor_id == intent.monitor
             && ws_idx != intent.workspace
         {
@@ -2097,6 +2101,22 @@ impl AppState {
                     }
                 }
                 crate::helpers::StalePruneLayout::Unchanged => {}
+            }
+        }
+
+        if let Some(tracked) = self.previous_focused_hwnd {
+            if let Some((monitor_id, ws_idx)) = self.find_window_workspace(tracked) {
+                let marked_minimized = self
+                    .workspaces
+                    .get(&monitor_id)
+                    .and_then(|workspaces| workspaces.get(ws_idx))
+                    .is_some_and(|workspace| workspace.is_minimized(tracked));
+                if !marked_minimized
+                    && self.stale_window_probe(tracked).0
+                        == leopardwm_platform_win32::WindowPresence::Minimized
+                {
+                    self.on_window_minimized(tracked);
+                }
             }
         }
 
@@ -2328,8 +2348,12 @@ impl AppState {
     }
 
     /// Handle a window-minimized event.
-    fn on_window_minimized(&mut self, hwnd: u64) {
+    pub(crate) fn on_window_minimized(&mut self, hwnd: u64) {
+        let was_tracked_focus = self.previous_focused_hwnd == Some(hwnd);
         if let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) {
+            let was_selected_focus = was_tracked_focus
+                && self.focused_monitor == monitor_id
+                && self.active_workspace_idx(monitor_id) == ws_idx;
             let viewport_width = self.viewport_width_for(monitor_id);
             let layout_viewport = self.layout_viewport(monitor_id);
             let snapshot = self.snapshot_layout();
@@ -2388,6 +2412,7 @@ impl AppState {
                         }
                     }
                     workspace.ensure_focused_visible_animated(viewport_width);
+                    let has_focused_visible_window = workspace.focused_visible_window().is_some();
 
                     // Log expected post-minimize placements for debugging
                     {
@@ -2407,6 +2432,13 @@ impl AppState {
                     // Keep monitor focus aligned before foreground sync so we don't
                     // accidentally steer foreground to a stale monitor.
                     self.focused_monitor = monitor_id;
+                    if was_selected_focus && has_focused_visible_window {
+                        self.arm_pending_last_window_departure(
+                            None,
+                            self.event_time_now_ms(),
+                            LastWindowDepartureOrigin::Minimized,
+                        );
+                    }
                     self.sync_foreground_window();
                 }
             }

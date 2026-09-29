@@ -888,23 +888,24 @@ impl PendingWorkspaceSwitchFocus {
     }
 }
 
-/// How the last-window empty-selection guard was armed.
+/// How the last-window departure focus guard was armed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LastWindowDepartureOrigin {
     DirectDestroyedOrHidden,
+    Minimized,
     EventlessPrune,
 }
 
-/// Evidence that the focused monitor's selected workspace became empty
-/// because its last tiled and floating window departed.
+/// Evidence that the focused monitor's selected workspace lost its tracked
+/// focus because the window departed or was minimized.
 ///
 /// An exact replacement HWND is attributable auto-activation while this guard
 /// is fresh. A strictly newer activation (a different HWND, or the same HWND
-/// with a later WinEvent time) wins. Direct Destroyed/Hidden and standalone
-/// pruning stamp `armed_at_event_time_ms` with handler execution time, so an
-/// activation that occurred before the handler ran may compare as no-later and
-/// stay suppressed. If the departing window still appears live or pruning is
-/// throttled, follow-focus cannot attribute the sequence.
+/// with a later WinEvent time) wins. Direct Destroyed/Hidden, Minimized, and
+/// standalone pruning stamp `armed_at_event_time_ms` with handler execution
+/// time, so an activation that occurred before the handler ran may compare as
+/// no-later and stay suppressed. If the departing window still appears live or
+/// pruning is throttled, follow-focus cannot attribute the sequence.
 ///
 /// A prune reached from `Focused(X, t)` stamps `t`. It samples a replacement
 /// only when the tracked focus HWND was stale and was removed from the
@@ -915,9 +916,9 @@ pub(crate) enum LastWindowDepartureOrigin {
 /// vanishes silently and a deliberate activation arrives before the next
 /// check, that activation can still be treated as auto-activation.
 ///
-/// DirectDestroyedOrHidden with no sampled replacement binds the first
-/// no-later managed Focused on another workspace of the same monitor, then
-/// uses that exact HWND. Same-workspace activations are not inferred.
+/// DirectDestroyedOrHidden and Minimized with no sampled replacement bind the
+/// first no-later managed Focused on another workspace of the same monitor,
+/// then use that exact HWND. Same-workspace activations are not inferred.
 /// EventlessPrune does not infer from None. Unmanaged samples are not rewritten.
 ///
 /// Distinct from `PendingWorkspaceSwitchFocus`; the two guards are not shared.
