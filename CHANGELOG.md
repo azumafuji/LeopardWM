@@ -15,6 +15,7 @@ All notable changes to LeopardWM will be documented in this file.
 - **Minimizing a window no longer switches to a workspace where Windows activates a parked window.** Missed minimize events are also reconciled so minimized windows do not leave empty columns.
 - **Restoring a window from the taskbar that was minimized on another workspace no longer bounces back to the current workspace.** The window is not snapped away during its restore animation, and LeopardWM switches to its workspace once and keeps it focused; the restored window no longer drops and slides back in as its workspace appears.
 - **Column widths no longer drift when display resolution or scaling changes and then changes back.** Rescaling keeps the original width fraction through rounded intermediate sizes, while manual width changes become the new sizing basis.
+- **Narrowing a column no longer leaves the view scrolled past the end.** After dragging its border, the view scrolls like a keyboard width change so columns that now fit come back into view.
 - **Tiling no longer pauses when windows are slow to move after a monitor or dock change.** A first timeout during display reconciliation schedules one retry after the displays settle; its late worker no longer restores windows just before the retry re-tiles them. A retry timeout pauses tiling, while a retry dropped during manual pause restores visibility.
 
 ## 0.2.11

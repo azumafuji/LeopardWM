@@ -3574,6 +3574,65 @@ fn test_hidden_still_visible_skips_departure_cleanup() {
     assert!(state.window_managed_at.contains_key(&100));
 }
 
+struct ResizeTestWindow(windows::Win32::Foundation::HWND);
+
+impl ResizeTestWindow {
+    fn new(width: i32) -> Self {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, WINDOW_STYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+        };
+
+        Self(unsafe {
+            CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                w!("STATIC"),
+                w!(""),
+                WINDOW_STYLE(WS_POPUP.0),
+                100,
+                100,
+                width,
+                600,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        })
+    }
+
+    fn id(&self) -> u64 {
+        self.0 .0 as u64
+    }
+}
+
+impl Drop for ResizeTestWindow {
+    fn drop(&mut self) {
+        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+        let _ = unsafe { DestroyWindow(self.0) };
+    }
+}
+
+fn resize_scroll_state(hwnd: u64, center_past_edges: bool) -> AppState {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.reduce_motion = true;
+    state
+        .injected_window_info
+        .insert(100, make_test_window_info(100));
+    state
+        .injected_window_info
+        .insert(hwnd, make_test_window_info(hwnd));
+    let viewport_width = state.viewport_width_for(state.focused_monitor);
+    let workspace = state.focused_workspace_mut().unwrap();
+    workspace.set_reduce_motion(true);
+    workspace.set_center_past_edges(center_past_edges);
+    workspace.insert_window(100, Some(800)).unwrap();
+    workspace.insert_window(hwnd, Some(800)).unwrap();
+    workspace.set_focused_column_width_fraction(1.0, viewport_width);
+    state
+}
+
 fn seed_resize_session(state: &mut AppState, hwnd: u64) {
     state.resize_hwnd = Some(hwnd);
     state.resize_preview_target = Some(Rect::new(0, 0, 800, 600));
@@ -4839,6 +4898,95 @@ fn test_matching_move_size_end_completes_resize_and_ignores_mismatch() {
     assert_resize_session_cleared(&state);
     assert_eq!(state.resize_complete_count.load(Ordering::Relaxed), 1);
     assert!(state.focused_workspace().unwrap().contains_window(100));
+}
+
+#[test]
+fn test_resize_narrowing_clamps_scroll_and_reveals_previous_column() {
+    // Protects the resize-complete landing when narrowing the focused column
+    // makes the whole workspace fit; stale pre-snap scroll would hide column 0.
+    // Existing tests cover width commands and resize-session dispatch separately,
+    // but not the production resize handler with a real HWND rect.
+    let fixture = ResizeTestWindow::new(960);
+    let mut state = resize_scroll_state(fixture.id(), false);
+    let viewport_width = state.viewport_width_for(state.focused_monitor);
+    let workspace = state.focused_workspace_mut().unwrap();
+    let max_scroll = (workspace.total_width() - workspace.visible_width(viewport_width)).max(0);
+    workspace.set_scroll_offset(max_scroll as f64);
+    assert!(max_scroll > 0);
+
+    seed_resize_session(&mut state, fixture.id());
+    state.handle_window_event(WindowEvent::MoveSizeEnd(fixture.id()));
+
+    let workspace = state.focused_workspace().unwrap();
+    let landing_max = (workspace.total_width() - workspace.visible_width(viewport_width)).max(0);
+    assert_eq!(landing_max, 0, "narrowed workspace now fits the viewport");
+    assert_eq!(workspace.scroll_offset(), landing_max as f64);
+    let previous_column = state
+        .compute_window_layout_rect(100)
+        .expect("previous column placement");
+    assert!(previous_column.x >= 0 && previous_column.right() <= viewport_width);
+}
+
+#[test]
+fn test_resize_snap_preserves_valid_scroll_when_focused_column_stays_visible() {
+    // Protects a no-op landing when the post-snap focused column is already
+    // visible and scroll is in bounds; correction must not introduce movement.
+    // The production resize path with a real HWND is not covered elsewhere.
+    let fixture = ResizeTestWindow::new(960);
+    let mut state = resize_scroll_state(fixture.id(), false);
+    let viewport_width = state.viewport_width_for(state.focused_monitor);
+    let workspace = state.focused_workspace_mut().unwrap();
+    workspace.set_scroll_offset(0.0);
+    let before = workspace.scroll_offset();
+
+    seed_resize_session(&mut state, fixture.id());
+    state.handle_window_event(WindowEvent::MoveSizeEnd(fixture.id()));
+
+    assert_eq!(state.focused_workspace().unwrap().scroll_offset(), before);
+    let rect = state
+        .compute_window_layout_rect(fixture.id())
+        .expect("focused fixture placement");
+    assert!(rect.x >= 0 && rect.right() <= viewport_width);
+}
+
+#[test]
+fn test_resize_scroll_matches_set_width_command_for_edge_center_modes() {
+    // Protects resize parity with SetColumnWidth both with and without edge
+    // centering; a missing resize correction diverges from the keyboard owner.
+    // Existing command tests do not exercise this production resize boundary.
+    let fixture = ResizeTestWindow::new(960);
+    for center_past_edges in [false, true] {
+        let mut resized = resize_scroll_state(fixture.id(), center_past_edges);
+        let initial_scroll = 700.0;
+        resized
+            .focused_workspace_mut()
+            .unwrap()
+            .set_scroll_offset(initial_scroll);
+        seed_resize_session(&mut resized, fixture.id());
+        resized.handle_window_event(WindowEvent::MoveSizeEnd(fixture.id()));
+        let resize_target = resized.focused_workspace().unwrap().scroll_offset();
+
+        let mut keyboard = resize_scroll_state(fixture.id(), center_past_edges);
+        keyboard
+            .focused_workspace_mut()
+            .unwrap()
+            .set_scroll_offset(initial_scroll);
+        assert_eq!(
+            keyboard.handle_command(IpcCommand::SetColumnWidth { fraction: 0.5 }),
+            IpcResponse::Ok
+        );
+        let keyboard_target = keyboard.focused_workspace().unwrap().scroll_offset();
+
+        assert_eq!(
+            resize_target, keyboard_target,
+            "center_past_edges={center_past_edges}"
+        );
+        assert_eq!(
+            resized.focused_workspace().unwrap().columns()[1].width(),
+            keyboard.focused_workspace().unwrap().columns()[1].width(),
+            "center_past_edges={center_past_edges}"
+        );
+    }
 }
 
 #[test]

@@ -3631,6 +3631,8 @@ impl AppState {
                     );
                 }
 
+                ws.ensure_focused_visible_animated(viewport_width);
+
                 info!(
                     "Resize snap: window {} → width preset, new column width = {}",
                     hwnd,
