@@ -4901,11 +4901,10 @@ fn test_matching_move_size_end_completes_resize_and_ignores_mismatch() {
 }
 
 #[test]
-fn test_resize_narrowing_clamps_scroll_and_reveals_previous_column() {
-    // Protects the resize-complete landing when narrowing the focused column
-    // makes the whole workspace fit; stale pre-snap scroll would hide column 0.
-    // Existing tests cover width commands and resize-session dispatch separately,
-    // but not the production resize handler with a real HWND rect.
+fn test_resize_narrowing_clamps_scroll_reveals_column_and_syncs_taskbar() {
+    // Protects scroll landing and taskbar visibility when reduce-motion applies
+    // a resize correction instantly; without the post-apply sync column 0's taskbar
+    // button stays hidden. Existing coverage lacks this real-HWND resize path.
     let fixture = ResizeTestWindow::new(960);
     let mut state = resize_scroll_state(fixture.id(), false);
     let viewport_width = state.viewport_width_for(state.focused_monitor);
@@ -4925,6 +4924,9 @@ fn test_resize_narrowing_clamps_scroll_and_reveals_previous_column() {
         .compute_window_layout_rect(100)
         .expect("previous column placement");
     assert!(previous_column.x >= 0 && previous_column.right() <= viewport_width);
+    assert!(state
+        .take_recorded_taskbar_commands()
+        .contains(&(100, true)));
 }
 
 #[test]

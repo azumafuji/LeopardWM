@@ -3649,6 +3649,8 @@ impl AppState {
         self.last_placed_layout_rects.remove(&hwnd);
         if let Err(e) = self.apply_layout() {
             warn!("Failed to apply layout after resize snap: {}", e);
+        } else {
+            self.sync_taskbar_buttons();
         }
     }
 
