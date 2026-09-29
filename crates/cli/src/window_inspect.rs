@@ -251,6 +251,9 @@ fn reason_detail(reason: SkipReason, class_name: &str) -> String {
         SkipReason::ToolWindow => "WS_EX_TOOLWINDOW without resizable WS_EX_APPWINDOW".to_string(),
         SkipReason::NoActivate => "WS_EX_NOACTIVATE is set".to_string(),
         SkipReason::Owned => "window has a non-null GW_OWNER".to_string(),
+        SkipReason::TopmostPopup => {
+            "WS_EX_TOPMOST with no caption, no sizing frame, and no WS_EX_APPWINDOW".to_string()
+        }
         SkipReason::EmptyOrUnreadableTitle => {
             "title length is 0 or GetWindowTextW failed".to_string()
         }

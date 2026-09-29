@@ -11,8 +11,8 @@
 //! because the classifiers require a live HWND.
 
 use crate::enumeration::{
-    is_excluded_tool_window, is_window_cloaked, should_skip_window_by_class,
-    should_skip_window_by_title,
+    is_excluded_tool_window, is_excluded_topmost_popup, is_window_cloaked,
+    should_skip_window_by_class, should_skip_window_by_title,
 };
 use leopardwm_core_layout::{Rect, WindowId};
 use windows::core::BOOL;
@@ -31,6 +31,7 @@ pub enum SkipReason {
     ToolWindow,
     NoActivate,
     Owned,
+    TopmostPopup,
     Cloaked,
     EmptyOrUnreadableTitle,
     SkipTitle,
@@ -123,6 +124,9 @@ fn classify_startup(hwnd: HWND) -> Result<(), SkipReason> {
     if owner_is_present(hwnd) {
         return Err(SkipReason::Owned);
     }
+    if is_excluded_topmost_popup(style, ex_style) {
+        return Err(SkipReason::TopmostPopup);
+    }
     if is_window_cloaked(hwnd) {
         return Err(SkipReason::Cloaked);
     }
@@ -142,8 +146,8 @@ fn classify_startup(hwnd: HWND) -> Result<(), SkipReason> {
 ///
 /// Stage 1 mirrors `should_emit_window_event_with_policy(hwnd, true, false, false)`
 /// — the create/show WinEvent pre-gate that runs before `get_window_info`.
-/// Stage 2 mirrors the residual `get_window_info` checks (title allowed empty;
-/// rect required).
+/// Stage 2 mirrors the residual `get_window_info` checks (topmost popup exclusion;
+/// title allowed empty; rect required).
 fn classify_live_create(hwnd: HWND) -> Result<(), SkipReason> {
     // --- Stage 1: create/show event pre-gate ---
     // Mirrors should_emit_window_event_with_policy (require_visible=true,
@@ -181,6 +185,9 @@ fn classify_live_create(hwnd: HWND) -> Result<(), SkipReason> {
     }
 
     // --- Stage 2: residual get_window_info checks ---
+    if is_excluded_topmost_popup(style, ex_style) {
+        return Err(SkipReason::TopmostPopup);
+    }
     // Title is read but empty is allowed on the live-create path.
     let _ = read_title_best_effort(hwnd);
     let _ = read_rect(hwnd)?;

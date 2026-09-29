@@ -23,6 +23,7 @@ All notable changes to LeopardWM will be documented in this file.
 - **Column widths no longer drift when display resolution or scaling changes and then changes back.** Rescaling keeps the original width fraction through rounded intermediate sizes, while manual width changes become the new sizing basis.
 - **Narrowing a column no longer leaves the view scrolled past the end.** After dragging its border, the view scrolls like a keyboard width change so columns that now fit come back into view.
 - **Tiling no longer pauses when windows are slow to move after a monitor or dock change.** A first timeout during display reconciliation schedules one retry after the displays settle; its late worker no longer restores windows just before the retry re-tiles them. A retry timeout pauses tiling, while a retry dropped during manual pause restores visibility.
+- **Notion Calendar's meeting popup is no longer tiled.** Always-on-top windows with no title bar, no resizable border, and no taskbar-window style are left alone at startup and when they open; normal and always-on-top app windows are still tiled. (#74)
 
 ## 0.2.11
 
