@@ -131,18 +131,53 @@ fn lock_in_flight_style_request(
         .unwrap_or_else(crate::recover_poisoned_mutex)
 }
 
-struct InFlightStyleRequestGuard;
+struct InFlightStyleRequestGuard {
+    request: (WindowId, WindowIdentity),
+    active: bool,
+}
 
 impl InFlightStyleRequestGuard {
     fn publish(window_id: WindowId, identity: WindowIdentity) -> Self {
-        *lock_in_flight_style_request() = Some((window_id, identity));
-        Self
+        let request = (window_id, identity);
+        *lock_in_flight_style_request() = Some(request);
+        Self {
+            request,
+            active: true,
+        }
+    }
+
+    fn retire_if_tracked(&mut self) -> bool {
+        let mut published = lock_in_flight_style_request();
+        let remains_tracked = lock_snap_disabled()
+            .as_ref()
+            .and_then(|set| set.get(&self.request.0))
+            == Some(&self.request.1);
+        #[cfg(test)]
+        tests::pause_after_remove_tracking_decision();
+
+        if remains_tracked && *published == Some(self.request) {
+            *published = None;
+            self.active = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn retire(&mut self) {
+        if self.active {
+            let mut published = lock_in_flight_style_request();
+            if *published == Some(self.request) {
+                *published = None;
+            }
+            self.active = false;
+        }
     }
 }
 
 impl Drop for InFlightStyleRequestGuard {
     fn drop(&mut self) {
-        *lock_in_flight_style_request() = None;
+        self.retire();
     }
 }
 
@@ -301,7 +336,7 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
                             operation,
                             correlation_id,
                         } => {
-                            let _in_flight =
+                            let mut in_flight =
                                 InFlightStyleRequestGuard::publish(window_id, identity);
                             apply_window_style(
                                 window_id,
@@ -309,6 +344,7 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
                                 identity,
                                 operation,
                                 correlation_id,
+                                &mut in_flight,
                             );
                         }
                         WindowStyleRequest::Barrier(done) => {
@@ -328,23 +364,22 @@ fn apply_window_style(
     identity: WindowIdentity,
     operation: WindowStyleOperation,
     correlation_id: u64,
+    in_flight: &mut InFlightStyleRequestGuard,
 ) {
     let applied =
         apply_window_style_inner(window_id, hwnd_value, identity, operation, correlation_id);
-    if matches!(operation, WindowStyleOperation::Remove) && applied {
-        let remains_tracked = lock_snap_disabled()
-            .as_ref()
-            .and_then(|set| set.get(&window_id))
-            == Some(&identity);
-        if !remains_tracked {
-            apply_window_style_inner(
-                window_id,
-                hwnd_value,
-                identity,
-                WindowStyleOperation::Restore,
-                correlation_id,
-            );
-        }
+    if matches!(operation, WindowStyleOperation::Remove)
+        && applied
+        && !in_flight.retire_if_tracked()
+    {
+        apply_window_style_inner(
+            window_id,
+            hwnd_value,
+            identity,
+            WindowStyleOperation::Restore,
+            correlation_id,
+        );
+        in_flight.retire();
     }
     if matches!(operation, WindowStyleOperation::Restore) {
         let mut pending = lock_pending_restores();
@@ -538,7 +573,8 @@ pub fn restore_maximizebox_all(window_ids: &[WindowId]) {
 /// Drains tracking and restores styles best-effort, leaving the in-flight request to its worker.
 /// Safe to call from panic hooks (no AppState needed).
 pub fn restore_maximizebox_panic_recovery() {
-    let window_ids: Vec<(WindowId, WindowIdentity)> = {
+    let (window_ids, in_flight): (Vec<(WindowId, WindowIdentity)>, _) = {
+        let in_flight = lock_in_flight_style_request();
         let pending = lock_pending_restores();
         let mut tracking = lock_snap_disabled();
         let mut window_ids: Vec<_> = tracking
@@ -550,9 +586,8 @@ pub fn restore_maximizebox_panic_recovery() {
                 window_ids.push(key);
             }
         }
-        window_ids
+        (window_ids, *in_flight)
     };
-    let in_flight = *lock_in_flight_style_request();
     let window_ids: Vec<_> = window_ids
         .into_iter()
         .filter(|entry| Some(*entry) != in_flight)
@@ -849,6 +884,123 @@ mod tests {
                 "style worker did not become idle"
             );
         }
+    }
+
+    struct RemoveDecisionPause {
+        reached_tx: mpsc::Sender<()>,
+        release_tx: mpsc::Sender<()>,
+        release_rx: Mutex<mpsc::Receiver<()>>,
+    }
+
+    static REMOVE_DECISION_PAUSE: Mutex<Option<std::sync::Arc<RemoveDecisionPause>>> =
+        Mutex::new(None);
+
+    pub(super) fn pause_after_remove_tracking_decision() {
+        let pause = REMOVE_DECISION_PAUSE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(pause) = pause {
+            let _ = pause.reached_tx.send(());
+            let _ = pause
+                .release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+        }
+    }
+
+    struct RemoveDecisionPauseGuard(std::sync::Arc<RemoveDecisionPause>);
+
+    impl RemoveDecisionPauseGuard {
+        fn install() -> (Self, mpsc::Receiver<()>) {
+            let (reached_tx, reached_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let pause = std::sync::Arc::new(RemoveDecisionPause {
+                reached_tx,
+                release_tx,
+                release_rx: Mutex::new(release_rx),
+            });
+            *REMOVE_DECISION_PAUSE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pause.clone());
+            (Self(pause), reached_rx)
+        }
+
+        fn release(&self) {
+            let _ = self.0.release_tx.send(());
+        }
+    }
+
+    impl Drop for RemoveDecisionPauseGuard {
+        fn drop(&mut self) {
+            self.release();
+            let mut pause = REMOVE_DECISION_PAUSE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if pause
+                .as_ref()
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, &self.0))
+            {
+                *pause = None;
+            }
+        }
+    }
+
+    struct SinglePendingRestoreOwner(PendingRestoreOwner);
+
+    impl Drop for SinglePendingRestoreOwner {
+        fn drop(&mut self) {
+            self.0.release();
+            let _ = wait_for_window_style_requests(Duration::from_secs(2));
+            self.0.stop();
+            self.0.join_bounded(Duration::from_secs(2));
+        }
+    }
+
+    #[test]
+    fn test_remove_retirement_and_recovery_are_atomic() {
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE};
+
+        let _guard = lock_snap_tracking_fixture();
+        let owner = PendingRestoreOwner::spawn("LeopardWMRemoveRetirementRace", false);
+        let _owner_cleanup = SinglePendingRestoreOwner(owner);
+        let window_id = _owner_cleanup.0.hwnd.0 as usize as u64;
+        assert!(remove_maximizebox(window_id).unwrap());
+        assert!(wait_for_window_style_requests(Duration::from_secs(5)));
+        assert!(restore_maximizebox(window_id).unwrap());
+        assert!(wait_for_window_style_requests(Duration::from_secs(5)));
+
+        let (pause_guard, reached_rx) = RemoveDecisionPauseGuard::install();
+        assert!(remove_maximizebox(window_id).unwrap());
+        reached_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker did not reach the post-remove tracking decision");
+
+        let (recovery_done_tx, recovery_done_rx) = mpsc::channel();
+        let recovery_thread = std::thread::spawn(move || {
+            restore_maximizebox_panic_recovery();
+            let _ = recovery_done_tx.send(());
+        });
+        let mut recovery = BoundedRecoveryCall {
+            in_flight: _owner_cleanup.0.state.clone(),
+            done_rx: recovery_done_rx,
+            thread: Some(recovery_thread),
+        };
+        let recovery_finished_before_release = recovery.wait(Duration::from_millis(100));
+        pause_guard.release();
+        if !recovery_finished_before_release {
+            assert!(
+                recovery.wait(Duration::from_secs(2)),
+                "recovery remained blocked after the worker retired its request"
+            );
+        }
+        assert!(wait_for_window_style_requests(Duration::from_secs(5)));
+        assert_eq!(
+            unsafe { GetWindowLongW(_owner_cleanup.0.hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX_BIT,
+            WS_MAXIMIZEBOX_BIT,
+            "recovery and worker retirement must not jointly skip the restored window"
+        );
     }
 
     struct PendingRestoreControl {
