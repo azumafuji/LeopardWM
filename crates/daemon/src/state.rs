@@ -792,6 +792,8 @@ pub(crate) struct AppState {
     /// no-op; a throttled or same-HWND focus leaves the list pending.
     #[cfg(test)]
     pub(crate) injected_stale_hwnds: Vec<u64>,
+    #[cfg(test)]
+    pub(crate) injected_iconic_hwnds: HashSet<u64>,
     /// Optional test-only behavior override for placement application.
     #[cfg(test)]
     pub(crate) injected_apply_placements_behavior: Option<TestApplyPlacementsBehavior>,
@@ -1219,6 +1221,8 @@ impl AppState {
             injected_native_offscreen_enabled: false,
             #[cfg(test)]
             injected_stale_hwnds: Vec::new(),
+            #[cfg(test)]
+            injected_iconic_hwnds: HashSet::new(),
             #[cfg(test)]
             injected_apply_placements_behavior: None,
             #[cfg(test)]

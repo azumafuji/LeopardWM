@@ -388,8 +388,7 @@ pub fn is_cursor_on_resize_border(hwnd: WindowId) -> bool {
 
 /// Cheap existence check for a window handle. Returns `false` if the
 /// HWND has been recycled / the window no longer exists. Does NOT
-/// require visibility or non-minimized state (use
-/// `is_window_alive_and_visible` for that). Suitable for guarding
+/// require visibility or non-minimized state. Suitable for guarding
 /// async deferred operations whose target may have been destroyed
 /// between request and apply time.
 pub fn is_window_valid(hwnd: WindowId) -> bool {
@@ -399,20 +398,40 @@ pub fn is_window_valid(hwnd: WindowId) -> bool {
     unsafe { IsWindow(Some(HWND(hwnd as *mut c_void))).as_bool() }
 }
 
-/// Check if a managed window is still valid and visible.
+/// The current presence state of a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowPresence {
+    Gone,
+    Hidden,
+    Minimized,
+    Visible,
+}
+
+/// Query whether a window is gone, hidden, minimized, or visible.
 ///
-/// Returns `false` if the window no longer exists, is not visible,
-/// or is minimized (e.g., close-to-tray apps). Used to prune stale
-/// windows from the layout that disappeared without firing events.
-pub fn is_window_alive_and_visible(hwnd: WindowId) -> bool {
+/// A window is `Gone` when its handle is null or no longer valid. Otherwise,
+/// visibility is checked before minimized state, so a hidden minimized window
+/// is reported as `Hidden`. A false `IsIconic` result is followed by a liveness
+/// check to avoid reporting `Visible` for a window destroyed during the query.
+pub fn window_presence(hwnd: WindowId) -> WindowPresence {
     if hwnd == 0 {
-        return false;
+        return WindowPresence::Gone;
     }
     unsafe {
         let hwnd = HWND(hwnd as *mut c_void);
-        IsWindow(Some(hwnd)).as_bool()
-            && IsWindowVisible(hwnd).as_bool()
-            && !IsIconic(hwnd).as_bool()
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return WindowPresence::Gone;
+        }
+        if !IsWindowVisible(hwnd).as_bool() {
+            return WindowPresence::Hidden;
+        }
+        if IsIconic(hwnd).as_bool() {
+            return WindowPresence::Minimized;
+        }
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return WindowPresence::Gone;
+        }
+        WindowPresence::Visible
     }
 }
 

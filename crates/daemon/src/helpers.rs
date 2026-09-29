@@ -5,8 +5,8 @@ use crate::state::*;
 use anyhow::Result;
 use leopardwm_core_layout::{Rect, Workspace};
 #[cfg(not(test))]
-use leopardwm_platform_win32::{is_excluded_tool_window_hwnd, is_window_alive_and_visible};
-use leopardwm_platform_win32::{scale_px, MonitorId};
+use leopardwm_platform_win32::{is_excluded_tool_window_hwnd, window_presence};
+use leopardwm_platform_win32::{scale_px, MonitorId, WindowPresence};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -372,10 +372,10 @@ impl AppState {
     ///
     /// Standalone entry used by Refresh and the tracked-focus liveness tick.
     /// Focus handling passes attribution context through
-    /// `prune_stale_windows_with`. Test builds do not query Win32: an empty
-    /// injected stale list is a no-op, and a non-empty list is consumed only
-    /// when this prune runs. Distinguishes no apply, successful apply, and
-    /// failed apply so callers do not treat a logged apply error as success.
+    /// `prune_stale_windows_with`. Test builds use injected presence states in
+    /// the same scan, consuming the injected stale list only when this prune
+    /// runs. Distinguishes no apply, successful apply, and failed apply so
+    /// callers do not treat a logged apply error as success.
     pub(crate) fn prune_stale_windows(&mut self) -> StalePruneLayout {
         self.prune_stale_windows_with(None)
     }
@@ -433,65 +433,71 @@ impl AppState {
         changed
     }
 
-    #[cfg(test)]
-    fn tracked_focus_is_gone_or_unmanageable(&self, tracked: u64, minimized: bool) -> bool {
-        !minimized && self.injected_stale_hwnds.contains(&tracked)
+    fn stale_window_probe(&self, hwnd: u64) -> (WindowPresence, bool) {
+        #[cfg(test)]
+        {
+            let presence = if self.injected_stale_hwnds.contains(&hwnd) {
+                WindowPresence::Hidden
+            } else if self.injected_iconic_hwnds.contains(&hwnd) {
+                WindowPresence::Minimized
+            } else {
+                WindowPresence::Visible
+            };
+            (presence, false)
+        }
+
+        #[cfg(not(test))]
+        {
+            let presence = window_presence(hwnd);
+            let excluded_tool_window =
+                presence == WindowPresence::Visible && is_excluded_tool_window_hwnd(hwnd);
+            (presence, excluded_tool_window)
+        }
     }
 
-    #[cfg(not(test))]
+    fn window_is_stale(&self, hwnd: u64, marked_minimized: bool) -> bool {
+        let (presence, excluded_tool_window) = self.stale_window_probe(hwnd);
+        match presence {
+            WindowPresence::Gone | WindowPresence::Hidden | WindowPresence::Minimized => {
+                !marked_minimized
+            }
+            WindowPresence::Visible => excluded_tool_window,
+        }
+    }
+
     fn tracked_focus_is_gone_or_unmanageable(&self, tracked: u64, minimized: bool) -> bool {
-        let alive_visible = is_window_alive_and_visible(tracked);
-        let gone = !alive_visible && !minimized;
-        let unmanageable = alive_visible && is_excluded_tool_window_hwnd(tracked);
-        gone || unmanageable
+        self.window_is_stale(tracked, minimized)
     }
 
     pub(crate) fn prune_stale_windows_with(
         &mut self,
         focused_prune: Option<FocusedPruneContext>,
     ) -> StalePruneLayout {
+        let mut stale: Vec<u64> = Vec::new();
+        for ws_vec in self.workspaces.values() {
+            for workspace in ws_vec.iter() {
+                for &wid in &workspace.all_window_ids() {
+                    if self.window_is_stale(wid, workspace.is_minimized(wid)) {
+                        stale.push(wid);
+                    }
+                }
+            }
+        }
+        if let Some(drag) = self.drag_state.as_ref() {
+            let hwnd = drag.hwnd;
+            if !stale.contains(&hwnd) {
+                let minimized = self
+                    .find_window_workspace(hwnd)
+                    .and_then(|(mid, idx)| self.workspaces.get(&mid)?.get(idx))
+                    .is_some_and(|ws| ws.is_minimized(hwnd));
+                if self.window_is_stale(hwnd, minimized) {
+                    stale.push(hwnd);
+                }
+            }
+        }
         #[cfg(test)]
-        {
-            let stale = std::mem::take(&mut self.injected_stale_hwnds);
-            if stale.is_empty() {
-                StalePruneLayout::Unchanged
-            } else {
-                self.finish_stale_window_prune(&stale, focused_prune)
-            }
-        }
-
-        #[cfg(not(test))]
-        {
-            let mut stale: Vec<u64> = Vec::new();
-            for ws_vec in self.workspaces.values() {
-                for workspace in ws_vec.iter() {
-                    for &wid in &workspace.all_window_ids() {
-                        let alive_visible = is_window_alive_and_visible(wid);
-                        let gone = !alive_visible && !workspace.is_minimized(wid);
-                        let unmanageable = alive_visible && is_excluded_tool_window_hwnd(wid);
-                        if gone || unmanageable {
-                            stale.push(wid);
-                        }
-                    }
-                }
-            }
-            if let Some(drag) = self.drag_state.as_ref() {
-                let hwnd = drag.hwnd;
-                if !stale.contains(&hwnd) {
-                    let alive_visible = is_window_alive_and_visible(hwnd);
-                    let minimized = self
-                        .find_window_workspace(hwnd)
-                        .and_then(|(mid, idx)| self.workspaces.get(&mid)?.get(idx))
-                        .is_some_and(|ws| ws.is_minimized(hwnd));
-                    let gone = !alive_visible && !minimized;
-                    let unmanageable = alive_visible && is_excluded_tool_window_hwnd(hwnd);
-                    if gone || unmanageable {
-                        stale.push(hwnd);
-                    }
-                }
-            }
-            self.finish_stale_window_prune(&stale, focused_prune)
-        }
+        self.injected_stale_hwnds.clear();
+        self.finish_stale_window_prune(&stale, focused_prune)
     }
 
     fn finish_stale_window_prune(
