@@ -2347,6 +2347,70 @@ impl AppState {
         self.broadcast_focused_window_if_changed(monitor_id, None);
     }
 
+    pub(crate) fn mark_minimized_and_reflow(&mut self, hwnd: u64) -> Option<bool> {
+        let (monitor_id, ws_idx) = self.find_window_workspace(hwnd)?;
+        let viewport_width = self.viewport_width_for(monitor_id);
+        let layout_viewport = self.layout_viewport(monitor_id);
+        let is_floating = self
+            .workspaces
+            .get(&monitor_id)
+            .and_then(|workspaces| workspaces.get(ws_idx))
+            .is_some_and(|workspace| workspace.is_floating(hwnd));
+        let workspace = self
+            .workspaces
+            .get_mut(&monitor_id)
+            .and_then(|workspaces| workspaces.get_mut(ws_idx))?;
+        let cleared_fullscreen = workspace.clear_fullscreen_if_window(hwnd);
+        // mark_minimized only handles tiled windows; floating windows are not
+        // in the minimized set, so both paths count as a handled minimize.
+        if !(workspace.mark_minimized(hwnd) || cleared_fullscreen || is_floating) {
+            return None;
+        }
+
+        let col_loc = workspace.find_window_location(hwnd);
+        let col_info = col_loc.map(|(ci, _)| {
+            let col = &workspace.columns()[ci];
+            let visible = col
+                .windows()
+                .iter()
+                .filter(|w| !workspace.is_minimized(**w))
+                .count();
+            (ci, col.len(), visible)
+        });
+        info!(
+            "Window {} minimized (col={:?}, minimized_total={})",
+            hwnd,
+            col_info,
+            workspace.minimized_count()
+        );
+
+        if workspace.focused_window() == Some(hwnd) {
+            workspace.focus_down();
+            if workspace.focused_window() == Some(hwnd) {
+                workspace.focus_up();
+            }
+            if workspace.focused_window() == Some(hwnd) {
+                workspace.focus_right();
+                if workspace.focused_window() == Some(hwnd) {
+                    workspace.focus_left();
+                }
+            }
+        }
+        workspace.ensure_focused_visible_animated(viewport_width);
+
+        for placement in workspace.compute_placements(layout_viewport) {
+            info!(
+                "  post-minimize placement: hwnd={} rect=({},{} {}x{})",
+                placement.window_id,
+                placement.rect.x,
+                placement.rect.y,
+                placement.rect.width,
+                placement.rect.height,
+            );
+        }
+        Some(workspace.focused_visible_window().is_some())
+    }
+
     /// Handle a window-minimized event.
     pub(crate) fn on_window_minimized(&mut self, hwnd: u64) {
         let was_tracked_focus = self.previous_focused_hwnd == Some(hwnd);
@@ -2354,93 +2418,30 @@ impl AppState {
             let was_selected_focus = was_tracked_focus
                 && self.focused_monitor == monitor_id
                 && self.active_workspace_idx(monitor_id) == ws_idx;
-            let viewport_width = self.viewport_width_for(monitor_id);
-            let layout_viewport = self.layout_viewport(monitor_id);
-            let snapshot = self.snapshot_layout();
-
-            // If the minimized window is a floating window tracked as
-            // previous_focused_hwnd, clear it so sync_foreground_window
-            // doesn't try to re-focus a minimized floating window.
             let is_floating = self
                 .workspaces
                 .get(&monitor_id)
-                .and_then(|v| v.get(ws_idx))
-                .is_some_and(|ws| ws.is_floating(hwnd));
-            if is_floating && self.previous_focused_hwnd == Some(hwnd) {
+                .and_then(|workspaces| workspaces.get(ws_idx))
+                .is_some_and(|workspace| workspace.is_floating(hwnd));
+            if is_floating && was_tracked_focus {
                 self.previous_focused_hwnd = None;
             }
 
-            if let Some(workspace) = self
-                .workspaces
-                .get_mut(&monitor_id)
-                .and_then(|v| v.get_mut(ws_idx))
-            {
-                let cleared_fullscreen = workspace.clear_fullscreen_if_window(hwnd);
-                // mark_minimized only handles tiled windows; floating windows
-                // are not in the minimized set. Handle both paths.
-                if workspace.mark_minimized(hwnd) || cleared_fullscreen || is_floating {
-                    let col_loc = workspace.find_window_location(hwnd);
-                    let col_info = col_loc.map(|(ci, _)| {
-                        let col = &workspace.columns()[ci];
-                        let visible = col
-                            .windows()
-                            .iter()
-                            .filter(|w| !workspace.is_minimized(**w))
-                            .count();
-                        (ci, col.len(), visible)
-                    });
-                    info!(
-                        "Window {} minimized (col={:?}, minimized_total={})",
-                        hwnd,
-                        col_info,
-                        workspace.minimized_count()
-                    );
-
-                    // If the minimized window was the focused window, move focus
-                    if workspace.focused_window() == Some(hwnd) {
-                        // Try to focus another window in the same column
-                        workspace.focus_down();
-                        if workspace.focused_window() == Some(hwnd) {
-                            workspace.focus_up();
-                        }
-                        // If still focused on minimized (only window in column), try next column
-                        if workspace.focused_window() == Some(hwnd) {
-                            workspace.focus_right();
-                            if workspace.focused_window() == Some(hwnd) {
-                                workspace.focus_left();
-                            }
-                        }
-                    }
-                    workspace.ensure_focused_visible_animated(viewport_width);
-                    let has_focused_visible_window = workspace.focused_visible_window().is_some();
-
-                    // Log expected post-minimize placements for debugging
-                    {
-                        let post_placements = workspace.compute_placements(layout_viewport);
-                        for p in &post_placements {
-                            info!(
-                                "  post-minimize placement: hwnd={} rect=({},{} {}x{})",
-                                p.window_id, p.rect.x, p.rect.y, p.rect.width, p.rect.height,
-                            );
-                        }
-                    }
-
-                    self.start_layout_transition(snapshot);
-                    if let Err(e) = self.apply_layout() {
-                        warn!("Failed to apply layout after minimize: {}", e);
-                    }
-                    // Keep monitor focus aligned before foreground sync so we don't
-                    // accidentally steer foreground to a stale monitor.
-                    self.focused_monitor = monitor_id;
-                    if was_selected_focus && has_focused_visible_window {
-                        self.arm_pending_last_window_departure(
-                            None,
-                            self.event_time_now_ms(),
-                            LastWindowDepartureOrigin::Minimized,
-                        );
-                    }
-                    self.sync_foreground_window();
+            let snapshot = self.snapshot_layout();
+            if let Some(has_focused_visible_window) = self.mark_minimized_and_reflow(hwnd) {
+                self.start_layout_transition(snapshot);
+                if let Err(e) = self.apply_layout() {
+                    warn!("Failed to apply layout after minimize: {}", e);
                 }
+                self.focused_monitor = monitor_id;
+                if was_selected_focus && has_focused_visible_window {
+                    self.arm_pending_last_window_departure(
+                        None,
+                        self.event_time_now_ms(),
+                        LastWindowDepartureOrigin::Minimized,
+                    );
+                }
+                self.sync_foreground_window();
             }
         } else {
             debug!("Window {} minimized (unmanaged)", hwnd);

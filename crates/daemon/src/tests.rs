@@ -6707,11 +6707,50 @@ fn test_prune_reconciles_iconic_unmarked_focused_window() {
         .unwrap();
     state.previous_focused_hwnd = Some(100);
 
-    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+    state.handle_window_event(WindowEvent::Focused(160, 1_000));
 
     assert!(state.workspaces[&mon][0].contains_window(150));
     assert!(state.workspaces[&mon][0].is_minimized(150));
-    assert_ne!(state.workspaces[&mon][0].focused_window(), Some(150));
+    assert_eq!(state.active_workspace_idx(mon), 0);
+    assert_eq!(state.workspaces[&mon][0].focused_window(), Some(160));
+}
+
+#[test]
+fn test_prune_reconciles_inactive_iconic_without_changing_selected_focus() {
+    let mut state = AppState::new_with_config(test_config(), two_monitors());
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    state.ensure_workspace_exists(1, 1);
+    state.workspaces.get_mut(&1).unwrap()[1]
+        .insert_window(300, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&2).unwrap()[0]
+        .insert_window(200, Some(800))
+        .unwrap();
+    state.focused_monitor = 1;
+    state.previous_focused_hwnd = Some(100);
+    state.injected_stale_hwnds.push(100);
+    state.injected_iconic_hwnds.insert(200);
+    state.injected_foreground_hwnd = Some(Some(300));
+
+    state.prune_stale_windows_with(None);
+
+    assert_eq!(state.focused_monitor, 1);
+    assert_eq!(state.active_workspace_idx(1), 0);
+    assert_eq!(state.previous_focused_hwnd, None);
+    assert!(state.workspaces[&2][0].is_minimized(200));
+    let intent = state.pending_last_window_departure.unwrap();
+    assert_eq!(intent.monitor, 1);
+    assert_eq!(intent.workspace, 0);
+    assert_eq!(intent.replacement_hwnd, Some(300));
+    assert_eq!(intent.origin, LastWindowDepartureOrigin::EventlessPrune);
+
+    state.handle_window_event(WindowEvent::Focused(300, intent.armed_at_event_time_ms));
+    assert_eq!(state.focused_monitor, 1);
+    assert_eq!(state.active_workspace_idx(1), 0);
+    assert_eq!(state.previous_focused_hwnd, None);
+    assert_eq!(state.pending_last_window_departure, Some(intent));
 }
 
 fn last_window_liveness_state() -> AppState {

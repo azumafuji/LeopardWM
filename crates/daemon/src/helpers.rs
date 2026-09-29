@@ -455,13 +455,21 @@ impl AppState {
         }
     }
 
-    fn window_is_stale(&self, hwnd: u64, marked_minimized: bool) -> bool {
-        let (presence, excluded_tool_window) = self.stale_window_probe(hwnd);
+    fn presence_is_stale(
+        presence: WindowPresence,
+        excluded_tool_window: bool,
+        marked_minimized: bool,
+    ) -> bool {
         match presence {
             WindowPresence::Gone | WindowPresence::Hidden => !marked_minimized,
             WindowPresence::Minimized => false,
             WindowPresence::Visible => excluded_tool_window,
         }
+    }
+
+    fn window_is_stale(&self, hwnd: u64, marked_minimized: bool) -> bool {
+        let (presence, excluded_tool_window) = self.stale_window_probe(hwnd);
+        Self::presence_is_stale(presence, excluded_tool_window, marked_minimized)
     }
 
     fn tracked_focus_is_gone_or_unmanageable(&self, tracked: u64, minimized: bool) -> bool {
@@ -474,16 +482,17 @@ impl AppState {
     ) -> StalePruneLayout {
         let mut stale: Vec<u64> = Vec::new();
         let mut unmarked_iconic = Vec::new();
+        let mut observed = std::collections::HashSet::new();
         for ws_vec in self.workspaces.values() {
             for workspace in ws_vec.iter() {
                 for &wid in &workspace.all_window_ids() {
+                    observed.insert(wid);
                     let marked_minimized = workspace.is_minimized(wid);
-                    if !marked_minimized
-                        && self.stale_window_probe(wid).0 == WindowPresence::Minimized
-                    {
+                    let (presence, excluded_tool_window) = self.stale_window_probe(wid);
+                    if !marked_minimized && presence == WindowPresence::Minimized {
                         unmarked_iconic.push(wid);
                     }
-                    if self.window_is_stale(wid, marked_minimized) {
+                    if Self::presence_is_stale(presence, excluded_tool_window, marked_minimized) {
                         stale.push(wid);
                     }
                 }
@@ -491,12 +500,16 @@ impl AppState {
         }
         if let Some(drag) = self.drag_state.as_ref() {
             let hwnd = drag.hwnd;
-            if !stale.contains(&hwnd) {
+            if observed.insert(hwnd) {
                 let minimized = self
                     .find_window_workspace(hwnd)
                     .and_then(|(mid, idx)| self.workspaces.get(&mid)?.get(idx))
                     .is_some_and(|ws| ws.is_minimized(hwnd));
-                if self.window_is_stale(hwnd, minimized) {
+                let (presence, excluded_tool_window) = self.stale_window_probe(hwnd);
+                if !minimized && presence == WindowPresence::Minimized {
+                    unmarked_iconic.push(hwnd);
+                }
+                if Self::presence_is_stale(presence, excluded_tool_window, minimized) {
                     stale.push(hwnd);
                 }
             }
@@ -504,8 +517,43 @@ impl AppState {
         #[cfg(test)]
         self.injected_stale_hwnds.clear();
         let result = self.finish_stale_window_prune(&stale, focused_prune);
+
+        let selected = (
+            self.focused_monitor,
+            self.active_workspace_idx(self.focused_monitor),
+        );
+        let tracked_selected = self
+            .previous_focused_hwnd
+            .filter(|hwnd| self.find_window_workspace(*hwnd) == Some(selected));
+        if let Some(hwnd) = tracked_selected.filter(|hwnd| unmarked_iconic.contains(hwnd)) {
+            if self.stale_window_probe(hwnd).0 == WindowPresence::Minimized {
+                self.on_window_minimized(hwnd);
+            }
+        }
+
+        let mut batch_snapshot = None;
+        let mut batch_changed = false;
         for hwnd in unmarked_iconic {
-            self.on_window_minimized(hwnd);
+            if Some(hwnd) == tracked_selected {
+                continue;
+            }
+            if batch_snapshot.is_none() {
+                batch_snapshot = Some(self.snapshot_layout());
+            }
+            if self.stale_window_probe(hwnd).0 == WindowPresence::Minimized
+                && self.mark_minimized_and_reflow(hwnd).is_some()
+            {
+                batch_changed = true;
+            }
+        }
+        if batch_changed {
+            self.start_layout_transition(batch_snapshot.unwrap());
+            if let Err(e) = self.apply_layout() {
+                warn!(
+                    "Failed to apply layout after minimize reconciliation: {}",
+                    e
+                );
+            }
         }
         result
     }
