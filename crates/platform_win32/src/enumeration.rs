@@ -57,6 +57,15 @@ pub fn is_excluded_tool_window_hwnd(hwnd: WindowId) -> bool {
     is_excluded_tool_window(style, ex_style)
 }
 
+/// Reads current styles for the admission-only topmost popup exclusion.
+/// Already-managed windows may acquire this shape without losing management.
+pub fn is_excluded_topmost_popup_hwnd(hwnd: WindowId) -> bool {
+    let hwnd = HWND(hwnd as *mut c_void);
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) as u32 };
+    let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 };
+    is_excluded_topmost_popup(style, ex_style)
+}
+
 /// Checks built-in class exclusions without rejecting hidden or cloaked managed windows.
 pub fn is_excluded_window_class_hwnd(hwnd: WindowId) -> bool {
     let mut class_buf = [0u16; 256];
@@ -70,10 +79,11 @@ pub fn is_excluded_window_class_hwnd(hwnd: WindowId) -> bool {
 /// or windows with empty titles, making it suitable for handling window
 /// creation events where UWP apps may still be transitioning.
 ///
-/// Adding or reordering a check here requires the same edit in
-/// `platform_win32/src/inspect.rs` (`classify_live_create` only). The two
-/// admission chains intentionally diverge: live-create omits cloak, empty
-/// title, and skip-title relative to startup so transient popups can admit.
+/// Used for both admission and already-managed window lookups. The daemon
+/// applies the admission-only topmost popup exclusion after this read succeeds.
+/// Changes to these filters must be reflected in `inspect.rs`'s live-create
+/// diagnostics, which also model that daemon admission check. Live-create omits
+/// cloak, empty title, and skip-title relative to startup.
 pub fn get_window_info(hwnd_id: WindowId) -> Option<WindowInfo> {
     unsafe {
         let hwnd = HWND(hwnd_id as *mut c_void);
@@ -99,10 +109,6 @@ pub fn get_window_info(hwnd_id: WindowId) -> Option<WindowInfo> {
             if !owner.is_invalid() {
                 return None;
             }
-        }
-
-        if is_excluded_topmost_popup(style, ex_style) {
-            return None;
         }
 
         // Get title (allow empty for UWP apps still loading)

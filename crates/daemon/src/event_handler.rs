@@ -356,6 +356,7 @@ pub(crate) enum AdmitOutcome {
     GatedIgnored,
     TransientSuppressed,
     NoWindowInfo,
+    TopmostPopup,
     #[cfg_attr(test, allow(dead_code))]
     ShellCloaked,
     ElevationBlocked,
@@ -755,6 +756,10 @@ impl AppState {
         let Some(win_info) = self.lookup_window_info(hwnd) else {
             return AdmitOutcome::NoWindowInfo;
         };
+        if leopardwm_platform_win32::is_excluded_topmost_popup_hwnd(hwnd) {
+            debug!("Ignoring topmost notification popup {}", hwnd);
+            return AdmitOutcome::TopmostPopup;
+        }
         {
             // Skip shell-cloaked windows (suspended UWP frames, windows
             // on other virtual desktops). These are valid HWNDs with

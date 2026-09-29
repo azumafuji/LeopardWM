@@ -608,6 +608,7 @@ fn readmit_failure_reason(outcome: AdmitOutcome) -> &'static str {
         AdmitOutcome::ElevationBlocked => "elevation blocked",
         AdmitOutcome::DialogLike => "window is ineligible",
         AdmitOutcome::NoWindowInfo => "window info is unavailable",
+        AdmitOutcome::TopmostPopup => "window is a topmost notification popup",
         AdmitOutcome::InsertFailed => "admission failed",
         AdmitOutcome::ShellCloaked => "window is shell-cloaked",
         AdmitOutcome::TransientConsoleHost => "transient console host",
