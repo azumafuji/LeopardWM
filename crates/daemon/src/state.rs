@@ -450,6 +450,7 @@ pub(crate) struct AppState {
     /// monitor's selected workspace becomes genuinely empty. Distinct from
     /// `pending_workspace_switch_focus`.
     pub(crate) pending_last_window_departure: Option<PendingLastWindowDeparture>,
+    pub(crate) last_restored_managed_window: Option<(u64, std::time::Instant)>,
     /// `(monitor, hwnd)` of the most-recently-broadcast
     /// `FocusedWindowChanged` event. Independent from
     /// `previous_focused_hwnd`: command-driven focus paths
@@ -1073,6 +1074,7 @@ impl AppState {
             previous_focused_hwnd: None,
             pending_workspace_switch_focus: None,
             pending_last_window_departure: None,
+            last_restored_managed_window: None,
             last_broadcast_focused: None,
             last_focus_change_at: None,
             last_prune_at: None,

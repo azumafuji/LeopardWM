@@ -3310,6 +3310,38 @@ fn test_maximized_target_drops_only_its_shared_crossfade_visual() {
 }
 
 #[test]
+fn test_minimized_tiled_window_maximize_is_observed_during_restore() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    let maximized_at = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&1).unwrap()[0].mark_minimized(100);
+    state.window_last_maximized_at.insert(100, maximized_at);
+    state.injected_window_maximized.insert(100, true);
+
+    state.handle_window_event(WindowEvent::MovedOrResized(100));
+
+    assert!(state.window_last_maximized_at[&100] > maximized_at);
+}
+
+#[test]
+fn test_minimized_move_clears_maximize_timestamp() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    let maximized_at = std::time::Instant::now();
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&1).unwrap()[0].mark_minimized(100);
+    state.window_last_maximized_at.insert(100, maximized_at);
+    state.injected_window_maximized.insert(100, false);
+
+    state.handle_window_event(WindowEvent::MovedOrResized(100));
+
+    assert!(!state.window_last_maximized_at.contains_key(&100));
+}
+
+#[test]
 fn test_application_fullscreen_crossfade_aborts_only_owning_batch() {
     use crate::state::CrossfadeState;
 
@@ -6697,6 +6729,76 @@ fn test_taskbar_restored_focus_target_is_not_reconciled_minimized() {
     assert!(!state.workspaces[&monitor][1].is_minimized(200));
     assert_eq!(state.active_workspace_idx(monitor), 1);
     assert_eq!(state.previous_focused_hwnd, Some(200));
+}
+
+#[test]
+fn test_restored_parked_window_focus_follows_after_tracked_minimize_reconcile() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+
+    state.handle_window_event(WindowEvent::Restored(200));
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.active_workspace_idx(monitor), 1);
+    assert_eq!(state.previous_focused_hwnd, Some(200));
+    assert!(state.workspaces[&monitor][0].is_minimized(100));
+    assert_eq!(state.pending_last_window_departure, None);
+}
+
+#[test]
+fn test_restoring_different_window_preserves_bound_minimize_guard() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.workspaces.get_mut(&monitor).unwrap()[1]
+        .insert_window(300, Some(800))
+        .unwrap();
+
+    state.handle_window_event(WindowEvent::Minimized(100, 1_000));
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+    let intent = state.pending_last_window_departure.unwrap();
+    assert_eq!(intent.replacement_hwnd, Some(200));
+
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(300);
+    state.handle_window_event(WindowEvent::Restored(300));
+
+    assert_eq!(state.pending_last_window_departure, Some(intent));
+}
+
+#[test]
+fn test_iconic_tracked_focus_on_other_monitor_does_not_sync_foreground() {
+    let mut state = AppState::new_with_config(test_config(), two_monitors());
+    state.reduce_motion = true;
+    state.last_prune_at = Some(std::time::Instant::now());
+    let selected_monitor = state.focused_monitor;
+    let other_monitor = if selected_monitor == 1 { 2 } else { 1 };
+    state.workspaces.get_mut(&other_monitor).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&other_monitor).unwrap()[0]
+        .insert_window(150, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&other_monitor).unwrap()[0]
+        .focus_window(100)
+        .unwrap();
+    state.workspaces.get_mut(&selected_monitor).unwrap()[0]
+        .insert_window(200, Some(800))
+        .unwrap();
+    state.previous_focused_hwnd = Some(100);
+    state.injected_iconic_hwnds.insert(100);
+    let border_shows_before = state.border_show_count.load(Ordering::Relaxed);
+
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.focused_monitor, selected_monitor);
+    assert!(state.workspaces[&other_monitor][0].is_minimized(100));
+    assert_eq!(state.previous_focused_hwnd, Some(200));
+    assert_eq!(
+        state.border_show_count.load(Ordering::Relaxed) - border_shows_before,
+        1,
+        "reconciling the off-selection minimized focus must not resync foreground"
+    );
+    assert_eq!(state.pending_last_window_departure, None);
 }
 
 #[test]

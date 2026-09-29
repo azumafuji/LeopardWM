@@ -1979,6 +1979,11 @@ impl AppState {
         };
         let handler_time_ms = self.event_time_now_ms();
         let ms_since_last_input = leopardwm_platform_win32::ms_since_last_user_input();
+        let was_recently_restored =
+            self.last_restored_managed_window
+                .is_some_and(|(restored_hwnd, restored_at)| {
+                    restored_hwnd == hwnd && restored_at.elapsed() < PendingLastWindowDeparture::TTL
+                });
         // Keep Windows' departure handoff from undoing selection: suppress exact replacements and
         // bind eligible other-workspace handoffs; Minimized allows a 500 ms OS timestamp window.
         let event_is_eligible = match intent.origin {
@@ -2008,6 +2013,11 @@ impl AppState {
             } else {
                 "later_than_arm"
             }
+        } else if intent.origin == LastWindowDepartureOrigin::Minimized && was_recently_restored {
+            if intent.replacement_hwnd.is_none() || intent.replacement_hwnd == Some(hwnd) {
+                self.pending_last_window_departure = None;
+            }
+            "recently_restored"
         } else if Some(hwnd) == intent.replacement_hwnd {
             "exact_replacement"
         } else if intent.replacement_hwnd.is_none()
@@ -2154,7 +2164,16 @@ impl AppState {
                     && self.stale_window_probe(tracked).0
                         == leopardwm_platform_win32::WindowPresence::Minimized
                 {
-                    self.on_window_minimized(tracked);
+                    if (monitor_id, ws_idx)
+                        == (
+                            self.focused_monitor,
+                            self.active_workspace_idx(self.focused_monitor),
+                        )
+                    {
+                        self.on_window_minimized(tracked);
+                    } else {
+                        self.reconcile_unselected_minimized_window(tracked);
+                    }
                 }
             }
         }
@@ -2450,6 +2469,23 @@ impl AppState {
         Some(workspace.focused_visible_window().is_some())
     }
 
+    fn reconcile_unselected_minimized_window(&mut self, hwnd: u64) {
+        let snapshot = self.snapshot_layout();
+        if self.mark_minimized_and_reflow(hwnd).is_some() {
+            if self.start_layout_transition(snapshot) {
+                if let Some(transition) = self.layout_transition.as_mut() {
+                    transition.suppress_landing_focus_resync = true;
+                }
+            }
+            if let Err(e) = self.apply_layout() {
+                warn!(
+                    "Failed to apply layout after minimize reconciliation: {}",
+                    e
+                );
+            }
+        }
+    }
+
     /// Handle a window-minimized event.
     pub(crate) fn on_window_minimized(&mut self, hwnd: u64) {
         self.on_window_minimized_with_context(hwnd, None, None, "focused_reconcile");
@@ -2572,10 +2608,15 @@ impl AppState {
                     }
                 }
             }
+            if did_restore {
+                self.last_restored_managed_window = Some((hwnd, std::time::Instant::now()));
+            }
             if did_restore
                 && self.pending_last_window_departure.is_some_and(|intent| {
                     intent.monitor == monitor_id
                         && intent.origin == LastWindowDepartureOrigin::Minimized
+                        && (intent.replacement_hwnd.is_none()
+                            || intent.replacement_hwnd == Some(hwnd))
                 })
             {
                 let intent = self.pending_last_window_departure.unwrap();
@@ -3059,7 +3100,7 @@ impl AppState {
                         })
                 })
                 .unwrap_or(false);
-            let is_maximized = leopardwm_platform_win32::is_window_maximized(hwnd);
+            let is_maximized = self.native_window_is_maximized(hwnd);
             if should_observe_maximize_during_suppression(
                 self.applying_layout,
                 self.display_change_pending,
@@ -3076,7 +3117,7 @@ impl AppState {
             hwnd,
             chrome_rect,
             dwm_rect,
-            leopardwm_platform_win32::is_window_maximized(hwnd),
+            self.native_window_is_maximized(hwnd),
         );
         let prior = self.application_fullscreen.get(&hwnd).copied();
         let lifecycle = application_fullscreen_lifecycle(prior, session);
@@ -3198,15 +3239,16 @@ impl AppState {
                 if self.previous_focused_hwnd == Some(hwnd) {
                     self.show_border(hwnd);
                 }
-            } else if is_minimized {
-                debug!("Ignoring MovedOrResized for minimized window {}", hwnd);
-            } else if leopardwm_platform_win32::is_window_maximized(hwnd) {
+            } else if self.native_window_is_maximized(hwnd) {
                 // User maximized a tiled window — let it stay maximized. Record
                 // the maximize so a brief restore mid-burst is treated as
                 // settling rather than a snap-back trigger, and remove only
                 // this target's ghost/crossfade visual immediately.
                 self.observe_tiled_window_maximized(hwnd);
                 debug!("Tiled window {} maximized — allowing", hwnd);
+            } else if is_minimized {
+                self.window_last_maximized_at.remove(&hwnd);
+                debug!("Ignoring MovedOrResized for minimized window {}", hwnd);
             } else if defer_snapback_while_settling(
                 self.window_managed_at.get(&hwnd).copied(),
                 self.window_last_maximized_at.get(&hwnd).copied(),

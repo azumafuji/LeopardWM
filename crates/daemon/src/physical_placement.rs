@@ -409,7 +409,7 @@ impl AppState {
             })
     }
 
-    fn native_window_is_maximized(&self, window_id: u64) -> bool {
+    pub(crate) fn native_window_is_maximized(&self, window_id: u64) -> bool {
         #[cfg(test)]
         if let Some(maximized) = self.injected_window_maximized.get(&window_id) {
             return *maximized;
