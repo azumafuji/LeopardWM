@@ -19,6 +19,9 @@ jobs:
       - name: Verify GUI executable subsystems
         shell: pwsh
         run: ./.github/verify-gui-subsystems.ps1
+      - name: Verify executable versions
+        shell: pwsh
+        run: ./.github/verify-executable-versions.ps1
       - run: cargo test --all
       - name: Package zip
         shell: bash

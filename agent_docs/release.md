@@ -56,6 +56,7 @@ The section header is `## X.Y.Z` without a `v` prefix; brackets are also accepte
 4. Run the local release gate and inspect every result:
    - `cargo build --release`
    - `pwsh ./.github/verify-gui-subsystems.ps1`
+   - `pwsh ./.github/verify-executable-versions.ps1`
    - `cargo test --all`
    - `cargo clippy --all -- -D warnings`
    - `cargo fmt --all -- --check`
