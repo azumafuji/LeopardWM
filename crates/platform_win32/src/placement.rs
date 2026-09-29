@@ -572,6 +572,7 @@ fn apply_placements_inner(
             &failed_window_ids,
             &pending_window_ids,
             allow_landing_measurement_retry,
+            high_contrast,
         )
     } else {
         SizeViolationDetection::default()
@@ -1456,6 +1457,8 @@ struct WindowSizeMeasurement {
     frame_h: i32,
     visible_w: i32,
     visible_h: i32,
+    used_insets: (i32, i32, i32, i32),
+    landed_insets: Option<(i32, i32, i32, i32)>,
 }
 
 struct ClassifiedSizeMeasurement {
@@ -1584,6 +1587,7 @@ fn detect_size_violations(
     failed_window_ids: &HashSet<u64>,
     pending_window_ids: &HashSet<WindowId>,
     allow_landing_measurement_retry: bool,
+    high_contrast: bool,
 ) -> SizeViolationDetection {
     // Synchronize with composition, but do not treat this as an owner-thread
     // queue barrier: a delayed animation frame can still yield stale bounds.
@@ -1626,6 +1630,10 @@ fn detect_size_violations(
             frame_h: entry.h,
             visible_w,
             visible_h,
+            used_insets: entry.insets,
+            landed_insets: (allow_landing_measurement_retry && !high_contrast)
+                .then(|| query_window_frame_insets(entry.hwnd))
+                .flatten(),
         });
     }
 
@@ -1651,16 +1659,32 @@ fn detect_size_violations_from_measurements(
 
     let mut detection = SizeViolationDetection::default();
     for classified in classified {
+        let undersized_with_changed_insets =
+            classified.measurement.landed_insets.is_some_and(|landed| {
+                landed != classified.measurement.used_insets
+                    && (classified
+                        .measurement
+                        .visible_w
+                        .saturating_add(VISIBLE_SIZE_TOLERANCE)
+                        < classified.measurement.layout_w
+                        || classified
+                            .measurement
+                            .visible_h
+                            .saturating_add(VISIBLE_SIZE_TOLERANCE)
+                            < classified.measurement.layout_h)
+            });
         if allow_landing_measurement_retry
-            && (is_inset_artifact(
-                classified.measurement.layout_w,
-                classified.measurement.frame_w,
-                classified.measurement.visible_w,
-            ) || is_inset_artifact(
-                classified.measurement.layout_h,
-                classified.measurement.frame_h,
-                classified.measurement.visible_h,
-            ))
+            && (undersized_with_changed_insets
+                || is_inset_artifact(
+                    classified.measurement.layout_w,
+                    classified.measurement.frame_w,
+                    classified.measurement.visible_w,
+                )
+                || is_inset_artifact(
+                    classified.measurement.layout_h,
+                    classified.measurement.frame_h,
+                    classified.measurement.visible_h,
+                ))
         {
             detection
                 .inset_artifact_windows
@@ -2927,7 +2951,44 @@ mod tests {
             frame_h: 400,
             visible_w,
             visible_h: 400,
+            used_insets: (0, 0, 0, 0),
+            landed_insets: None,
         }
+    }
+
+    #[test]
+    fn undersize_with_changed_landed_insets_retries_only_on_first_pass() {
+        let measurement = WindowSizeMeasurement {
+            layout_h: 1334,
+            visible_w: 1253,
+            visible_h: 1327,
+            landed_insets: Some((7, 0, 7, 7)),
+            ..width_measurement(21, 1267, 1267, 1253)
+        };
+        let mut suspects = HashMap::new();
+        let detection =
+            detect_size_violations_from_measurements(&[measurement], true, &mut suspects);
+        assert_eq!(detection.inset_artifact_windows, HashSet::from([21]));
+
+        let unchanged = WindowSizeMeasurement {
+            landed_insets: Some(measurement.used_insets),
+            ..measurement
+        };
+        let detection =
+            detect_size_violations_from_measurements(&[unchanged], true, &mut HashMap::new());
+        assert!(detection.inset_artifact_windows.is_empty());
+
+        let detection =
+            detect_size_violations_from_measurements(&[measurement], false, &mut HashMap::new());
+        assert!(detection.inset_artifact_windows.is_empty());
+
+        let unreadable = WindowSizeMeasurement {
+            landed_insets: None,
+            ..measurement
+        };
+        let detection =
+            detect_size_violations_from_measurements(&[unreadable], true, &mut HashMap::new());
+        assert!(detection.inset_artifact_windows.is_empty());
     }
 
     #[test]
@@ -3407,6 +3468,14 @@ mod tests {
         }
     }
 
+    struct ForgetGlobalInsetsOnDrop(WindowId);
+
+    impl Drop for ForgetGlobalInsetsOnDrop {
+        fn drop(&mut self) {
+            forget_global_insets(self.0);
+        }
+    }
+
     #[test]
     fn test_fresh_insets_publish_when_the_generation_still_matches() {
         let _serialize = GENERATION_TEST_LOCK
@@ -3460,6 +3529,8 @@ mod tests {
             frame_h: 400,
             visible_w: 700,
             visible_h: 400,
+            used_insets: (0, 0, 0, 0),
+            landed_insets: None,
         };
         let classified =
             classify_measurements_and_update_suspects(&[measurement], true, &mut suspects);
@@ -3824,6 +3895,38 @@ mod tests {
             }
         }
 
+        fn new_framed(x: i32, y: i32, w: i32, h: i32) -> Self {
+            use windows::core::w;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                CreateWindowExW, ShowWindow, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                WS_OVERLAPPEDWINDOW,
+            };
+            let hwnd = unsafe {
+                CreateWindowExW(
+                    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                    w!("STATIC"),
+                    w!("LeopardWM framed landing test"),
+                    WS_OVERLAPPEDWINDOW,
+                    x,
+                    y,
+                    w,
+                    h,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+            };
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
+            Self {
+                hwnd,
+                id: hwnd.0 as usize as u64,
+            }
+        }
+
         fn rect(&self) -> Rect {
             let mut rect = RECT::default();
             unsafe { GetWindowRect(self.hwnd, &mut rect).unwrap() };
@@ -3905,6 +4008,60 @@ mod tests {
         assert_eq!(
             defer_origin(placement, insets, true),
             (logical.x, logical.y, logical.width, 0)
+        );
+    }
+
+    #[test]
+    fn apply_placements_retries_tab_landing_after_wrong_zero_insets() {
+        let _serialize = GENERATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(crate::recover_poisoned_mutex);
+        let _cloak = lock_cloak_set_tests();
+        let virtual_left = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                windows::Win32::UI::WindowsAndMessaging::SM_XVIRTUALSCREEN,
+            )
+        };
+        assert!(
+            -5120 + 684 < virtual_left,
+            "hidden-tab parking must remain outside every monitor (virtual left={virtual_left})"
+        );
+        let window = HiddenPopup::new_framed(-30000, -1000, 684, 408);
+        let _membership = CloakMembershipGuard::claim(window.id);
+        let _forget_insets = ForgetGlobalInsetsOnDrop(window.id);
+        let real_insets = query_window_frame_insets(window.hwnd)
+            .expect("shown framed fixture must expose DWM frame bounds");
+        assert_ne!(
+            real_insets,
+            (0, 0, 0, 0),
+            "fixture needs genuine resize borders"
+        );
+        forget_global_insets(window.id);
+        let config = PlatformConfig::default();
+        let hidden = offscreen_placement(
+            window.id,
+            Rect::new(-5120, 0, 0, 0),
+            Visibility::OffScreenLeft,
+        );
+        apply_placements(std::slice::from_ref(&hidden), &config, None, false).unwrap();
+
+        let requested = Rect::new(-30000, -1000, 1267, 1334);
+        assert!(
+            requested.x + requested.width < virtual_left,
+            "test target must remain left of every monitor (virtual left={virtual_left})"
+        );
+        let visible = offscreen_placement(window.id, requested, Visibility::Visible);
+        seed_global_insets(window.id, (0, 0, 0, 0));
+        apply_placements(std::slice::from_ref(&visible), &config, None, false).unwrap();
+
+        let actual = crate::get_window_visible_rect(window.id)
+            .expect("visible fixture must expose DWM frame bounds");
+        assert!(
+            (actual.x - requested.x).abs() <= VISIBLE_SIZE_TOLERANCE
+                && (actual.y - requested.y).abs() <= VISIBLE_SIZE_TOLERANCE
+                && (actual.width - requested.width).abs() <= VISIBLE_SIZE_TOLERANCE
+                && (actual.height - requested.height).abs() <= VISIBLE_SIZE_TOLERANCE,
+            "DWM visible rect {actual:?} did not land at requested rect {requested:?}"
         );
     }
 
