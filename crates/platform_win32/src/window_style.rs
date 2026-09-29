@@ -297,7 +297,23 @@ fn apply_window_style(
     operation: WindowStyleOperation,
     correlation_id: u64,
 ) {
-    apply_window_style_inner(window_id, hwnd_value, identity, operation, correlation_id);
+    let applied =
+        apply_window_style_inner(window_id, hwnd_value, identity, operation, correlation_id);
+    if matches!(operation, WindowStyleOperation::Remove) && applied {
+        let remains_tracked = lock_snap_disabled()
+            .as_ref()
+            .and_then(|set| set.get(&window_id))
+            == Some(&identity);
+        if !remains_tracked {
+            apply_window_style_inner(
+                window_id,
+                hwnd_value,
+                identity,
+                WindowStyleOperation::Restore,
+                correlation_id,
+            );
+        }
+    }
     if matches!(operation, WindowStyleOperation::Restore) {
         let mut pending = lock_pending_restores();
         if let Some(count) = pending.get_mut(&(window_id, identity)) {
@@ -315,7 +331,7 @@ fn apply_window_style_inner(
     identity: WindowIdentity,
     operation: WindowStyleOperation,
     correlation_id: u64,
-) {
+) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
@@ -332,7 +348,7 @@ fn apply_window_style_inner(
                 }
             }
         }
-        return;
+        return false;
     }
     if matches!(operation, WindowStyleOperation::Remove)
         && lock_snap_disabled()
@@ -340,7 +356,7 @@ fn apply_window_style_inner(
             .and_then(|set| set.get(&window_id))
             != Some(&identity)
     {
-        return;
+        return false;
     }
 
     unsafe {
@@ -352,7 +368,7 @@ fn apply_window_style_inner(
             WindowStyleOperation::Restore if style & WS_MAXIMIZEBOX == 0 => {
                 ("restore", style | WS_MAXIMIZEBOX)
             }
-            _ => return,
+            _ => return false,
         };
 
         log_maximizebox_geometry(operation_name, "before_style", hwnd, correlation_id, None);
@@ -380,6 +396,7 @@ fn apply_window_style_inner(
             }),
         );
     }
+    true
 }
 
 /// Remove `WS_MAXIMIZEBOX` from a window to disable Windows 11 Snap Layouts.
@@ -790,8 +807,289 @@ mod tests {
         }
     }
 
+    struct StyleChangeBlock {
+        entered_tx: mpsc::SyncSender<()>,
+        entered_rx: Mutex<Option<mpsc::Receiver<()>>>,
+        release_tx: mpsc::Sender<()>,
+        release_rx: Mutex<mpsc::Receiver<()>>,
+        blocked: std::sync::atomic::AtomicBool,
+    }
+
+    static STYLE_CHANGE_BLOCK: OnceLock<StyleChangeBlock> = OnceLock::new();
+    static STYLE_CHANGE_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    unsafe extern "system" fn style_change_count_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: windows::Win32::Foundation::WPARAM,
+        lparam: windows::Win32::Foundation::LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, WM_STYLECHANGING};
+
+        if message == WM_STYLECHANGING {
+            STYLE_CHANGE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        DefWindowProcW(hwnd, message, wparam, lparam)
+    }
+
+    unsafe extern "system" fn style_change_block_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: windows::Win32::Foundation::WPARAM,
+        lparam: windows::Win32::Foundation::LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, WM_STYLECHANGING};
+
+        if message == WM_STYLECHANGING {
+            let block = STYLE_CHANGE_BLOCK.get().expect("style block initialized");
+            if !block
+                .blocked
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                let _ = block.entered_tx.send(());
+                let _ = block
+                    .release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(8));
+            }
+        }
+        DefWindowProcW(hwnd, message, wparam, lparam)
+    }
+
+    #[test]
+    fn test_remove_compensates_when_recovery_drains_tracking_in_flight() {
+        use windows::core::w;
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, PostThreadMessageW,
+            RegisterClassW, WM_QUIT, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+        };
+
+        let _guard = lock_snap_tracking_fixture();
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::channel();
+        let block = STYLE_CHANGE_BLOCK.get_or_init(|| StyleChangeBlock {
+            entered_tx,
+            entered_rx: Mutex::new(Some(entered_rx)),
+            release_tx,
+            release_rx: Mutex::new(release_rx),
+            blocked: std::sync::atomic::AtomicBool::new(false),
+        });
+        assert!(!block.blocked.load(std::sync::atomic::Ordering::SeqCst));
+
+        let (window_tx, window_rx) = mpsc::sync_channel(1);
+        let owner = std::thread::spawn(move || unsafe {
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(style_change_block_proc),
+                lpszClassName: w!("LeopardWMSnapStyleRaceFixture"),
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                w!("LeopardWMSnapStyleRaceFixture"),
+                None,
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                320,
+                240,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("failed to create style-race fixture");
+            window_tx
+                .send((hwnd.0 as usize, GetCurrentThreadId()))
+                .expect("style-race test stopped receiving fixture");
+            let mut message = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+            while GetMessageW(&mut message, None, 0, 0).as_bool() {
+                DispatchMessageW(&message);
+            }
+            DestroyWindow(hwnd).expect("failed to destroy style-race fixture");
+        });
+        let (hwnd_value, owner_thread_id) = window_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("style-race fixture did not start");
+        struct OwnerCleanup {
+            thread_id: u32,
+            owner: Option<std::thread::JoinHandle<()>>,
+            release: mpsc::Sender<()>,
+        }
+        impl Drop for OwnerCleanup {
+            fn drop(&mut self) {
+                let _ = self.release.send(());
+                unsafe {
+                    let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+                }
+                if let Some(owner) = self.owner.take() {
+                    owner.join().expect("style-race fixture owner panicked");
+                }
+            }
+        }
+        let _owner_cleanup = OwnerCleanup {
+            thread_id: owner_thread_id,
+            owner: Some(owner),
+            release: block.release_tx.clone(),
+        };
+        let window_id = hwnd_value as u64;
+        let hwnd = HWND(hwnd_value as *mut c_void);
+        assert!(remove_maximizebox(window_id).unwrap());
+        block
+            .entered_rx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("style-change entry receiver available")
+            .recv_timeout(Duration::from_secs(5))
+            .expect("remove did not block in WM_STYLECHANGING");
+
+        assert_ne!(
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::GetWindowLongW(
+                    hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
+                ) & WS_MAXIMIZEBOX_BIT
+            },
+            0
+        );
+        restore_maximizebox_panic_recovery();
+        block
+            .release_tx
+            .send(())
+            .expect("release blocked style change");
+        assert!(wait_for_window_style_requests(Duration::from_secs(5)));
+        assert_eq!(
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::GetWindowLongW(
+                    hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
+                ) & WS_MAXIMIZEBOX_BIT
+            },
+            WS_MAXIMIZEBOX_BIT,
+            "in-flight remove must compensate after recovery drains tracking"
+        );
+    }
+
     #[test]
     fn test_queued_style_request_rejects_changed_window_identity() {
+        use windows::core::w;
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, PostThreadMessageW,
+            RegisterClassW, WM_QUIT, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+        };
+
+        let _guard = lock_snap_tracking_fixture();
+        STYLE_CHANGE_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+        let (window_tx, window_rx) = mpsc::sync_channel(1);
+        let owner = std::thread::spawn(move || unsafe {
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(style_change_count_proc),
+                lpszClassName: w!("LeopardWMSnapIdentityFixture"),
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            let hwnd = CreateWindowExW(
+                Default::default(),
+                w!("LeopardWMSnapIdentityFixture"),
+                None,
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                320,
+                240,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("failed to create identity fixture");
+            window_tx
+                .send((hwnd.0 as usize, GetCurrentThreadId()))
+                .expect("identity test stopped receiving fixture");
+            let mut message = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+            while GetMessageW(&mut message, None, 0, 0).as_bool() {
+                DispatchMessageW(&message);
+            }
+            DestroyWindow(hwnd).expect("failed to destroy identity fixture");
+        });
+        let (hwnd_value, owner_thread_id) = window_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("identity fixture did not start");
+        struct OwnerCleanup {
+            thread_id: u32,
+            owner: Option<std::thread::JoinHandle<()>>,
+        }
+        impl Drop for OwnerCleanup {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+                }
+                if let Some(owner) = self.owner.take() {
+                    owner.join().expect("identity fixture owner panicked");
+                }
+            }
+        }
+        let _owner_cleanup = OwnerCleanup {
+            thread_id: owner_thread_id,
+            owner: Some(owner),
+        };
+        let hwnd = HWND(hwnd_value as *mut c_void);
+        let window_id = hwnd_value as u64;
+        let actual_identity = capture_window_identity(hwnd).expect("live fixture identity");
+        let stale_identity = WindowIdentity {
+            process_id: actual_identity.process_id,
+            thread_id: actual_identity.thread_id.wrapping_add(1),
+        };
+        lock_snap_disabled()
+            .get_or_insert_with(HashMap::new)
+            .insert(window_id, stale_identity);
+        struct TrackingCleanup(WindowId);
+        impl Drop for TrackingCleanup {
+            fn drop(&mut self) {
+                if let Some(set) = lock_snap_disabled().as_mut() {
+                    set.remove(&self.0);
+                }
+            }
+        }
+        let _tracking_cleanup = TrackingCleanup(window_id);
+
+        window_style_worker()
+            .send(WindowStyleRequest::Apply {
+                window_id,
+                hwnd: hwnd_value,
+                identity: stale_identity,
+                operation: WindowStyleOperation::Remove,
+                correlation_id: MAXIMIZEBOX_GEOMETRY_CORRELATION.fetch_add(1, Ordering::Relaxed),
+            })
+            .unwrap();
+        pump_until_window_style_idle();
+        assert_eq!(
+            STYLE_CHANGE_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a deferred remove for a stale HWND identity must not change its style"
+        );
+        assert_ne!(
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::GetWindowLongW(
+                    hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
+                ) & WS_MAXIMIZEBOX_BIT
+            },
+            0
+        );
+    }
+
+    #[test]
+    fn test_queued_restore_rejects_changed_window_identity() {
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW, GWL_STYLE};
+
         let _guard = lock_snap_tracking_fixture();
         let fixture = HiddenFramedFixture::create();
         let hwnd = fixture.hwnd();
@@ -801,26 +1099,29 @@ mod tests {
             process_id: actual_identity.process_id,
             thread_id: actual_identity.thread_id.wrapping_add(1),
         };
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_STYLE);
+            SetWindowLongW(hwnd, GWL_STYLE, style & !WS_MAXIMIZEBOX_BIT);
+        }
+        assert_eq!(
+            unsafe { GetWindowLongW(hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX_BIT,
+            0
+        );
 
         window_style_worker()
             .send(WindowStyleRequest::Apply {
                 window_id,
                 hwnd: hwnd.0 as usize,
                 identity: stale_identity,
-                operation: WindowStyleOperation::Remove,
+                operation: WindowStyleOperation::Restore,
                 correlation_id: MAXIMIZEBOX_GEOMETRY_CORRELATION.fetch_add(1, Ordering::Relaxed),
             })
             .unwrap();
-        assert!(wait_for_window_style_requests(Duration::from_secs(5)));
-        assert_ne!(
-            unsafe {
-                windows::Win32::UI::WindowsAndMessaging::GetWindowLongW(
-                    hwnd,
-                    windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
-                ) & WS_MAXIMIZEBOX_BIT
-            },
+        pump_until_window_style_idle();
+        assert_eq!(
+            unsafe { GetWindowLongW(hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX_BIT,
             0,
-            "a deferred remove for a stale HWND identity must not touch the live window"
+            "a deferred restore for a stale HWND identity must not touch the live window"
         );
     }
 
