@@ -209,6 +209,7 @@ fn ineligible_recreations_keep_normal_new_column_admission() {
         "before_suspend",
         "late_hide",
         "same_hwnd",
+        "donor_reshow",
     ] {
         let mut state = tabbed_state();
         if case != "no_power" && case != "before_suspend" {
@@ -245,6 +246,9 @@ fn ineligible_recreations_keep_normal_new_column_admission() {
                 Some(Instant::now() - Duration::from_secs(124));
             state.recreated_window_slots.resumed_at =
                 Some(Instant::now() - Duration::from_secs(123));
+        }
+        if case == "donor_reshow" {
+            create(&mut state, 10, 100, "AppClass");
         }
         let hwnd = if case == "same_hwnd" { 10 } else { 11 };
         let pid = if case == "pid" { 101 } else { 100 };
@@ -377,4 +381,68 @@ fn missing_slot_monitor_or_workspace_uses_normal_admission() {
         assert_eq!(ws.column_count(), 2, "{case}");
         assert_eq!(ws.find_window_location(11), Some((1, 0)), "{case}");
     }
+}
+
+#[test]
+fn background_rejoin_focus_guard_is_bounded() {
+    for delay in [600, 48] {
+        let mut state = tabbed_state();
+        state.ensure_workspace_exists(1, 1);
+        state.active_workspace.insert(1, 1);
+        create(&mut state, 40, 400, "OtherClass");
+        state.previous_focused_hwnd = Some(40);
+        cycle(&mut state);
+        hide(&mut state, 10);
+        let background_focus = state.workspaces[&1][0].focused_window();
+        let background_column = state.workspaces[&1][0].focused_column_index();
+        let active_tab = state.workspaces[&1][0].columns()[0]
+            .active_tab_idx()
+            .unwrap();
+        let background_tab = state.workspaces[&1][0].columns()[0].windows()[active_tab];
+        inject(&mut state, 11, 100, "AppClass");
+        state.handle_window_event(WindowEvent::Created(11, 1000));
+        state.injected_foreground_hwnd = Some(Some(11));
+        state.injected_foreground_is_valid = Some(true);
+        state.last_prune_at = Some(Instant::now());
+        state.handle_window_event(WindowEvent::Focused(11, 1000 + delay));
+        if delay == 48 {
+            assert_eq!(state.active_workspace_idx(1), 1);
+            assert_eq!(state.focused_monitor, 1);
+            assert_eq!(state.workspaces[&1][1].focused_window(), Some(40));
+            assert_eq!(state.previous_focused_hwnd, Some(40));
+            let ws = &state.workspaces[&1][0];
+            assert_eq!(ws.focused_column_index(), background_column);
+            assert_eq!(ws.focused_window(), background_focus);
+            assert_eq!(
+                ws.columns()[0].windows()[ws.columns()[0].active_tab_idx().unwrap()],
+                background_tab
+            );
+            assert!(
+                state
+                    .foreground_release_requests
+                    .iter()
+                    .any(|&(hwnd, _)| hwnd == 11),
+                "parked native foreground must be released"
+            );
+        } else {
+            assert_eq!(state.active_workspace_idx(1), 0);
+            assert_eq!(state.workspaces[&1][0].focused_window(), Some(11));
+            assert_eq!(state.previous_focused_hwnd, Some(11));
+        }
+    }
+}
+
+#[test]
+fn hidden_sibling_cannot_redirect_restore_to_recycled_hwnd() {
+    let mut state = tabbed_state();
+    cycle(&mut state);
+    hide(&mut state, 10);
+    hide(&mut state, 20);
+    create(&mut state, 40, 400, "OtherClass");
+    create(&mut state, 20, 500, "UnrelatedClass");
+    create(&mut state, 11, 100, "AppClass");
+    let ws = state.focused_workspace().unwrap();
+    assert_eq!(ws.column_count(), 4);
+    assert_eq!(ws.find_window_location(11), Some((0, 0)));
+    assert_eq!(ws.find_window_location(20), Some((3, 0)));
 }

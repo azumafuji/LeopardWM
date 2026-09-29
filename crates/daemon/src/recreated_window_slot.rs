@@ -15,8 +15,17 @@ pub(crate) struct WindowIdentity {
 pub(crate) struct RecreatedWindowSlots {
     pub(crate) identities: HashMap<u64, WindowIdentity>,
     pub(crate) slots: HashMap<WindowIdentity, RecreatedWindowSlot>,
+    background_rejoins: HashMap<u64, BackgroundRejoinActivation>,
     pub(crate) suspended_at: Option<Instant>,
     pub(crate) resumed_at: Option<Instant>,
+}
+
+struct BackgroundRejoinActivation {
+    managed_token: u64,
+    admitted_at: Instant,
+    admitted_at_event_ms: u32,
+    selected_monitor: isize,
+    selected_workspace: usize,
 }
 
 pub(crate) struct RecreatedWindowSlot {
@@ -86,6 +95,66 @@ impl AppState {
         );
     }
 
+    pub(crate) fn arm_background_rejoin_activation(
+        &mut self,
+        hwnd: u64,
+        event_time_ms: Option<u32>,
+    ) {
+        let interval =
+            Duration::from_millis(u64::from(crate::event_handler::MINIMIZE_HANDOFF_WINDOW_MS));
+        self.recreated_window_slots
+            .background_rejoins
+            .retain(|hwnd, guard| {
+                guard.admitted_at.elapsed() < interval
+                    && self.managed_lifetime_tokens.get(hwnd) == Some(&guard.managed_token)
+            });
+        let Some(&managed_token) = self.managed_lifetime_tokens.get(&hwnd) else {
+            return;
+        };
+        let guard = BackgroundRejoinActivation {
+            managed_token,
+            admitted_at: Instant::now(),
+            admitted_at_event_ms: event_time_ms.unwrap_or_else(|| self.event_time_now_ms()),
+            selected_monitor: self.focused_monitor,
+            selected_workspace: self.active_workspace_idx(self.focused_monitor),
+        };
+        self.recreated_window_slots
+            .background_rejoins
+            .insert(hwnd, guard);
+    }
+
+    pub(crate) fn suppress_background_rejoin_activation(
+        &mut self,
+        hwnd: u64,
+        event_time_ms: u32,
+    ) -> bool {
+        let Some(guard) = self.recreated_window_slots.background_rejoins.get(&hwnd) else {
+            return false;
+        };
+        let interval_ms = crate::event_handler::MINIMIZE_HANDOFF_WINDOW_MS;
+        let eligible = guard.admitted_at.elapsed() < Duration::from_millis(u64::from(interval_ms))
+            && self.managed_lifetime_tokens.get(&hwnd) == Some(&guard.managed_token)
+            && !self.managed_lifetime_replaced(hwnd)
+            && self.focused_monitor == guard.selected_monitor
+            && self.active_workspace_idx(guard.selected_monitor) == guard.selected_workspace
+            && crate::event_handler::event_time_is_no_later_than(
+                event_time_ms,
+                guard.admitted_at_event_ms.wrapping_add(interval_ms),
+            )
+            && self
+                .find_window_workspace(hwnd)
+                .is_some_and(|(monitor, workspace)| {
+                    workspace != self.active_workspace_idx(monitor)
+                });
+        if !eligible {
+            self.recreated_window_slots.background_rejoins.remove(&hwnd);
+            return false;
+        }
+        self.release_parked_foreground();
+        self.sync_foreground_window();
+        true
+    }
+
     pub(crate) fn forget_recreated_slot_sibling(&mut self, hwnd: u64) {
         for slot in self.recreated_window_slots.slots.values_mut() {
             if slot.sibling == Some(hwnd) {
@@ -125,18 +194,22 @@ impl AppState {
         let Some((identity, slot)) = donation else {
             return;
         };
-        let same_process_remains = self.all_managed_window_ids().iter().any(|hwnd| {
-            self.recreated_window_slots
-                .identities
-                .get(hwnd)
-                .is_some_and(|other| other.process_id == identity.process_id)
-        });
+        let same_process_remains = self.managed_process_has_window(identity.process_id);
         self.recreated_window_slots
             .slots
             .retain(|_, slot| slot.hidden_at.elapsed() < Duration::from_secs(60));
         if !same_process_remains {
             self.recreated_window_slots.slots.insert(identity, slot);
         }
+    }
+
+    fn managed_process_has_window(&self, process_id: u32) -> bool {
+        self.all_managed_window_ids().iter().any(|hwnd| {
+            self.recreated_window_slots
+                .identities
+                .get(hwnd)
+                .is_some_and(|other| other.process_id == process_id)
+        })
     }
 
     pub(crate) fn take_recreated_window_slot(
@@ -146,6 +219,7 @@ impl AppState {
         action: crate::config::WindowAction,
         sticky: bool,
     ) -> Option<RecreatedWindowSlot> {
+        let same_process_remains = self.managed_process_has_window(window.process_id);
         let state = &mut self.recreated_window_slots;
         state
             .slots
@@ -160,6 +234,10 @@ impl AppState {
             process_id: window.process_id,
             class_name: window.class_name.clone(),
         };
+        if same_process_remains {
+            state.slots.remove(&key);
+            return None;
+        }
         let slot = state.slots.get(&key)?;
         let suspend = state.suspended_at?;
         let resume = state.resumed_at?;

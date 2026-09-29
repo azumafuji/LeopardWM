@@ -16,7 +16,7 @@ use leopardwm_platform_win32::{
 };
 use tracing::{debug, info, warn};
 
-const MINIMIZE_HANDOFF_WINDOW_MS: u32 = 500; // Windows timestamps post-minimize focus handoff events after the minimize.
+pub(crate) const MINIMIZE_HANDOFF_WINDOW_MS: u32 = 500; // Windows timestamps post-minimize focus handoff events after the minimize.
 
 /// How long after a window is first managed to treat it as still settling its
 /// initial geometry.
@@ -1073,6 +1073,9 @@ impl AppState {
                     self.record_managed_lifetime(hwnd, admitted_at_event_ms);
                     self.record_managed_window_identity(&win_info);
                     if recreated_slot.is_some() {
+                        if opens_in_background {
+                            self.arm_background_rejoin_activation(hwnd, admitted_at_event_ms);
+                        }
                         info!("Window {} rejoined its pre-sleep column or tab on monitor {} workspace {}", hwnd, monitor_id, target_idx + 1);
                     }
                     if opens_in_background {
@@ -1233,7 +1236,6 @@ impl AppState {
             // This window may have anchored another's restore; drop the stale
             // sibling so a recycled HWND can't redirect a move-back to the wrong
             // column (it falls back to the remembered index instead).
-            self.forget_recreated_slot_sibling(hwnd);
             for origin in self.move_origins.values_mut() {
                 if origin.sibling == Some(hwnd) {
                     origin.sibling = None;
@@ -1281,6 +1283,7 @@ impl AppState {
             );
             return;
         }
+        self.forget_recreated_slot_sibling(hwnd);
         if self
             .pending_workspace_switch_focus
             .is_some_and(|intent| intent.source_hwnd == hwnd)
@@ -1910,10 +1913,12 @@ impl AppState {
     }
 
     pub(crate) fn release_parked_foreground_for_empty_selection(&mut self) {
-        if !self.selected_workspace_is_genuinely_empty() {
-            return;
+        if self.selected_workspace_is_genuinely_empty() {
+            self.release_parked_foreground();
         }
+    }
 
+    pub(crate) fn release_parked_foreground(&mut self) {
         #[cfg(test)]
         let foreground = self.injected_foreground_hwnd.flatten();
         #[cfg(not(test))]
@@ -2118,6 +2123,9 @@ impl AppState {
     }
 
     fn on_window_focused(&mut self, hwnd: u64, event_time_ms: u32) {
+        if self.suppress_background_rejoin_activation(hwnd, event_time_ms) {
+            return;
+        }
         // Skip if this window is already our tracked focus — avoids
         // feedback loops where sync_foreground_window triggers another
         // EVENT_SYSTEM_FOREGROUND for the same window.
