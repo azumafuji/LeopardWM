@@ -458,9 +458,8 @@ impl AppState {
     fn window_is_stale(&self, hwnd: u64, marked_minimized: bool) -> bool {
         let (presence, excluded_tool_window) = self.stale_window_probe(hwnd);
         match presence {
-            WindowPresence::Gone | WindowPresence::Hidden | WindowPresence::Minimized => {
-                !marked_minimized
-            }
+            WindowPresence::Gone | WindowPresence::Hidden => !marked_minimized,
+            WindowPresence::Minimized => false,
             WindowPresence::Visible => excluded_tool_window,
         }
     }

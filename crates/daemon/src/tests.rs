@@ -6643,6 +6643,128 @@ fn last_window_liveness_state() -> AppState {
     state
 }
 
+fn add_liveness_test_columns(state: &mut AppState) {
+    let mon = state.focused_monitor;
+    let workspace = &mut state.workspaces.get_mut(&mon).unwrap()[0];
+    for hwnd in [150, 160] {
+        workspace.insert_window(hwnd, Some(800)).unwrap();
+    }
+    workspace.set_all_column_widths(720);
+}
+
+#[test]
+fn test_iconic_unmarked_focus_survives_focus_prune_and_restore() {
+    let mut state = last_window_cross_workspace_state();
+    let mon = state.focused_monitor;
+    add_liveness_test_columns(&mut state);
+    state.last_prune_at = None;
+    state.injected_event_time_ms = Some(5_000);
+    state.injected_iconic_hwnds.insert(100);
+
+    let workspace = &state.workspaces[&mon][0];
+    assert!(workspace.contains_window(100));
+    assert!(!workspace.is_minimized(100));
+    assert!(workspace.contains_window(150));
+    assert_ne!(
+        workspace.find_window_location(100).unwrap().0,
+        workspace.find_window_location(150).unwrap().0
+    );
+    assert_eq!(state.find_window_workspace(200), Some((mon, 1)));
+    let column = workspace.find_window_location(100).unwrap().0;
+    let width = workspace.column(column).unwrap().width();
+
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    let workspace = &state.workspaces[&mon][0];
+    assert!(
+        workspace.contains_window(100),
+        "focus prune must retain the OS-iconic window"
+    );
+    assert_eq!(state.find_window_workspace(100), Some((mon, 0)));
+    assert_eq!(workspace.find_window_location(100).unwrap().0, column);
+    assert_eq!(workspace.column(column).unwrap().width(), width);
+
+    state.handle_window_event(WindowEvent::Minimized(100));
+    assert!(state.workspaces[&mon][0].is_minimized(100));
+    state.handle_window_event(WindowEvent::Restored(100));
+
+    let workspace = &state.workspaces[&mon][0];
+    assert!(workspace.contains_window(100));
+    assert!(!workspace.is_minimized(100));
+    assert_eq!(state.find_window_workspace(100), Some((mon, 0)));
+    assert_eq!(workspace.find_window_location(100).unwrap().0, column);
+    assert_eq!(workspace.column(column).unwrap().width(), width);
+}
+
+#[test]
+fn test_iconic_unmarked_tracked_focus_does_not_trigger_liveness_prune() {
+    let mut state = last_window_liveness_state();
+    let mon = state.focused_monitor;
+    add_liveness_test_columns(&mut state);
+    state.injected_stale_hwnds.clear();
+    state.injected_iconic_hwnds.insert(100);
+
+    let workspace = &state.workspaces[&mon][0];
+    assert!(workspace.contains_window(100));
+    assert!(!workspace.is_minimized(100));
+    let column = workspace.find_window_location(100).unwrap().0;
+    let width = workspace.column(column).unwrap().width();
+
+    assert!(!state.check_tracked_focus_liveness());
+
+    let workspace = &state.workspaces[&mon][0];
+    assert!(workspace.contains_window(100));
+    assert!(!workspace.is_minimized(100));
+    assert_eq!(workspace.find_window_location(100).unwrap().0, column);
+    assert_eq!(workspace.column(column).unwrap().width(), width);
+    assert!(state.last_prune_at.is_none());
+}
+
+#[test]
+fn test_liveness_prune_removes_hidden_window_but_retains_iconic_unmarked_windows() {
+    let mut state = last_window_liveness_state();
+    let mon = state.focused_monitor;
+    add_liveness_test_columns(&mut state);
+    state.injected_stale_hwnds = vec![100];
+    state.injected_iconic_hwnds.extend([150, 160]);
+
+    let workspace = &state.workspaces[&mon][0];
+    assert!(workspace.contains_window(100));
+    assert!(!workspace.is_minimized(100));
+    let iconic_columns: Vec<_> = [150, 160]
+        .into_iter()
+        .map(|hwnd| {
+            assert!(workspace.contains_window(hwnd));
+            assert!(!workspace.is_minimized(hwnd));
+            let column = workspace.find_window_location(hwnd).unwrap().0;
+            (hwnd, column, workspace.column(column).unwrap().width())
+        })
+        .collect();
+
+    assert!(state.check_tracked_focus_liveness());
+    assert!(state.workspaces[&mon][1].contains_window(200));
+
+    let workspace = &state.workspaces[&mon][0];
+    assert!(
+        !workspace.contains_window(100),
+        "the hidden tracked window must be pruned"
+    );
+    for &(hwnd, column, width) in &iconic_columns {
+        assert!(workspace.contains_window(hwnd));
+        assert!(!workspace.is_minimized(hwnd));
+        let current_column = workspace.find_window_location(hwnd).unwrap().0;
+        assert_eq!(current_column + 1, column);
+        assert_eq!(workspace.column(current_column).unwrap().width(), width);
+    }
+
+    for &(hwnd, _, _) in &iconic_columns {
+        state.handle_window_event(WindowEvent::Minimized(hwnd));
+        let workspace = &state.workspaces[&mon][0];
+        assert!(workspace.contains_window(hwnd));
+        assert!(workspace.is_minimized(hwnd));
+    }
+}
+
 #[test]
 fn test_last_window_liveness_check_then_newer_activation_follows() {
     let mut state = last_window_liveness_state();
