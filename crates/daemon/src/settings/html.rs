@@ -1243,7 +1243,7 @@ input[type="range"]::-webkit-slider-thumb {
             <label class="toggle"><input type="checkbox" id="gestures-enabled"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Native three-finger swipes</div><div class="field-desc">Use Precision Touchpad Raw Input. Experimental; restart LeopardWM after changing.</div></div>
+            <div class="field-info"><div class="field-label">Native three-finger swipes</div><div class="field-desc">Use Precision Touchpad Raw Input. Set Windows three- and four-finger touchpad gestures to Nothing. Experimental; restart LeopardWM after changing.</div></div>
             <label class="toggle"><input type="checkbox" id="gestures-raw_input"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
