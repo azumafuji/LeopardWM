@@ -14,6 +14,7 @@
 mod animation_worker;
 mod command_handler;
 mod config;
+mod daemon_log;
 #[cfg(test)]
 mod diagnostics_validation;
 mod drag;
@@ -802,6 +803,7 @@ fn bootstrap_config() -> Result<(
     Config,
     Vec<config::ConfigWarning>,
     Option<gesture_diagnostics::GestureCaptureHandle>,
+    daemon_log::LogHealth,
 )> {
     // Set DPI awareness before any window/GDI operations
     if set_dpi_awareness() {
@@ -837,7 +839,7 @@ fn bootstrap_config() -> Result<(
     // bound for the in-memory config. Zero does not open or truncate a file.
     let capture_secs =
         config::clamp_diagnostic_capture_secs(config.gestures.diagnostic_capture_secs);
-    let capture_handle = init_logging(log_level, &config, capture_secs)?;
+    let (capture_handle, log_health) = init_logging(log_level, &config, capture_secs)?;
 
     // Validate and clamp config values
     let config_warnings = config.validate();
@@ -845,7 +847,7 @@ fn bootstrap_config() -> Result<(
         warn!("Config: {} - {}", w.field, w.message);
     }
 
-    Ok((config, config_warnings, capture_handle))
+    Ok((config, config_warnings, capture_handle, log_health))
 }
 
 /// Install stdout + daemon-log layers at the configured level, and optionally a
@@ -855,11 +857,13 @@ fn init_logging(
     log_level: Level,
     config: &Config,
     capture_secs: u64,
-) -> Result<Option<gesture_diagnostics::GestureCaptureHandle>> {
+) -> Result<(
+    Option<gesture_diagnostics::GestureCaptureHandle>,
+    daemon_log::LogHealth,
+)> {
     use tracing_subscriber::prelude::*;
     let log_dir = leopardwm_ipc::log_dir();
-    let _ = std::fs::create_dir_all(&log_dir);
-    let file_appender = tracing_appender::rolling::never(&log_dir, "leopardwm-daemon.log");
+    let (file_appender, log_health) = daemon_log::open(&log_dir);
     let capture_handle = if capture_secs > 0 {
         gesture_diagnostics::start_capture(
             &log_dir,
@@ -885,14 +889,14 @@ fn init_logging(
                     log_level,
                 )),
         )
-        .with(
+        .with(file_appender.map(|writer| {
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
-                .with_writer(file_appender)
+                .with_writer(writer)
                 .with_filter(tracing_subscriber::filter::LevelFilter::from_level(
                     log_level,
-                )),
-        )
+                ))
+        }))
         .with(
             capture_handle
                 .as_ref()
@@ -916,7 +920,7 @@ fn init_logging(
         }
     }
 
-    Ok(capture_handle)
+    Ok((capture_handle, log_health))
 }
 
 /// Install a panic hook that uncloaks all windows and writes a crash report.
@@ -3525,11 +3529,20 @@ async fn finish_daemon_event(ctx: &mut EventLoopCtx<'_>) {
     }
 }
 
-async fn install_focus_placeholder(state: &Arc<Mutex<AppState>>) {
+async fn initialize_state(
+    config: Config,
+    monitors: Vec<MonitorInfo>,
+    log_health: daemon_log::LogHealth,
+) -> Arc<Mutex<AppState>> {
+    let mut app = AppState::new_with_config(config, monitors);
+    app.daemon_log = Some(log_health);
+    #[allow(clippy::arc_with_non_send_sync)]
+    let state = Arc::new(Mutex::new(app));
     match leopardwm_platform_win32::focus_placeholder::FocusPlaceholder::new() {
         Ok(placeholder) => state.lock().await.focus_placeholder = Some(placeholder),
         Err(error) => warn!("Focus placeholder unavailable: {error}"),
     }
+    state
 }
 
 #[tokio::main]
@@ -3548,7 +3561,7 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    let (config, config_warnings, _gesture_capture) = bootstrap_config()?;
+    let (config, config_warnings, _gesture_capture, log_health) = bootstrap_config()?;
 
     // Install panic hook to uncloak all windows and write a crash report
     install_panic_hook();
@@ -3576,12 +3589,7 @@ async fn main() -> Result<()> {
     let monitors = detect_monitors();
 
     // Initialize state with config and monitors
-    #[allow(clippy::arc_with_non_send_sync)]
-    let state = Arc::new(Mutex::new(AppState::new_with_config(
-        config.clone(),
-        monitors,
-    )));
-    install_focus_placeholder(&state).await;
+    let state = initialize_state(config.clone(), monitors, log_health).await;
 
     // Enumerate existing windows
     info!("Enumerating windows...");

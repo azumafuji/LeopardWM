@@ -13845,6 +13845,14 @@ fn test_cmd_health_check() {
     state.native_swipes = leopardwm_ipc::NativeSwipeStatus::Inactive {
         reason: "device capability check failed; wheel-based swipes remain active".to_string(),
     };
+    let blocked_path = std::env::temp_dir().join(format!(
+        "leopardwm-health-log-blocked-{}",
+        std::process::id()
+    ));
+    std::fs::write(&blocked_path, b"not a directory").unwrap();
+    let (_, log_health) = crate::daemon_log::open(&blocked_path);
+    std::fs::remove_file(&blocked_path).unwrap();
+    state.daemon_log = Some(log_health);
     let resp = state.handle_command(IpcCommand::HealthCheck);
     match resp {
         IpcResponse::HealthInfo {
@@ -13856,6 +13864,7 @@ fn test_cmd_health_check() {
             elevation_blocked_windows,
             elevation_blocked_records,
             native_swipes,
+            daemon_log,
             ..
         } => {
             assert!(healthy);
@@ -13869,6 +13878,9 @@ fn test_cmd_health_check() {
             assert!(elevation_blocked_windows.is_empty());
             assert_eq!(elevation_blocked_records, Some(Vec::new()));
             assert_eq!(native_swipes, Some(state.native_swipes.clone()));
+            assert!(
+                matches!(daemon_log, Some(leopardwm_ipc::DaemonLogStatus::OpenFailed { path, error }) if path == blocked_path.join("leopardwm-daemon.log").display().to_string() && !error.is_empty())
+            );
         }
         other => panic!("Expected HealthInfo, got {:?}", other),
     }

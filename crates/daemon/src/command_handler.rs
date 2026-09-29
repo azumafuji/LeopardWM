@@ -1618,6 +1618,10 @@ impl AppState {
             daemon_integrity: leopardwm_platform_win32::current_process_integrity(),
             elevation_blocked_records: Some(records),
             native_swipes: Some(self.native_swipes.clone()),
+            daemon_log: self
+                .daemon_log
+                .as_ref()
+                .map(crate::daemon_log::LogHealth::status),
         }
     }
 

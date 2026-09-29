@@ -489,6 +489,7 @@ fn required_health_and_status_are_not_optional() {
         daemon_integrity: Some(leopardwm_platform_win32::INTEGRITY_MEDIUM),
         elevation_blocked_records: Some(Vec::new()),
         native_swipes: None,
+        daemon_log: None,
     };
     assert!(require_health_info(&health).is_ok());
     assert!(require_status_info(&IpcResponse::StatusInfo {
@@ -546,6 +547,7 @@ fn health_info_uses_reported_daemon_rid_not_cli() {
         daemon_integrity: Some(leopardwm_platform_win32::INTEGRITY_MEDIUM),
         elevation_blocked_records: Some(Vec::new()),
         native_swipes: None,
+        daemon_log: None,
     };
     let (daemon, cli) = render_integrity_pair(
         Some(&health),

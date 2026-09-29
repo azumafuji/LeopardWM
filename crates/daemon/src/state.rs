@@ -629,6 +629,7 @@ pub(crate) struct AppState {
     pub(crate) pending_layout_apply_timeout_report: Option<LayoutApplyTimeoutReport>,
     /// Startup snapshot of native three-finger swipe activation.
     pub(crate) native_swipes: NativeSwipeStatus,
+    pub(crate) daemon_log: Option<crate::daemon_log::LogHealth>,
     /// Daemon start time for uptime reporting.
     pub(crate) start_time: std::time::Instant,
     /// HWNDs hidden while managed only briefly, used to suppress re-creation of
@@ -1179,6 +1180,7 @@ impl AppState {
             layout_apply_timeout: APPLY_LAYOUT_TIMEOUT,
             pending_layout_apply_timeout_report: None,
             native_swipes: NativeSwipeStatus::Off,
+            daemon_log: None,
             start_time: std::time::Instant::now(),
             recently_hidden_hwnds: HashMap::new(),
             pending_edit_config_pull: None,

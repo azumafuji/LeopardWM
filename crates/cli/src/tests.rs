@@ -1653,3 +1653,103 @@ fn test_all_profile_configs_are_valid_toml() {
         );
     }
 }
+
+#[test]
+fn daemon_log_check_reports_failures_staleness_and_unavailable_status() {
+    use leopardwm_ipc::DaemonLogStatus;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = UNIX_EPOCH + Duration::from_secs(1000);
+    let writing = DaemonLogStatus::Writing {
+        path: "reported.log".into(),
+    };
+    for (age_before_start, warn) in [(0, false), (60, false), (61, true)] {
+        let modified = now - Duration::from_secs(100 + age_before_start);
+        let result = daemon_log_check(Some(&writing), Some(modified), now, Some(100));
+        if warn {
+            assert!(
+                matches!(result, CheckResult::Warn(message) if message.contains("has not written") && message.contains("reported.log"))
+            );
+        } else {
+            assert_eq!(
+                result,
+                CheckResult::Pass("Daemon log: writing reported.log".into())
+            );
+        }
+    }
+    for status in [
+        DaemonLogStatus::OpenFailed {
+            path: "reported.log".into(),
+            error: "access denied".into(),
+        },
+        DaemonLogStatus::WriteFailed {
+            path: "reported.log".into(),
+            error: "disk full".into(),
+        },
+    ] {
+        let result = daemon_log_check(Some(&status), Some(SystemTime::UNIX_EPOCH), now, Some(100));
+        let expected = match status {
+            DaemonLogStatus::OpenFailed { .. } => "cannot open reported.log: access denied",
+            _ => "cannot write reported.log: disk full",
+        };
+        assert!(matches!(result, CheckResult::Fail(message) if message.contains(expected)));
+    }
+    for status in [None, Some(&DaemonLogStatus::Unknown)] {
+        assert!(matches!(
+            daemon_log_check(status, None, now, None),
+            CheckResult::Warn(_)
+        ));
+    }
+    assert!(
+        matches!(daemon_log_check(Some(&writing), None, now, Some(100)), CheckResult::Warn(message) if message.contains("modified time unavailable"))
+    );
+}
+
+#[test]
+fn daemon_log_path_uses_reported_paths_and_explains_fallbacks() {
+    use leopardwm_ipc::DaemonLogStatus;
+    let default = PathBuf::from("default.log");
+    for status in [
+        DaemonLogStatus::Writing {
+            path: "reported.log".into(),
+        },
+        DaemonLogStatus::OpenFailed {
+            path: "reported.log".into(),
+            error: "denied".into(),
+        },
+        DaemonLogStatus::WriteFailed {
+            path: "reported.log".into(),
+            error: "full".into(),
+        },
+    ] {
+        assert_eq!(
+            daemon_log_path(Some(&status), Some(true), &default),
+            (
+                PathBuf::from("reported.log"),
+                "reported by the running daemon"
+            )
+        );
+    }
+    assert_eq!(
+        daemon_log_path(None, Some(false), &default),
+        (
+            default.clone(),
+            "default path because the daemon isn't running"
+        )
+    );
+    for status in [None, Some(&DaemonLogStatus::Unknown)] {
+        assert_eq!(
+            daemon_log_path(status, Some(true), &default),
+            (
+                default.clone(),
+                "default path because the daemon didn't report one"
+            )
+        );
+    }
+    assert_eq!(
+        daemon_log_path(None, None, &default),
+        (
+            default,
+            "default path because the daemon state could not be checked"
+        )
+    );
+}

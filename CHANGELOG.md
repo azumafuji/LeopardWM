@@ -11,6 +11,7 @@ All notable changes to LeopardWM will be documented in this file.
 ### Fixes
 
 - **Installing the MSI over an existing copy now replaces the watchdog and CLI executables.** They now carry version information like the daemon.
+- **Daemon log failures are now visible in `lwm doctor` and `lwm collect-logs`.** Diagnostics show the daemon-reported log path and warn when it cannot open or write the log, or has not written to it since it started; log collection identifies the file it reads. The daemon keeps running if its log cannot be opened. (#113)
 - **Windows no longer jump back to an earlier animation position after landing when the app is busy.** Late animation moves stay ordered before the landing endpoint. (#127)
 - **Apps that reopen maximized are restored without activation instead of staying maximized over the layout.** When the new window takes focus, its column fills the visible viewport; otherwise, it uses its usual width, including any per-app `column_width` setting.
 - **Dismissing Start or a launcher keeps the selected empty workspace.** New windows launched there open on that workspace instead of returning focus to a parked window on another workspace.
