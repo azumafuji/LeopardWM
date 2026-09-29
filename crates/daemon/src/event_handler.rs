@@ -2413,6 +2413,14 @@ impl AppState {
 
     /// Handle a window-minimized event.
     pub(crate) fn on_window_minimized(&mut self, hwnd: u64) {
+        self.on_window_minimized_with_snapshot(hwnd, None);
+    }
+
+    pub(crate) fn on_window_minimized_with_snapshot(
+        &mut self,
+        hwnd: u64,
+        layout_snapshot: Option<std::collections::HashMap<u64, leopardwm_core_layout::Rect>>,
+    ) {
         let was_tracked_focus = self.previous_focused_hwnd == Some(hwnd);
         if let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) {
             let was_selected_focus = was_tracked_focus
@@ -2427,7 +2435,7 @@ impl AppState {
                 self.previous_focused_hwnd = None;
             }
 
-            let snapshot = self.snapshot_layout();
+            let snapshot = layout_snapshot.unwrap_or_else(|| self.snapshot_layout());
             if let Some(has_focused_visible_window) = self.mark_minimized_and_reflow(hwnd) {
                 self.start_layout_transition(snapshot);
                 if let Err(e) = self.apply_layout() {

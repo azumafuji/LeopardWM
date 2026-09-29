@@ -6753,6 +6753,48 @@ fn test_prune_reconciles_inactive_iconic_without_changing_selected_focus() {
     assert_eq!(state.pending_last_window_departure, Some(intent));
 }
 
+#[test]
+fn test_prune_batches_iconic_windows_before_minimizing_tracked_focus() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    let workspace = &mut state.workspaces.get_mut(&1).unwrap()[0];
+    workspace.insert_window(100, Some(800)).unwrap();
+    workspace.insert_window_in_column(150, 0).unwrap();
+    workspace.insert_window_in_column(160, 0).unwrap();
+    workspace.focus_window(100).unwrap();
+    state.previous_focused_hwnd = Some(100);
+    state.injected_iconic_hwnds.extend([100, 150]);
+
+    state.prune_stale_windows_with(None);
+
+    let workspace = &state.workspaces[&1][0];
+    assert!(workspace.is_minimized(100));
+    assert!(workspace.is_minimized(150));
+    assert_eq!(workspace.focused_window(), Some(160));
+    assert_eq!(state.previous_focused_hwnd, Some(160));
+}
+
+#[test]
+fn test_prune_batch_transition_suppresses_landing_focus_resync() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.reduce_motion = false;
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(150, Some(800))
+        .unwrap();
+    state.previous_focused_hwnd = Some(100);
+    state.injected_iconic_hwnds.insert(150);
+
+    state.prune_stale_windows_with(None);
+
+    assert!(state.workspaces[&1][0].is_minimized(150));
+    assert!(state
+        .layout_transition
+        .as_ref()
+        .is_some_and(|transition| transition.suppress_landing_focus_resync));
+}
+
 fn last_window_liveness_state() -> AppState {
     let mut state = last_window_focus_prune_state();
     // Test AppState starts paused, which would skip the liveness check.

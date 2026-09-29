@@ -525,15 +525,9 @@ impl AppState {
         let tracked_selected = self
             .previous_focused_hwnd
             .filter(|hwnd| self.find_window_workspace(*hwnd) == Some(selected));
-        if let Some(hwnd) = tracked_selected.filter(|hwnd| unmarked_iconic.contains(hwnd)) {
-            if self.stale_window_probe(hwnd).0 == WindowPresence::Minimized {
-                self.on_window_minimized(hwnd);
-            }
-        }
-
         let mut batch_snapshot = None;
         let mut batch_changed = false;
-        for hwnd in unmarked_iconic {
+        for hwnd in unmarked_iconic.iter().copied() {
             if Some(hwnd) == tracked_selected {
                 continue;
             }
@@ -546,8 +540,20 @@ impl AppState {
                 batch_changed = true;
             }
         }
+
+        if let Some(hwnd) = tracked_selected.filter(|hwnd| unmarked_iconic.contains(hwnd)) {
+            if self.stale_window_probe(hwnd).0 == WindowPresence::Minimized {
+                self.on_window_minimized_with_snapshot(hwnd, batch_snapshot);
+                return result;
+            }
+        }
+
         if batch_changed {
-            self.start_layout_transition(batch_snapshot.unwrap());
+            if self.start_layout_transition(batch_snapshot.unwrap()) {
+                if let Some(transition) = self.layout_transition.as_mut() {
+                    transition.suppress_landing_focus_resync = true;
+                }
+            }
             if let Err(e) = self.apply_layout() {
                 warn!(
                     "Failed to apply layout after minimize reconciliation: {}",
