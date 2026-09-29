@@ -63,6 +63,42 @@ fn restore_maximized_at_admission(
     }
 }
 
+fn insert_admitted_tile(
+    workspace: &mut Workspace,
+    hwnd: u64,
+    width: Option<i32>,
+    rule_slot: Option<usize>,
+    in_column: bool,
+    take_focus: bool,
+    recreated_slot: Option<&crate::recreated_window_slot::RecreatedWindowSlot>,
+) -> bool {
+    if let Some(slot) = recreated_slot {
+        slot.insert(workspace, hwnd, take_focus).is_ok()
+    } else if let Some(slot) = rule_slot {
+        if take_focus {
+            workspace.insert_window_at_column(hwnd, width, slot).is_ok()
+        } else {
+            workspace
+                .insert_window_at_column_no_focus(hwnd, width, slot)
+                .is_ok()
+        }
+    } else if in_column {
+        let col = workspace.focused_column_index();
+        let row = workspace.focused_window_index_in_column() + 1;
+        let ok = workspace.insert_window_in_column_at(hwnd, col, row).is_ok();
+        if ok && take_focus {
+            if let Err(e) = workspace.focus_window(hwnd) {
+                warn!("Focusing new in-column window {} failed: {:?}", hwnd, e);
+            }
+        }
+        ok
+    } else if take_focus {
+        workspace.insert_window(hwnd, width).is_ok()
+    } else {
+        workspace.insert_window_no_focus(hwnd, width).is_ok()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct MoveSizeCancelResult {
     pub cancelled_resize: bool,
@@ -856,12 +892,18 @@ impl AppState {
             // or the focused monitor when they open outside attached displays.
             // A per-app rule's open_on_workspace can still redirect them
             // within that monitor below.
-            let monitor_id = self
-                .monitors
-                .values()
-                .find(|monitor| monitor.contains_rect_center(&win_info.rect))
-                .map(|monitor| monitor.id)
-                .unwrap_or(self.focused_monitor);
+            let recreated_slot =
+                self.take_recreated_window_slot(&win_info, kind, action, rule_sticky);
+            let monitor_id = recreated_slot
+                .as_ref()
+                .map(|slot| slot.monitor)
+                .unwrap_or_else(|| {
+                    self.monitors
+                        .values()
+                        .find(|monitor| monitor.contains_rect_center(&win_info.rect))
+                        .map(|monitor| monitor.id)
+                        .unwrap_or(self.focused_monitor)
+                });
 
             // Get floating rect before borrowing workspace mutably
             let floating_rect = if action == config::WindowAction::Float {
@@ -885,7 +927,9 @@ impl AppState {
             // A sticky window shows on every workspace, so it always opens on the
             // active one; an open_on_workspace would only hide it until a switch.
             // Explicit readmit always uses the active workspace of the native monitor.
-            let target_idx = if rule_sticky || kind == AdmissionKind::ExplicitReadmit {
+            let target_idx = if let Some(slot) = &recreated_slot {
+                slot.workspace
+            } else if rule_sticky || kind == AdmissionKind::ExplicitReadmit {
                 active_idx
             } else {
                 rule_workspace.unwrap_or(active_idx)
@@ -916,9 +960,13 @@ impl AppState {
                         .map(|f| ((f * f64::from(viewport_width)).round() as i32).max(100))
                 })
             };
-            let take_workspace_focus = kind == AdmissionKind::ExplicitReadmit
-                || self.config.behavior.focus_new_windows
-                || opens_in_background;
+            let take_workspace_focus = if recreated_slot.is_some() {
+                self.config.behavior.focus_new_windows && !opens_in_background
+            } else {
+                kind == AdmissionKind::ExplicitReadmit
+                    || self.config.behavior.focus_new_windows
+                    || opens_in_background
+            };
             let native_maximized_at_admission =
                 action == config::WindowAction::Tile && is_maximized(hwnd);
 
@@ -956,47 +1004,20 @@ impl AppState {
                         let in_column = self.config.behavior.new_window_placement
                             == config::NewWindowPlacement::InColumn
                             && workspace.column_count() > 0;
-                        let ok = if let Some(slot) = rule_slot {
-                            // A slot rule opens the window as its own column at
-                            // that slot, overriding in-column stacking.
-                            if take_workspace_focus {
-                                workspace
-                                    .insert_window_at_column(hwnd, rule_width_px, slot)
-                                    .is_ok()
-                            } else {
-                                workspace
-                                    .insert_window_at_column_no_focus(hwnd, rule_width_px, slot)
-                                    .is_ok()
-                            }
-                        } else if in_column {
-                            // Stack into the focused column, directly
-                            // below the focused window (matches
-                            // hyprscroller's column mode rather than
-                            // appending at the bottom of the stack).
-                            let col = workspace.focused_column_index();
-                            let row = workspace.focused_window_index_in_column() + 1;
-                            let ok = workspace.insert_window_in_column_at(hwnd, col, row).is_ok();
-                            if ok && take_workspace_focus {
-                                if let Err(e) = workspace.focus_window(hwnd) {
-                                    warn!("Focusing new in-column window {} failed: {:?}", hwnd, e);
-                                }
-                            }
-                            ok
-                        } else if take_workspace_focus {
-                            // A background open still takes the target
-                            // workspace's local focus (so it's focused
-                            // when that workspace is activated); OS
-                            // focus is never touched for it.
-                            workspace.insert_window(hwnd, rule_width_px).is_ok()
-                        } else {
-                            workspace
-                                .insert_window_no_focus(hwnd, rule_width_px)
-                                .is_ok()
-                        };
+                        let ok = insert_admitted_tile(
+                            workspace,
+                            hwnd,
+                            rule_width_px,
+                            rule_slot,
+                            in_column,
+                            take_workspace_focus,
+                            recreated_slot.as_ref(),
+                        );
                         // Per-app open_maximized: only when the new
                         // window's column is the focused one (always
                         // true for the focused new-column path).
                         if ok
+                            && recreated_slot.is_none()
                             && (rule_maximized || native_maximized_at_admission)
                             && workspace.focused_window() == Some(hwnd)
                         {
@@ -1050,6 +1071,10 @@ impl AppState {
                         workspace.ensure_focused_visible_animated(viewport_width);
                     }
                     self.record_managed_lifetime(hwnd, admitted_at_event_ms);
+                    self.record_managed_window_identity(&win_info);
+                    if recreated_slot.is_some() {
+                        info!("Window {} rejoined its pre-sleep column or tab on monitor {} workspace {}", hwnd, monitor_id, target_idx + 1);
+                    }
                     if opens_in_background {
                         // Target workspace is not active: hide the window and
                         // remove its taskbar button until that workspace is
@@ -1208,6 +1233,7 @@ impl AppState {
             // This window may have anchored another's restore; drop the stale
             // sibling so a recycled HWND can't redirect a move-back to the wrong
             // column (it falls back to the remembered index instead).
+            self.forget_recreated_slot_sibling(hwnd);
             for origin in self.move_origins.values_mut() {
                 if origin.sibling == Some(hwnd) {
                     origin.sibling = None;
@@ -1292,6 +1318,11 @@ impl AppState {
         // Cloaking a stashed scratchpad can emit Hidden while it is still the
         // same window. A shown scratchpad is an ordinary floating member, and
         // a real Destroyed still drops the record.
+        let recreated_donation = if is_hidden_event && cause == DepartureCause::Event {
+            self.prepare_recreated_window_slot(hwnd)
+        } else {
+            None
+        };
         let stashed_scratchpad_hidden = is_hidden_event
             && crate::managed_lifetime::is_stashed_scratchpad(self.scratchpad, hwnd);
         let recorded_lifetime = if stashed_scratchpad_hidden {
@@ -1410,6 +1441,10 @@ impl AppState {
                     workspace.ensure_focused_visible_animated(viewport_width);
                 }
             }
+        }
+
+        if was_tiled {
+            self.donate_recreated_window_slot(recreated_donation);
         }
 
         if let Some(snapshot) = snapshot {

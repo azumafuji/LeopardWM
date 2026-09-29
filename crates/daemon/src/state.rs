@@ -656,6 +656,7 @@ pub(crate) struct AppState {
     /// window enters management so a recycled handle is not treated as the
     /// lifetime that was admitted. Never persisted.
     pub(crate) managed_lifetime_tokens: HashMap<u64, u64>,
+    pub(crate) recreated_window_slots: crate::recreated_window_slot::RecreatedWindowSlots,
     /// Create/Show WinEvent time for the lifetime in `managed_lifetime_tokens`.
     /// Absent for admissions that had no window event. A Hidden strictly earlier
     /// than this time belongs to an older lifetime.
@@ -1187,6 +1188,7 @@ impl AppState {
             elevation_blocked: HashMap::new(),
             temporary_ignores: HashMap::new(),
             managed_lifetime_tokens: HashMap::new(),
+            recreated_window_slots: Default::default(),
             managed_lifetime_admitted_at_event_ms: HashMap::new(),
             hidden_column_widths: HashMap::new(),
             move_origins: HashMap::new(),

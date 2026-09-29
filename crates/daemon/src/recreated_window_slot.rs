@@ -1,0 +1,181 @@
+use crate::state::AppState;
+use leopardwm_core_layout::{LayoutError, Workspace};
+use leopardwm_platform_win32::WindowInfo;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use tracing::info;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct WindowIdentity {
+    process_id: u32,
+    class_name: String,
+}
+
+#[derive(Default)]
+pub(crate) struct RecreatedWindowSlots {
+    pub(crate) identities: HashMap<u64, WindowIdentity>,
+    pub(crate) slots: HashMap<WindowIdentity, RecreatedWindowSlot>,
+    pub(crate) suspended_at: Option<Instant>,
+    pub(crate) resumed_at: Option<Instant>,
+}
+
+pub(crate) struct RecreatedWindowSlot {
+    pub(crate) monitor: isize,
+    pub(crate) workspace: usize,
+    column: usize,
+    row: usize,
+    width: i32,
+    sibling: Option<u64>,
+    donor: u64,
+    pub(crate) hidden_at: Instant,
+}
+
+impl RecreatedWindowSlot {
+    pub(crate) fn insert(
+        &self,
+        workspace: &mut Workspace,
+        hwnd: u64,
+        take_focus: bool,
+    ) -> Result<(), LayoutError> {
+        if let Some((column, _)) = self.sibling.and_then(|s| workspace.find_window_location(s)) {
+            let focused = workspace.focused_window();
+            workspace.insert_window_in_column_at(hwnd, column, self.row)?;
+            if take_focus {
+                workspace.focus_window(hwnd)?;
+            } else if let Some(focused) = focused {
+                // In-column insertion shifts the active tab, but not the workspace's focus row.
+                workspace.focus_window(focused)?;
+            }
+            Ok(())
+        } else if take_focus {
+            workspace.insert_window_at_column(hwnd, Some(self.width), self.column)
+        } else {
+            workspace.insert_window_at_column_no_focus(hwnd, Some(self.width), self.column)
+        }
+    }
+}
+
+impl AppState {
+    pub(crate) fn handle_suspend_resume(
+        &mut self,
+        event: leopardwm_platform_win32::SuspendResumeEvent,
+    ) {
+        match event {
+            leopardwm_platform_win32::SuspendResumeEvent::Suspend => self.handle_system_suspend(),
+            leopardwm_platform_win32::SuspendResumeEvent::Resume => self.handle_system_resume(),
+        }
+    }
+
+    pub(crate) fn handle_system_suspend(&mut self) {
+        self.recreated_window_slots.suspended_at = Some(Instant::now());
+        info!("System suspended");
+    }
+
+    pub(crate) fn handle_system_resume(&mut self) {
+        self.recreated_window_slots.resumed_at = Some(Instant::now());
+        info!("System resumed");
+    }
+
+    pub(crate) fn record_managed_window_identity(&mut self, window: &WindowInfo) {
+        self.recreated_window_slots.identities.insert(
+            window.hwnd,
+            WindowIdentity {
+                process_id: window.process_id,
+                class_name: window.class_name.clone(),
+            },
+        );
+    }
+
+    pub(crate) fn forget_recreated_slot_sibling(&mut self, hwnd: u64) {
+        for slot in self.recreated_window_slots.slots.values_mut() {
+            if slot.sibling == Some(hwnd) {
+                slot.sibling = None;
+            }
+        }
+    }
+
+    pub(crate) fn prepare_recreated_window_slot(
+        &self,
+        hwnd: u64,
+    ) -> Option<(WindowIdentity, RecreatedWindowSlot)> {
+        let identity = self.recreated_window_slots.identities.get(&hwnd)?.clone();
+        let (monitor, workspace) = self.find_window_workspace(hwnd)?;
+        let ws = self.workspaces.get(&monitor)?.get(workspace)?;
+        let (column, row) = ws.find_window_location(hwnd)?;
+        let col = ws.columns().get(column)?;
+        Some((
+            identity,
+            RecreatedWindowSlot {
+                monitor,
+                workspace,
+                column,
+                row,
+                width: col.width(),
+                sibling: col.windows().iter().copied().find(|&s| s != hwnd),
+                donor: hwnd,
+                hidden_at: Instant::now(),
+            },
+        ))
+    }
+
+    pub(crate) fn donate_recreated_window_slot(
+        &mut self,
+        donation: Option<(WindowIdentity, RecreatedWindowSlot)>,
+    ) {
+        let Some((identity, slot)) = donation else {
+            return;
+        };
+        let same_process_remains = self.all_managed_window_ids().iter().any(|hwnd| {
+            self.recreated_window_slots
+                .identities
+                .get(hwnd)
+                .is_some_and(|other| other.process_id == identity.process_id)
+        });
+        self.recreated_window_slots
+            .slots
+            .retain(|_, slot| slot.hidden_at.elapsed() < Duration::from_secs(60));
+        if !same_process_remains {
+            self.recreated_window_slots.slots.insert(identity, slot);
+        }
+    }
+
+    pub(crate) fn take_recreated_window_slot(
+        &mut self,
+        window: &WindowInfo,
+        kind: crate::event_handler::AdmissionKind,
+        action: crate::config::WindowAction,
+        sticky: bool,
+    ) -> Option<RecreatedWindowSlot> {
+        let state = &mut self.recreated_window_slots;
+        state
+            .slots
+            .retain(|_, slot| slot.hidden_at.elapsed() < Duration::from_secs(60));
+        if kind != crate::event_handler::AdmissionKind::Automatic
+            || action != crate::config::WindowAction::Tile
+            || sticky
+        {
+            return None;
+        }
+        let key = WindowIdentity {
+            process_id: window.process_id,
+            class_name: window.class_name.clone(),
+        };
+        let slot = state.slots.get(&key)?;
+        let suspend = state.suspended_at?;
+        let resume = state.resumed_at?;
+        if slot.donor == window.hwnd
+            || suspend >= slot.hidden_at
+            || resume <= suspend
+            || slot.hidden_at.saturating_duration_since(resume) > Duration::from_secs(120)
+            || !self.monitors.contains_key(&slot.monitor)
+            || self
+                .workspaces
+                .get(&slot.monitor)
+                .and_then(|workspaces| workspaces.get(slot.workspace))
+                .is_none()
+        {
+            return None;
+        }
+        state.slots.remove(&key)
+    }
+}

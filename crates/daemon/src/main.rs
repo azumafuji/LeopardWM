@@ -33,6 +33,9 @@ mod notify;
 mod overview;
 mod persistence;
 mod physical_placement;
+mod recreated_window_slot;
+#[cfg(test)]
+mod recreated_window_slot_tests;
 mod release;
 #[cfg(test)]
 mod release_tests;
@@ -1295,6 +1298,23 @@ fn setup_window_hooks(
                 Err(e) => warn!("{}", e),
             }
             info!("Display change detection enabled");
+        }
+    }
+
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Err(error) = leopardwm_platform_win32::set_suspend_resume_sender(tx) {
+            warn!("Failed to register suspend/resume sender: {}", error);
+        } else {
+            match spawn_forwarding_thread(
+                "suspend-resume-fwd",
+                rx,
+                event_tx.clone(),
+                DaemonEvent::SuspendResume,
+            ) {
+                Ok(handle) => thread_handles.push(handle),
+                Err(error) => warn!("{}", error),
+            }
         }
     }
 
@@ -3884,6 +3904,7 @@ async fn main() -> Result<()> {
             DaemonEvent::FocusFollowsMouse { window_id } => {
                 handle_focus_follows_mouse(&mut ctx, window_id).await;
             }
+            DaemonEvent::SuspendResume(event) => state.lock().await.handle_suspend_resume(event),
             DaemonEvent::PowerStateChanged {
                 on_battery_or_saver,
             } => {

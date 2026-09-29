@@ -39,6 +39,22 @@ const WM_POWERBROADCAST: u32 = 0x0218;
 
 /// Power setting change notification (wparam for WM_POWERBROADCAST).
 const PBT_POWERSETTINGCHANGE: usize = 0x8013;
+const PBT_APMSUSPEND: usize = 0x4;
+const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
+const PBT_APMRESUMESUSPEND: usize = 0x7;
+
+#[derive(Debug, Clone, Copy)]
+pub enum SuspendResumeEvent {
+    Suspend,
+    Resume,
+}
+
+thread_local! {
+    static SUSPEND_RESUME_REGISTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+static SUSPEND_RESUME_SENDER: std::sync::Mutex<Option<mpsc::Sender<SuspendResumeEvent>>> =
+    std::sync::Mutex::new(None);
 
 /// Unique identifier for a registered hotkey.
 pub type HotkeyId = i32;
@@ -272,6 +288,16 @@ pub fn set_power_state_sender(sender: mpsc::Sender<bool>) -> Result<(), Win32Err
     Ok(())
 }
 
+pub fn set_suspend_resume_sender(
+    sender: mpsc::Sender<SuspendResumeEvent>,
+) -> Result<(), Win32Error> {
+    let mut guard = SUSPEND_RESUME_SENDER.lock().map_err(|_| {
+        Win32Error::HookInstallFailed("Suspend/resume sender mutex poisoned".to_string())
+    })?;
+    *guard = Some(sender);
+    Ok(())
+}
+
 /// Register the synchronous recovery callback for committed session end.
 ///
 /// Call this before `register_system_events`. The callback survives system-event
@@ -338,6 +364,23 @@ pub fn register_system_events() -> Result<SystemEventHandle, Win32Error> {
             }
 
             let hwnd = hwnd.unwrap();
+            let suspend_resume_registration = {
+                use windows::Win32::System::Power::RegisterSuspendResumeNotification;
+                use windows::Win32::UI::WindowsAndMessaging::DEVICE_NOTIFY_WINDOW_HANDLE;
+                match RegisterSuspendResumeNotification(
+                    windows::Win32::Foundation::HANDLE(hwnd.0),
+                    DEVICE_NOTIFY_WINDOW_HANDLE,
+                ) {
+                    Ok(registration) => {
+                        SUSPEND_RESUME_REGISTERED.set(true);
+                        Some(registration)
+                    }
+                    Err(error) => {
+                        tracing::warn!("Failed to register suspend/resume notifications: {}. Recreated-window slots are inactive.", error);
+                        None
+                    }
+                }
+            };
 
             // Register for power state notifications on this window
             {
@@ -392,6 +435,12 @@ pub fn register_system_events() -> Result<SystemEventHandle, Win32Error> {
                 let _ = DispatchMessageW(&msg);
             }
 
+            SUSPEND_RESUME_REGISTERED.set(false);
+            if let Some(registration) = suspend_resume_registration {
+                let _ = windows::Win32::System::Power::UnregisterSuspendResumeNotification(
+                    registration,
+                );
+            }
             let _ = DestroyWindow(hwnd);
             let _ = UnregisterClassW(windows::core::PCWSTR(class_name.as_ptr()), None);
         }
@@ -498,7 +547,22 @@ fn sysevent_window_proc_inner(
             windows::Win32::Foundation::LRESULT(0)
         }
         WM_POWERBROADCAST => {
-            if wparam.0 == PBT_POWERSETTINGCHANGE {
+            let lifecycle = match wparam.0 {
+                PBT_APMSUSPEND => Some(SuspendResumeEvent::Suspend),
+                PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND => Some(SuspendResumeEvent::Resume),
+                _ => None,
+            };
+            if let Some(event) = lifecycle {
+                if SUSPEND_RESUME_REGISTERED.get() {
+                    let guard = SUSPEND_RESUME_SENDER
+                        .lock()
+                        .unwrap_or_else(recover_poisoned_mutex);
+                    if let Some(sender) = guard.as_ref() {
+                        let _ = sender.send(event);
+                    }
+                }
+                windows::Win32::Foundation::LRESULT(1)
+            } else if wparam.0 == PBT_POWERSETTINGCHANGE {
                 let on_battery_or_saver = crate::system::is_on_battery_or_power_saver();
                 tracing::debug!(
                     "Power state changed: on_battery_or_saver={}",
@@ -779,6 +843,45 @@ mod tests {
     use super::*;
 
     static HOTKEY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn suspend_resume_messages_forward_only_after_registration() {
+        let _guard = HOTKEY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(recover_poisoned_mutex);
+        let previous = SUSPEND_RESUME_SENDER
+            .lock()
+            .unwrap_or_else(recover_poisoned_mutex)
+            .take();
+        let (tx, rx) = mpsc::channel();
+        set_suspend_resume_sender(tx).unwrap();
+        let registered = SUSPEND_RESUME_REGISTERED.replace(false);
+        let dispatch = |kind| {
+            sysevent_window_proc_inner(
+                HWND::default(),
+                WM_POWERBROADCAST,
+                windows::Win32::Foundation::WPARAM(kind),
+                windows::Win32::Foundation::LPARAM(0),
+            )
+        };
+        dispatch(PBT_APMSUSPEND);
+        assert!(rx.try_recv().is_err());
+        SUSPEND_RESUME_REGISTERED.set(true);
+        dispatch(PBT_APMSUSPEND);
+        dispatch(PBT_APMRESUMEAUTOMATIC);
+        dispatch(PBT_APMRESUMESUSPEND);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            SuspendResumeEvent::Suspend
+        ));
+        assert!(matches!(rx.try_recv().unwrap(), SuspendResumeEvent::Resume));
+        assert!(matches!(rx.try_recv().unwrap(), SuspendResumeEvent::Resume));
+        assert!(rx.try_recv().is_err());
+        SUSPEND_RESUME_REGISTERED.set(registered);
+        *SUSPEND_RESUME_SENDER
+            .lock()
+            .unwrap_or_else(recover_poisoned_mutex) = previous;
+    }
 
     #[test]
     fn test_stable_id_is_deterministic_and_unique_per_combo() {

@@ -10,6 +10,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
+- **An app that hides and recreates its window shortly after the PC wakes from sleep returns to its column or tab.** Restoration requires the same process and window class, within about two minutes of resume and 60 seconds of the hide, and never changes another workspace's focus. The daemon log now records suspend and resume. Modern Standby uses the documented suspend/resume notification registration but has not been verified on Modern Standby hardware.
 - **Installing the MSI over an existing copy now replaces the watchdog and CLI executables.** They now carry version information like the daemon.
 - **Daemon log failures are now visible in `lwm doctor` and `lwm collect-logs`.** Diagnostics show the daemon-reported log path and report when it cannot open or write the log, or has not written to it since it started; log collection identifies the file it reads. The daemon writes one startup line at every log level, so the stale-log check also holds with `log_level = "warn"` or `"error"`. The daemon keeps running if its log cannot be opened. (#113)
 - **Windows no longer jump back to an earlier animation position after landing when the app is busy.** Late animation moves stay ordered before the landing endpoint. (#127)

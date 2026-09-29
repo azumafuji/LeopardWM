@@ -44,7 +44,10 @@ pub(crate) enum DaemonEvent {
     /// A global hotkey was pressed.
     Hotkey(HotkeyEvent),
     /// Settings recorded a chord through the global keyboard hook.
-    RecordedHotkey { modifiers: Modifiers, vk: u32 },
+    RecordedHotkey {
+        modifiers: Modifiers,
+        vk: u32,
+    },
     /// A touchpad gesture was detected.
     Gesture(GestureEvent),
     /// A tray menu event.
@@ -55,20 +58,30 @@ pub(crate) enum DaemonEvent {
     AnimationFrameApplied(animation_worker::FrameResult),
     /// A worker-driven crossfade target was actually dropped. Daemon releases
     /// only that target's same-source re-registration barrier.
-    CrossfadeTargetDropped { epoch: u64, window_id: u64 },
+    CrossfadeTargetDropped {
+        epoch: u64,
+        window_id: u64,
+    },
     /// A worker-driven crossfade for the given epoch completed (normal
     /// end-of-fade OR aborted). Daemon clears `active_crossfade` and
     /// releases the `crossfade_sources` re-registration barrier when the
     /// epoch matches.
-    CrossfadeComplete { epoch: u64 },
+    CrossfadeComplete {
+        epoch: u64,
+    },
     /// Hide snap hint overlay after timeout.
     HideSnapHint,
     /// Apply focus-follows-mouse focus after delay.
-    FocusFollowsMouse { window_id: u64 },
+    FocusFollowsMouse {
+        window_id: u64,
+    },
     /// Debounced display change — fires after WM_DISPLAYCHANGE settles.
     DisplayChangeSettled,
     /// Power state changed (AC/battery or power saver toggled).
-    PowerStateChanged { on_battery_or_saver: bool },
+    PowerStateChanged {
+        on_battery_or_saver: bool,
+    },
+    SuspendResume(leopardwm_platform_win32::SuspendResumeEvent),
     /// Update checker observed a newer release tag (e.g. `v0.1.11`).
     UpdateAvailable(String),
     /// User invoked an action on a tab in the tab strip overlay. The

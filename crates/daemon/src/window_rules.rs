@@ -190,6 +190,7 @@ impl AppState {
             // Persisted restores are already members here and have no record yet.
             if self.find_window_workspace(win_info.hwnd).is_some() {
                 self.record_managed_lifetime_if_unrecorded(win_info.hwnd);
+                self.record_managed_window_identity(&win_info);
                 continue;
             }
 
@@ -256,6 +257,7 @@ impl AppState {
                                 self.window_managed_at
                                     .insert(win_info.hwnd, std::time::Instant::now());
                                 self.record_managed_lifetime(win_info.hwnd, None);
+                                self.record_managed_window_identity(&win_info);
                                 info!(
                                     "Added floating window: {} ({}) to monitor {} - {}x{}",
                                     win_info.title,
@@ -277,6 +279,7 @@ impl AppState {
                                 self.window_managed_at
                                     .insert(win_info.hwnd, std::time::Instant::now());
                                 self.record_managed_lifetime(win_info.hwnd, None);
+                                self.record_managed_window_identity(&win_info);
                                 self.disable_snap_for_window(win_info.hwnd);
                                 info!(
                                     "Added tiled window: {} ({}) to monitor {} - {}x{}",
