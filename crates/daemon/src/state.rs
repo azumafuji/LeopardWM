@@ -920,6 +920,8 @@ pub(crate) enum LastWindowDepartureOrigin {
 /// first no-later managed Focused on another workspace of the same monitor,
 /// then use that exact HWND. Same-workspace activations are not inferred.
 /// EventlessPrune does not infer from None. Unmanaged samples are not rewritten.
+/// A managed restore on the guard's monitor clears a Minimized-origin guard
+/// because its activation is legitimate follow-focus, not Windows' post-minimize handoff.
 ///
 /// Distinct from `PendingWorkspaceSwitchFocus`; the two guards are not shared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

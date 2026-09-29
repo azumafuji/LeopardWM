@@ -2490,9 +2490,10 @@ impl AppState {
                 }
             }
             if did_restore
-                && self
-                    .pending_last_window_departure
-                    .is_some_and(|intent| intent.monitor == monitor_id)
+                && self.pending_last_window_departure.is_some_and(|intent| {
+                    intent.monitor == monitor_id
+                        && intent.origin == LastWindowDepartureOrigin::Minimized
+                })
             {
                 self.pending_last_window_departure = None;
             }

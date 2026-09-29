@@ -5600,6 +5600,36 @@ fn test_last_window_replacement_does_not_follow_other_workspace() {
 }
 
 #[test]
+fn test_minimized_restore_does_not_clear_destroyed_departure_guard() {
+    let mut state = last_window_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.ensure_workspace_exists(monitor, 2);
+    state.workspaces.get_mut(&monitor).unwrap()[2]
+        .insert_window(300, Some(800))
+        .unwrap();
+
+    state.handle_window_event(WindowEvent::Destroyed(100));
+    let intent = state
+        .pending_last_window_departure
+        .expect("destroying the selected workspace's last window arms the guard");
+    assert_eq!(
+        intent.origin,
+        LastWindowDepartureOrigin::DirectDestroyedOrHidden
+    );
+    assert_eq!(intent.replacement_hwnd, Some(200));
+
+    state.workspaces.get_mut(&monitor).unwrap()[2].mark_minimized(300);
+    state.handle_window_event(WindowEvent::Restored(300));
+    assert_eq!(state.pending_last_window_departure, Some(intent));
+
+    state.last_prune_at = Some(std::time::Instant::now());
+    state.handle_window_event(WindowEvent::Focused(200, intent.armed_at_event_time_ms));
+
+    assert_eq!(state.active_workspace_idx(monitor), intent.workspace);
+    assert_eq!(state.previous_focused_hwnd, None);
+}
+
+#[test]
 fn test_managed_replacement_parks_old_workspace_peer() {
     let mut state = two_managed_windows();
     state
