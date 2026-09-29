@@ -3,6 +3,8 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
 use tracing_subscriber::fmt::MakeWriter;
 
 #[derive(Clone)]
@@ -76,13 +78,21 @@ pub(crate) fn open(log_dir: &Path) -> (Option<LogWriter<RollingFileAppender>>, L
     {
         Ok(inner) => {
             let health = LogHealth::new(DaemonLogStatus::Writing { path });
-            (
-                Some(LogWriter {
-                    inner,
-                    health: health.clone(),
-                }),
-                health,
-            )
+            let mut writer = LogWriter {
+                inner,
+                health: health.clone(),
+            };
+            let mut timestamp = String::new();
+            SystemTime
+                .format_time(&mut Writer::new(&mut timestamp))
+                .expect("formatting a timestamp into a String cannot fail");
+            let _ = writeln!(
+                writer,
+                "{timestamp} LeopardWM daemon {} (pid {}) opened this log",
+                env!("CARGO_PKG_VERSION"),
+                std::process::id()
+            );
+            (Some(writer), health)
         }
         Err(error) => {
             eprintln!("[leopardwm] Cannot open daemon log {path}: {error}");
@@ -120,11 +130,22 @@ mod tests {
             std::env::temp_dir().join(format!("leopardwm-log-writing-{}", std::process::id()));
         let (writer, health) = open(&dir);
         let writer = writer.unwrap();
+        let startup = std::fs::read_to_string(dir.join("leopardwm-daemon.log")).unwrap();
+        let (timestamp, message) = startup.split_once(' ').unwrap();
+        assert!(timestamp.ends_with('Z'));
+        assert_eq!(
+            message,
+            format!(
+                "LeopardWM daemon {} (pid {}) opened this log\n",
+                env!("CARGO_PKG_VERSION"),
+                std::process::id()
+            )
+        );
         writer.make_writer().write_all(b"log entry\n").unwrap();
         drop(writer);
         assert_eq!(
-            std::fs::read(dir.join("leopardwm-daemon.log")).unwrap(),
-            b"log entry\n"
+            std::fs::read_to_string(dir.join("leopardwm-daemon.log")).unwrap(),
+            format!("{startup}log entry\n")
         );
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         assert!(matches!(health.status(), DaemonLogStatus::Writing { .. }));
