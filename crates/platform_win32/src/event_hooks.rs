@@ -48,8 +48,8 @@ pub enum WindowEvent {
     Hidden(WindowId, u32),
     /// A window received focus, with the WinEvent timestamp in GetTickCount's domain.
     Focused(WindowId, u32),
-    /// A window was minimized.
-    Minimized(WindowId),
+    /// A window was minimized, with the WinEvent timestamp in GetTickCount's domain.
+    Minimized(WindowId, u32),
     /// A window was restored from minimized state.
     Restored(WindowId),
     /// A window was moved or resized by the user.
@@ -373,7 +373,7 @@ fn win_event_callback_inner(
             }
             focused_window_event(window_id, dwms_event_time)
         }
-        EVENT_SYSTEM_MINIMIZESTART => WindowEvent::Minimized(window_id),
+        EVENT_SYSTEM_MINIMIZESTART => WindowEvent::Minimized(window_id, dwms_event_time),
         EVENT_SYSTEM_MINIMIZEEND => WindowEvent::Restored(window_id),
         EVENT_SYSTEM_MOVESIZESTART => WindowEvent::MoveSizeStart(window_id),
         EVENT_SYSTEM_MOVESIZEEND => WindowEvent::MoveSizeEnd(window_id),

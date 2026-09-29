@@ -301,7 +301,7 @@ fn ignored_window_stays_out_through_lifecycle_and_release() {
     state.handle_window_event(WindowEvent::Created(10, 0));
     state.handle_window_event(WindowEvent::Focused(10, 0));
     state.handle_window_event(WindowEvent::Hidden(10, 0));
-    state.handle_window_event(WindowEvent::Minimized(10));
+    state.handle_window_event(WindowEvent::Minimized(10, 0));
     assert!(state.find_window_workspace(10).is_none());
     assert!(state.temporary_ignores.contains_key(&10));
 
