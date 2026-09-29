@@ -1283,7 +1283,6 @@ impl AppState {
             );
             return;
         }
-        self.forget_recreated_slot_sibling(hwnd);
         if self
             .pending_workspace_switch_focus
             .is_some_and(|intent| intent.source_hwnd == hwnd)
@@ -2123,9 +2122,6 @@ impl AppState {
     }
 
     fn on_window_focused(&mut self, hwnd: u64, event_time_ms: u32) {
-        if self.suppress_background_rejoin_activation(hwnd, event_time_ms) {
-            return;
-        }
         // Skip if this window is already our tracked focus — avoids
         // feedback loops where sync_foreground_window triggers another
         // EVENT_SYSTEM_FOREGROUND for the same window.
@@ -2274,6 +2270,9 @@ impl AppState {
                 return;
             }
             if self.should_suppress_workspace_switch_focus(hwnd, event_time_ms) {
+                return;
+            }
+            if self.suppress_background_rejoin_activation(hwnd, event_time_ms) {
                 return;
             }
             let recently_restored_focus = self

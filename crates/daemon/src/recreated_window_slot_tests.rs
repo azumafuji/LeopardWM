@@ -446,3 +446,53 @@ fn hidden_sibling_cannot_redirect_restore_to_recycled_hwnd() {
     assert_eq!(ws.find_window_location(11), Some((0, 0)));
     assert_eq!(ws.find_window_location(20), Some((3, 0)));
 }
+
+#[test]
+fn background_rejoin_activation_reconciles_selected_minimized_window() {
+    let mut state = tabbed_state();
+    state.ensure_workspace_exists(1, 1);
+    state.active_workspace.insert(1, 1);
+    create(&mut state, 40, 400, "OtherClass");
+    state.previous_focused_hwnd = Some(40);
+    cycle(&mut state);
+    hide(&mut state, 10);
+    inject(&mut state, 11, 100, "AppClass");
+    state.handle_window_event(WindowEvent::Created(11, 1000));
+    let background_focus = state.workspaces[&1][0].focused_window();
+    let active_tab = state.workspaces[&1][0].columns()[0].active_tab_idx();
+    state.injected_foreground_hwnd = Some(Some(11));
+    state.injected_foreground_is_valid = Some(true);
+    state.last_prune_at = Some(Instant::now());
+    state.injected_iconic_hwnds.insert(40);
+    state.handle_window_event(WindowEvent::Focused(11, 1048));
+    assert!(state.workspaces[&1][1].is_minimized(40));
+    assert_eq!(state.active_workspace_idx(1), 1);
+    assert_eq!(state.previous_focused_hwnd, None);
+    assert_eq!(state.workspaces[&1][0].focused_window(), background_focus);
+    assert_eq!(
+        state.workspaces[&1][0].columns()[0].active_tab_idx(),
+        active_tab
+    );
+    assert!(state
+        .foreground_release_requests
+        .iter()
+        .any(|&(hwnd, _)| hwnd == 11));
+}
+
+#[test]
+fn pruned_sibling_cannot_redirect_restore_to_recycled_hwnd() {
+    let mut state = tabbed_state();
+    cycle(&mut state);
+    hide(&mut state, 10);
+    state.injected_window_info.remove(&20);
+    state.injected_stale_hwnds.push(20);
+    state.prune_stale_windows();
+    assert!(state.find_window_workspace(20).is_none());
+    create(&mut state, 40, 400, "OtherClass");
+    create(&mut state, 20, 500, "UnrelatedClass");
+    create(&mut state, 11, 100, "AppClass");
+    let ws = state.focused_workspace().unwrap();
+    assert_eq!(ws.column_count(), 4);
+    assert_eq!(ws.find_window_location(11), Some((0, 0)));
+    assert_eq!(ws.find_window_location(20), Some((3, 0)));
+}

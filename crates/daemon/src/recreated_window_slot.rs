@@ -155,7 +155,9 @@ impl AppState {
         true
     }
 
-    pub(crate) fn forget_recreated_slot_sibling(&mut self, hwnd: u64) {
+    pub(crate) fn forget_recreated_window_lifetime(&mut self, hwnd: u64) {
+        self.recreated_window_slots.identities.remove(&hwnd);
+        self.recreated_window_slots.background_rejoins.remove(&hwnd);
         for slot in self.recreated_window_slots.slots.values_mut() {
             if slot.sibling == Some(hwnd) {
                 slot.sibling = None;
