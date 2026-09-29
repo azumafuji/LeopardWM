@@ -900,12 +900,12 @@ pub(crate) enum LastWindowDepartureOrigin {
 /// focus because the window departed or was minimized.
 ///
 /// An exact replacement HWND is attributable auto-activation while this guard
-/// is fresh. A strictly newer activation (a different HWND, or the same HWND
-/// with a later WinEvent time) wins. Direct Destroyed/Hidden, Minimized, and
-/// standalone pruning stamp `armed_at_event_time_ms` with handler execution
-/// time, so an activation that occurred before the handler ran may compare as
-/// no-later and stay suppressed. If the departing window still appears live or
-/// pruning is throttled, follow-focus cannot attribute the sequence.
+/// is fresh. Direct Destroyed/Hidden and EventlessPrune suppress only Focused
+/// events no later than the arm tick. A real Minimized event uses its OS event
+/// time and accepts Focused handoff events through 500 ms after that tick;
+/// reconciliation-sourced Minimized calls use handler time. If the departing
+/// window still appears live or pruning is throttled, follow-focus cannot
+/// attribute the sequence.
 ///
 /// A prune reached from `Focused(X, t)` stamps `t`. It samples a replacement
 /// only when the tracked focus HWND was stale and was removed from the
@@ -917,7 +917,7 @@ pub(crate) enum LastWindowDepartureOrigin {
 /// check, that activation can still be treated as auto-activation.
 ///
 /// DirectDestroyedOrHidden and Minimized with no sampled replacement bind the
-/// first no-later managed Focused on another workspace of the same monitor,
+/// first eligible managed Focused on another workspace of the same monitor,
 /// then use that exact HWND. Same-workspace activations are not inferred.
 /// EventlessPrune does not infer from None. Unmanaged samples are not rewritten.
 /// A managed restore on the guard's monitor clears a Minimized-origin guard

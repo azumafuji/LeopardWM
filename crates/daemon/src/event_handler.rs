@@ -16,6 +16,8 @@ use leopardwm_platform_win32::{
 };
 use tracing::{debug, info, warn};
 
+const MINIMIZE_HANDOFF_WINDOW_MS: u32 = 500; // Windows timestamps post-minimize focus handoff events after the minimize.
+
 /// How long after a window is first managed to treat it as still settling its
 /// initial geometry.
 pub(crate) const SNAPBACK_SETTLE_AFTER_CREATE: std::time::Duration =
@@ -1977,6 +1979,20 @@ impl AppState {
         };
         let handler_time_ms = self.event_time_now_ms();
         let ms_since_last_input = leopardwm_platform_win32::ms_since_last_user_input();
+        // Keep Windows' departure handoff from undoing selection: suppress exact replacements and
+        // bind eligible other-workspace handoffs; Minimized allows a 500 ms OS timestamp window.
+        let event_is_eligible = match intent.origin {
+            LastWindowDepartureOrigin::Minimized => event_time_is_no_later_than(
+                event_time_ms,
+                intent
+                    .armed_at_event_time_ms
+                    .wrapping_add(MINIMIZE_HANDOFF_WINDOW_MS),
+            ),
+            LastWindowDepartureOrigin::DirectDestroyedOrHidden
+            | LastWindowDepartureOrigin::EventlessPrune => {
+                event_time_is_no_later_than(event_time_ms, intent.armed_at_event_time_ms)
+            }
+        };
         let outcome = if !intent.is_fresh() {
             self.pending_last_window_departure = None;
             "stale_ttl"
@@ -1985,9 +2001,13 @@ impl AppState {
         {
             self.pending_last_window_departure = None;
             "monitor_or_workspace_changed"
-        } else if !event_time_is_no_later_than(event_time_ms, intent.armed_at_event_time_ms) {
+        } else if !event_is_eligible {
             self.pending_last_window_departure = None;
-            "later_than_arm"
+            if intent.origin == LastWindowDepartureOrigin::Minimized {
+                "later_than_handoff_window"
+            } else {
+                "later_than_arm"
+            }
         } else if Some(hwnd) == intent.replacement_hwnd {
             "exact_replacement"
         } else if intent.replacement_hwnd.is_none()
@@ -2483,9 +2503,11 @@ impl AppState {
                 }
                 self.focused_monitor = monitor_id;
                 if was_selected_focus && has_focused_visible_window {
+                    let armed_at_event_time_ms =
+                        os_event_time_ms.unwrap_or_else(|| self.event_time_now_ms());
                     self.arm_pending_last_window_departure(
                         None,
-                        self.event_time_now_ms(),
+                        armed_at_event_time_ms,
                         LastWindowDepartureOrigin::Minimized,
                     );
                     armed = true;

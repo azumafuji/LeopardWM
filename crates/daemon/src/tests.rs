@@ -6744,25 +6744,63 @@ fn test_iconic_tracked_focus_reconciles_before_parked_window_focus() {
 }
 
 #[test]
-fn test_minimize_suppresses_no_later_parked_window_focus() {
+fn test_minimize_suppresses_duplicate_parked_focus_during_handoff() {
     let mut state = minimized_cross_workspace_state();
     let mon = state.focused_monitor;
 
-    state.handle_window_event(WindowEvent::Minimized(100, 1000));
+    state.handle_window_event(WindowEvent::Minimized(100, 1_000));
     let intent = state.pending_last_window_departure.unwrap();
     assert_eq!(intent.replacement_hwnd, None);
     assert_eq!(intent.armed_at_event_time_ms, 1_000);
 
     state.handle_window_event(WindowEvent::Focused(200, 1_000));
+    state.handle_window_event(WindowEvent::Focused(200, 1_015));
 
     assert_eq!(state.active_workspace_idx(mon), 0);
     assert_eq!(state.workspaces[&mon][0].focused_window(), Some(150));
     assert_eq!(state.previous_focused_hwnd, Some(150));
+    assert_eq!(
+        state
+            .pending_last_window_departure
+            .unwrap()
+            .replacement_hwnd,
+        Some(200)
+    );
+}
 
-    state.handle_window_event(WindowEvent::Focused(200, 1_001));
+#[test]
+fn test_minimize_suppresses_parked_focus_48ms_after_handoff() {
+    let mut state = minimized_cross_workspace_state();
+    let mon = state.focused_monitor;
+
+    state.handle_window_event(WindowEvent::Minimized(100, 1_000));
+    state.handle_window_event(WindowEvent::Focused(200, 1_048));
+
+    assert_eq!(state.active_workspace_idx(mon), 0);
+    assert_eq!(state.workspaces[&mon][0].focused_window(), Some(150));
+    assert_eq!(state.previous_focused_hwnd, Some(150));
+    assert_eq!(
+        state
+            .pending_last_window_departure
+            .unwrap()
+            .replacement_hwnd,
+        Some(200)
+    );
+}
+
+#[test]
+fn test_minimize_focus_after_handoff_window_follows() {
+    let mut state = minimized_cross_workspace_state();
+    let mon = state.focused_monitor;
+    state.injected_event_time_ms = Some(1_600);
+
+    state.handle_window_event(WindowEvent::Minimized(100, 1_000));
+    state.handle_window_event(WindowEvent::Focused(200, 1_600));
+
     assert_eq!(state.active_workspace_idx(mon), 1);
     assert_eq!(state.workspaces[&mon][1].focused_window(), Some(200));
     assert_eq!(state.previous_focused_hwnd, Some(200));
+    assert_eq!(state.pending_last_window_departure, None);
 }
 
 #[test]
