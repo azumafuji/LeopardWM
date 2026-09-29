@@ -25,7 +25,7 @@ pub enum ColumnMode {
 
 /// A column in the infinite strip.
 /// A column contains one or more vertically stacked windows.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Column {
     /// Width of the column in pixels.
     pub(crate) width: i32,
@@ -38,6 +38,23 @@ pub struct Column {
     /// Display mode (Vertical or Tabbed).
     #[serde(default)]
     pub(crate) mode: ColumnMode,
+    #[serde(skip)]
+    pub(crate) width_fraction_cache: Option<WidthFractionCache>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WidthFractionCache {
+    pub fraction: f64,
+    pub width: i32,
+}
+
+impl PartialEq for Column {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.windows == other.windows
+            && self.height_weights == other.height_weights
+            && self.mode == other.mode
+    }
 }
 
 impl Column {
@@ -49,6 +66,7 @@ impl Column {
             windows: vec![window_id],
             height_weights: vec![1.0],
             mode: ColumnMode::Vertical,
+            width_fraction_cache: None,
         }
     }
 
@@ -60,6 +78,7 @@ impl Column {
             windows: Vec::new(),
             height_weights: Vec::new(),
             mode: ColumnMode::Vertical,
+            width_fraction_cache: None,
         }
     }
 

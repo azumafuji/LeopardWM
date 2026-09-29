@@ -755,7 +755,7 @@ fn test_width_feedback_preserves_requested_resolution_round_trip() {
         state.workspaces.get_mut(&monitor).unwrap()[0] = workspace;
 
         for (old_width, new_width, requested) in
-            [(5120, 2560, 627), (2560, 1920, 467), (1920, 5120, 1266)]
+            [(5120, 2560, 627), (2560, 1920, 467), (1920, 5120, 1267)]
         {
             if invalidate {
                 state.monitors.get_mut(&monitor).unwrap().rect.width = old_width;

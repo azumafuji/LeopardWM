@@ -2815,6 +2815,94 @@ mod tests {
     }
 
     #[test]
+    fn test_rescale_column_widths_preserves_ticket_round_trip() {
+        fn rescale(ws: &mut Workspace, old_vw: i32, new_vw: i32, new_gap: i32) {
+            let old_gap = ws.gap();
+            let (old_ol, old_or, _, _) = ws.outer_gaps();
+            ws.set_gap(new_gap);
+            ws.set_outer_gaps(new_gap, new_gap, new_gap, new_gap);
+            assert!(ws.rescale_column_widths(old_gap, old_ol, old_or, old_vw, new_vw,));
+        }
+
+        let mut halves = Workspace::with_gaps(10, 10);
+        halves.insert_window(1, Some(400)).unwrap();
+        halves.insert_window(2, Some(400)).unwrap();
+        halves.set_focus(0, 0).unwrap();
+        halves.set_focused_column_width_fraction(0.5, 5120);
+        halves.set_focus(1, 0).unwrap();
+        halves.set_focused_column_width_fraction(0.5, 5120);
+        let original_halves: Vec<_> = halves.columns().iter().map(|c| c.width()).collect();
+        assert_eq!(original_halves, [2545, 2545]);
+
+        let mut quarters = Workspace::with_gaps(10, 10);
+        for id in 1..=4 {
+            quarters.insert_window(id, Some(400)).unwrap();
+            quarters.set_focused_column_width_fraction(0.25, 5120);
+        }
+        let original_quarters: Vec<_> = quarters.columns().iter().map(|c| c.width()).collect();
+        assert_eq!(original_quarters, [1267; 4]);
+
+        for ws in [&mut halves, &mut quarters] {
+            rescale(ws, 5120, 5120, 13);
+            rescale(ws, 5120, 1920, 13);
+            rescale(ws, 1920, 1280, 10);
+            rescale(ws, 1280, 5120, 10);
+        }
+
+        let final_halves: Vec<_> = halves.columns().iter().map(|c| c.width()).collect();
+        assert_eq!(final_halves, original_halves);
+        assert_eq!(final_halves.iter().sum::<i32>() + halves.gap(), 5100);
+        assert!(halves.total_width() <= 5120 - 20);
+
+        let final_quarters: Vec<_> = quarters.columns().iter().map(|c| c.width()).collect();
+        assert_eq!(final_quarters, original_quarters);
+        assert!(final_quarters.iter().sum::<i32>() + quarters.gap() * 3 <= 5100);
+        assert!(quarters.total_width() <= 5120 - 20);
+    }
+
+    #[test]
+    fn test_rescale_column_widths_respects_manual_resize_after_cache() {
+        let mut ws = Workspace::with_gaps(10, 10);
+        ws.insert_window(1, Some(600)).unwrap();
+        assert!(ws.rescale_column_widths(10, 10, 10, 1920, 1280));
+
+        ws.resize_focused_column(100);
+        let resized_width = ws.columns()[0].width();
+        assert_eq!(resized_width, 496);
+
+        assert!(ws.rescale_column_widths(10, 10, 10, 1280, 1920));
+        let expected = ((1920 - 20 + 10) as f64 * (resized_width + 10) as f64
+            / (1280 - 20 + 10) as f64
+            - 10.0)
+            .round() as i32;
+        assert_eq!(ws.columns()[0].width(), expected);
+        assert_ne!(ws.columns()[0].width(), 600);
+    }
+
+    #[test]
+    fn test_rescale_column_widths_maximized_restore_round_trip() {
+        let mut ws = Workspace::with_gaps(10, 10);
+        ws.insert_window(1, Some(1267)).unwrap();
+        let original_width = ws.columns()[0].width();
+        assert!(ws.toggle_maximize_column(5120));
+
+        fn rescale(ws: &mut Workspace, old_vw: i32, new_vw: i32, new_gap: i32) {
+            let old_gap = ws.gap();
+            let (old_ol, old_or, _, _) = ws.outer_gaps();
+            ws.set_gap(new_gap);
+            ws.set_outer_gaps(new_gap, new_gap, new_gap, new_gap);
+            assert!(ws.rescale_column_widths(old_gap, old_ol, old_or, old_vw, new_vw,));
+        }
+
+        rescale(&mut ws, 5120, 5120, 13);
+        rescale(&mut ws, 5120, 1920, 13);
+        rescale(&mut ws, 1920, 1280, 10);
+        rescale(&mut ws, 1280, 5120, 10);
+        assert!(!ws.toggle_maximize_column(5120));
+        assert_eq!(ws.columns()[0].width(), original_width);
+    }
+
+    #[test]
     fn test_rescale_column_widths_noop_preserves_scroll_animation() {
         let mut ws = Workspace::with_gaps(10, 10);
         for id in 1..=4 {
@@ -3995,6 +4083,7 @@ mod tests {
             windows: vec![1, 2],
             height_weights: Vec::new(), // backward compat: empty
             mode: ColumnMode::default(),
+            width_fraction_cache: None,
         };
         assert!(col.height_weights.is_empty());
         // Compute placements should fall back to equal distribution

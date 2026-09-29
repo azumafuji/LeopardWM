@@ -151,6 +151,7 @@ pub struct Workspace {
 pub struct MaximizedColumnState {
     /// The original column width before maximizing.
     pub original_width: i32,
+    pub(crate) width_fraction_cache: Option<crate::column::WidthFractionCache>,
     /// Sentinel window ID used to relocate the column after index shifts.
     pub sentinel_window: WindowId,
 }
