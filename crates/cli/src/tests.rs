@@ -1530,8 +1530,24 @@ fn test_config_backup_and_restore_roundtrip() {
 }
 
 #[test]
-fn test_handle_collect_logs_does_not_panic() {
-    let result = handle_collect_logs();
+fn native_swipes_check_warns_with_reason_and_passes_when_off() {
+    use leopardwm_ipc::NativeSwipeStatus;
+
+    let inactive = native_swipes_check(Some(&NativeSwipeStatus::Inactive {
+        reason: "device capability check failed".to_string(),
+    }));
+    assert!(
+        matches!(inactive, CheckResult::Warn(message) if message.contains("device capability check failed"))
+    );
+    assert_eq!(
+        native_swipes_check(Some(&NativeSwipeStatus::Off)),
+        CheckResult::Pass("Native three-finger swipes: off (default)".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_handle_collect_logs_does_not_panic() {
+    let result = handle_collect_logs().await;
     assert!(result.is_ok());
 }
 

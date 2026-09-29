@@ -3,6 +3,7 @@
 use crate::config::{self, Config};
 use crate::physical_placement::PhysicalPresentation;
 use leopardwm_core_layout::{Rect, Workspace};
+use leopardwm_ipc::NativeSwipeStatus;
 use leopardwm_platform_win32::{MonitorId, MonitorInfo, PlatformConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -234,6 +235,31 @@ pub(crate) struct DisplayChangeApplyRetry {
     pub(crate) generation: u64,
     pub(crate) timeout: Duration,
     pub(crate) candidate_window_ids: Vec<u64>,
+}
+
+pub(crate) fn derive_native_swipe_status(
+    raw_input: bool,
+    gestures_enabled: bool,
+    registration_error: Option<&str>,
+    raw_input_error: Option<&str>,
+) -> NativeSwipeStatus {
+    if !raw_input {
+        NativeSwipeStatus::Off
+    } else if !gestures_enabled {
+        NativeSwipeStatus::Inactive {
+            reason: "gesture detection is disabled (gestures.enabled = false)".to_string(),
+        }
+    } else if let Some(error) = registration_error {
+        NativeSwipeStatus::Inactive {
+            reason: error.to_string(),
+        }
+    } else if let Some(error) = raw_input_error {
+        NativeSwipeStatus::Inactive {
+            reason: format!("{error}; wheel-based swipes remain active"),
+        }
+    } else {
+        NativeSwipeStatus::Active
+    }
 }
 
 /// Admission-time snapshot for a window the daemon left unmanaged.
@@ -601,6 +627,8 @@ pub(crate) struct AppState {
     pub(crate) layout_apply_timeout: Duration,
     /// One-shot report consumed by the main loop after an automatic timeout pause.
     pub(crate) pending_layout_apply_timeout_report: Option<LayoutApplyTimeoutReport>,
+    /// Startup snapshot of native three-finger swipe activation.
+    pub(crate) native_swipes: NativeSwipeStatus,
     /// Daemon start time for uptime reporting.
     pub(crate) start_time: std::time::Instant,
     /// HWNDs hidden while managed only briefly, used to suppress re-creation of
@@ -1150,6 +1178,7 @@ impl AppState {
             suppressed_late_recovery_workers: HashMap::new(),
             layout_apply_timeout: APPLY_LAYOUT_TIMEOUT,
             pending_layout_apply_timeout_report: None,
+            native_swipes: NativeSwipeStatus::Off,
             start_time: std::time::Instant::now(),
             recently_hidden_hwnds: HashMap::new(),
             pending_edit_config_pull: None,

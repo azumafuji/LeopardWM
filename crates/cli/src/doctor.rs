@@ -4,7 +4,9 @@ use crate::daemon_cmds::find_daemon_binary;
 use crate::ipc_client::{probe_daemon_running, send_command};
 use anyhow::Result;
 use directories::ProjectDirs;
-use leopardwm_ipc::{ElevationBlockReason, ElevationBlockedWindow, IpcCommand, IpcResponse};
+use leopardwm_ipc::{
+    ElevationBlockReason, ElevationBlockedWindow, IpcCommand, IpcResponse, NativeSwipeStatus,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +16,27 @@ pub(crate) enum CheckResult {
     Pass(String),
     Warn(String),
     Fail(String),
+}
+
+pub(crate) fn native_swipes_check(status: Option<&NativeSwipeStatus>) -> CheckResult {
+    match status {
+        Some(NativeSwipeStatus::Off) => {
+            CheckResult::Pass("Native three-finger swipes: off (default)".to_string())
+        }
+        Some(NativeSwipeStatus::Active) => CheckResult::Pass(
+            "Native three-finger swipes: active (Raw Input registered)".to_string(),
+        ),
+        Some(NativeSwipeStatus::Inactive { reason }) => CheckResult::Warn(format!(
+            "Native three-finger swipes are enabled but inactive: {reason}"
+        )),
+        Some(NativeSwipeStatus::Unknown) => CheckResult::Warn(
+            "Native three-finger swipe status not recognized by this CLI".to_string(),
+        ),
+        None => CheckResult::Warn(
+            "Native three-finger swipe status unavailable (daemon did not report it; older daemon)"
+                .to_string(),
+        ),
+    }
 }
 
 impl CheckResult {
@@ -247,6 +270,7 @@ pub(crate) async fn handle_doctor() -> Result<()> {
                 elevation_blocked_windows,
                 daemon_integrity,
                 elevation_blocked_records,
+                native_swipes,
                 ..
             }) => {
                 if thumbnail_register_balance == 0 {
@@ -261,6 +285,7 @@ pub(crate) async fn handle_doctor() -> Result<()> {
                 }
                 .print();
 
+                native_swipes_check(native_swipes.as_ref()).print();
                 integrity_check("Daemon", daemon_integrity).print();
                 printed_daemon_integrity = true;
                 blocked_windows_result = Some(blocked_windows_check(
@@ -299,7 +324,7 @@ pub(crate) async fn handle_doctor() -> Result<()> {
 }
 
 /// Collect diagnostic logs into a text report for bug reports.
-pub(crate) fn handle_collect_logs() -> Result<()> {
+pub(crate) async fn handle_collect_logs() -> Result<()> {
     println!("LeopardWM Log Collection");
     println!("=======================\n");
 
@@ -321,6 +346,20 @@ pub(crate) fn handle_collect_logs() -> Result<()> {
             "## Config: not found (expected at {})",
             display_path.display()
         ),
+    }
+    println!();
+
+    println!("## Native Touchpad Swipes");
+    match probe_daemon_running() {
+        Ok(true) => match send_command(IpcCommand::HealthCheck).await {
+            Ok(IpcResponse::HealthInfo { native_swipes, .. }) => {
+                native_swipes_check(native_swipes.as_ref()).print();
+            }
+            Ok(other) => println!("  (status unavailable: unexpected health response: {other:?})"),
+            Err(error) => println!("  (status unavailable: health query failed: {error})"),
+        },
+        Ok(false) => println!("  (status unavailable because the daemon is not running)"),
+        Err(error) => println!("  (status unavailable: could not check daemon state: {error})"),
     }
     println!();
 

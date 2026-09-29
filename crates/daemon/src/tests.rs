@@ -13806,9 +13806,45 @@ fn test_check_already_running_with_isolated_pipe() {
 // =========================================================================
 
 #[test]
+fn native_swipe_status_derivation_covers_startup_outcomes() {
+    use crate::state::derive_native_swipe_status;
+    use leopardwm_ipc::NativeSwipeStatus;
+
+    assert_eq!(
+        derive_native_swipe_status(false, true, None, None),
+        NativeSwipeStatus::Off
+    );
+    assert_eq!(
+        derive_native_swipe_status(true, false, None, None),
+        NativeSwipeStatus::Inactive {
+            reason: "gesture detection is disabled (gestures.enabled = false)".to_string(),
+        }
+    );
+    assert_eq!(
+        derive_native_swipe_status(true, true, Some("hook registration failed"), None),
+        NativeSwipeStatus::Inactive {
+            reason: "hook registration failed".to_string(),
+        }
+    );
+    assert_eq!(
+        derive_native_swipe_status(true, true, None, Some("device not supported")),
+        NativeSwipeStatus::Inactive {
+            reason: "device not supported; wheel-based swipes remain active".to_string(),
+        }
+    );
+    assert_eq!(
+        derive_native_swipe_status(true, true, None, None),
+        NativeSwipeStatus::Active
+    );
+}
+
+#[test]
 fn test_cmd_health_check() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     state.paused = false;
+    state.native_swipes = leopardwm_ipc::NativeSwipeStatus::Inactive {
+        reason: "device capability check failed; wheel-based swipes remain active".to_string(),
+    };
     let resp = state.handle_command(IpcCommand::HealthCheck);
     match resp {
         IpcResponse::HealthInfo {
@@ -13819,6 +13855,7 @@ fn test_cmd_health_check() {
             daemon_integrity,
             elevation_blocked_windows,
             elevation_blocked_records,
+            native_swipes,
             ..
         } => {
             assert!(healthy);
@@ -13831,6 +13868,7 @@ fn test_cmd_health_check() {
             );
             assert!(elevation_blocked_windows.is_empty());
             assert_eq!(elevation_blocked_records, Some(Vec::new()));
+            assert_eq!(native_swipes, Some(state.native_swipes.clone()));
         }
         other => panic!("Expected HealthInfo, got {:?}", other),
     }

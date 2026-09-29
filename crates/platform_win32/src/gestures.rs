@@ -496,13 +496,13 @@ pub fn set_scroll_modifier(modifier_str: &str) {
 /// Returns a handle that must be kept alive to receive gesture events,
 /// and a channel receiver for gesture events.
 pub fn register_gestures() -> Result<(GestureHandle, mpsc::Receiver<GestureEvent>), Win32Error> {
-    register_gestures_with_raw_input(false)
+    register_gestures_with_raw_input(false).map(|(handle, receiver, _)| (handle, receiver))
 }
 
 /// Register gesture detection with optional native Precision Touchpad swipes.
 pub fn register_gestures_with_raw_input(
     raw_input: bool,
-) -> Result<(GestureHandle, mpsc::Receiver<GestureEvent>), Win32Error> {
+) -> Result<(GestureHandle, mpsc::Receiver<GestureEvent>, Option<String>), Win32Error> {
     // Create channel for events
     let (tx, rx) = mpsc::channel();
 
@@ -532,7 +532,8 @@ pub fn register_gestures_with_raw_input(
     }
 
     // Channel to receive init result from the dedicated thread
-    let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<u32, Win32Error>>();
+    let (init_tx, init_rx) =
+        std::sync::mpsc::channel::<Result<(u32, Option<String>), Win32Error>>();
 
     let thread = std::thread::Builder::new()
         .name("gesture-hook".into())
@@ -557,22 +558,22 @@ pub fn register_gestures_with_raw_input(
                         }
                     };
 
-                let mut raw = if raw_input {
+                let (mut raw, raw_input_error) = if raw_input {
                     match RawTouchpad::start() {
                         Ok(backend) => {
                             RAW_GESTURES_ACTIVE.store(true, Ordering::Release);
                             tracing::info!("Native touchpad Raw Input enabled");
-                            Some(backend)
+                            (Some(backend), None)
                         }
                         Err(error) => {
                             tracing::warn!(%error, "Native touchpad unavailable; wheel swipe detection retained");
-                            None
+                            (None, Some(error.to_string()))
                         }
                     }
                 } else {
-                    None
+                    (None, None)
                 };
-                let _ = init_tx.send(Ok(thread_id));
+                let _ = init_tx.send(Ok((thread_id, raw_input_error)));
 
                 // Message pump — required for WH_MOUSE_LL callbacks
                 loop {
@@ -617,7 +618,7 @@ pub fn register_gestures_with_raw_input(
         })?;
 
     // Wait for initialization
-    let thread_id = init_rx.recv().map_err(|_| {
+    let (thread_id, raw_input_error) = init_rx.recv().map_err(|_| {
         Win32Error::HookInstallFailed("Gesture thread initialization failed".to_string())
     })??;
 
@@ -629,6 +630,7 @@ pub fn register_gestures_with_raw_input(
             thread: Some(thread),
         },
         rx,
+        raw_input_error,
     ))
 }
 

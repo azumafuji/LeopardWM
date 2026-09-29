@@ -1394,13 +1394,16 @@ fn setup_gestures(
     config: &Config,
     event_tx: &mpsc::Sender<DaemonEvent>,
     thread_handles: &mut Vec<std::thread::JoinHandle<()>>,
-) -> Option<leopardwm_platform_win32::GestureHandle> {
-    if config.gestures.enabled {
+) -> (
+    Option<leopardwm_platform_win32::GestureHandle>,
+    leopardwm_ipc::NativeSwipeStatus,
+) {
+    let (handle, registration_error, raw_input_error) = if config.gestures.enabled {
         // Set scroll modifier before registering the hook
         leopardwm_platform_win32::set_scroll_modifier(&config.hotkeys.scroll_modifier);
 
         match register_gestures_with_raw_input(config.gestures.raw_input) {
-            Ok((handle, gesture_receiver)) => {
+            Ok((handle, gesture_receiver, raw_input_error)) => {
                 info!("Gesture detection enabled");
                 leopardwm_platform_win32::emit_gesture_registration("registered");
 
@@ -1415,7 +1418,7 @@ fn setup_gestures(
                     Err(e) => warn!("{}", e),
                 }
 
-                Some(handle)
+                (Some(handle), None, raw_input_error)
             }
             Err(e) => {
                 warn!(
@@ -1423,14 +1426,21 @@ fn setup_gestures(
                     e
                 );
                 leopardwm_platform_win32::emit_gesture_registration("failed");
-                None
+                (None, Some(e.to_string()), None)
             }
         }
     } else {
         info!("Gesture detection disabled by config (gestures.enabled = false)");
         leopardwm_platform_win32::emit_gesture_registration("disabled");
-        None
-    }
+        (None, None, None)
+    };
+    let status = crate::state::derive_native_swipe_status(
+        config.gestures.raw_input,
+        config.gestures.enabled,
+        registration_error.as_deref(),
+        raw_input_error.as_deref(),
+    );
+    (handle, status)
 }
 
 /// Initialize the system tray icon and bridge its events into the event loop.
@@ -3616,7 +3626,8 @@ async fn main() -> Result<()> {
     let mut mouse_hook_handle = setup_mouse_hook(&config, &event_tx, &mut thread_handles);
 
     // Register gesture detection (if enabled)
-    let _gesture_handle = setup_gestures(&config, &event_tx, &mut thread_handles);
+    let (_gesture_handle, native_swipes) = setup_gestures(&config, &event_tx, &mut thread_handles);
+    state.lock().await.native_swipes = native_swipes;
 
     // Initialize overlay for snap hints and drag ghost preview.
     // Always created — snap_hints.enabled only gates resize-hint visibility,

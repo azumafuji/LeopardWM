@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
                 }),
         } => return handle_doctor_windows(watch, delay, include_titles, all),
         Commands::Autostart { action } => return handle_autostart(action),
-        Commands::CollectLogs => return handle_collect_logs(),
+        Commands::CollectLogs => return handle_collect_logs().await,
         Commands::ExportShortcutGuide { output, install } => {
             return handle_export_shortcut_guide(output, install).await;
         }
