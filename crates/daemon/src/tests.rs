@@ -6802,6 +6802,94 @@ fn test_iconic_tracked_focus_on_other_monitor_does_not_sync_foreground() {
 }
 
 #[test]
+fn test_recent_restore_does_not_override_real_minimize_handoff() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+
+    state.handle_window_event(WindowEvent::Restored(200));
+    state.handle_window_event(WindowEvent::Minimized(100, 1_000));
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.active_workspace_idx(monitor), 0);
+    assert_eq!(state.previous_focused_hwnd, Some(150));
+    assert_eq!(
+        state
+            .pending_last_window_departure
+            .unwrap()
+            .replacement_hwnd,
+        Some(200)
+    );
+}
+
+#[test]
+fn test_minimized_target_focus_follows_while_restore_is_in_progress() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.active_workspace_idx(monitor), 1);
+    assert_eq!(state.previous_focused_hwnd, Some(200));
+    assert_eq!(state.pending_last_window_departure, None);
+}
+
+#[test]
+fn test_focus_before_latest_restore_event_keeps_each_recent_restore() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.workspaces.get_mut(&monitor).unwrap()[1]
+        .insert_window(300, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(300);
+
+    state.handle_window_event(WindowEvent::Restored(200));
+    state.handle_window_event(WindowEvent::Restored(300));
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.active_workspace_idx(monitor), 1);
+    assert_eq!(state.previous_focused_hwnd, Some(200));
+    assert_eq!(state.pending_last_window_departure, None);
+}
+
+#[test]
+fn test_unselected_floating_minimize_reconcile_clears_tracked_focus_once() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.workspaces.get_mut(&monitor).unwrap()[0]
+        .remove_window(100)
+        .unwrap();
+    state.workspaces.get_mut(&monitor).unwrap()[1]
+        .add_floating(100, Rect::new(100, 100, 400, 300))
+        .unwrap();
+    state.previous_focused_hwnd = Some(100);
+    state.arm_pending_last_window_departure(
+        Some(200),
+        1_000,
+        LastWindowDepartureOrigin::DirectDestroyedOrHidden,
+    );
+
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.previous_focused_hwnd, None);
+    let placements_after_reconcile = state
+        .injected_apply_placements_call_count
+        .load(Ordering::SeqCst);
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.previous_focused_hwnd, None);
+    assert_eq!(
+        state
+            .injected_apply_placements_call_count
+            .load(Ordering::SeqCst),
+        placements_after_reconcile,
+        "a repeated focus event must not reconcile the tracked floating window again"
+    );
+}
+
+#[test]
 fn test_restoring_window_clears_minimized_departure_focus_guard() {
     let mut state = minimized_cross_workspace_state();
     let monitor = state.focused_monitor;

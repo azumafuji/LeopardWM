@@ -1979,11 +1979,11 @@ impl AppState {
         };
         let handler_time_ms = self.event_time_now_ms();
         let ms_since_last_input = leopardwm_platform_win32::ms_since_last_user_input();
-        let was_recently_restored =
-            self.last_restored_managed_window
-                .is_some_and(|(restored_hwnd, restored_at)| {
-                    restored_hwnd == hwnd && restored_at.elapsed() < PendingLastWindowDeparture::TTL
-                });
+        let target_is_minimized = self
+            .workspaces
+            .get(&monitor_id)
+            .and_then(|workspaces| workspaces.get(ws_idx))
+            .is_some_and(|workspace| workspace.is_minimized(hwnd));
         // Keep Windows' departure handoff from undoing selection: suppress exact replacements and
         // bind eligible other-workspace handoffs; Minimized allows a 500 ms OS timestamp window.
         let event_is_eligible = match intent.origin {
@@ -2013,11 +2013,11 @@ impl AppState {
             } else {
                 "later_than_arm"
             }
-        } else if intent.origin == LastWindowDepartureOrigin::Minimized && was_recently_restored {
+        } else if intent.origin == LastWindowDepartureOrigin::Minimized && target_is_minimized {
             if intent.replacement_hwnd.is_none() || intent.replacement_hwnd == Some(hwnd) {
                 self.pending_last_window_departure = None;
             }
-            "recently_restored"
+            "target_still_minimized"
         } else if Some(hwnd) == intent.replacement_hwnd {
             "exact_replacement"
         } else if intent.replacement_hwnd.is_none()
@@ -2056,6 +2056,12 @@ impl AppState {
             "last-window departure focus guard consulted"
         );
         suppressed
+    }
+
+    fn is_recently_restored_managed_window(&mut self, hwnd: u64) -> bool {
+        self.recently_restored_managed_windows
+            .retain(|_, restored_at| restored_at.elapsed() < PendingLastWindowDeparture::TTL);
+        self.recently_restored_managed_windows.contains_key(&hwnd)
     }
 
     fn on_window_focused(&mut self, hwnd: u64, event_time_ms: u32) {
@@ -2153,6 +2159,7 @@ impl AppState {
             }
         }
 
+        let mut armed_by_tracked_minimize_reconcile = false;
         if let Some(tracked) = self.previous_focused_hwnd {
             if let Some((monitor_id, ws_idx)) = self.find_window_workspace(tracked) {
                 let marked_minimized = self
@@ -2170,7 +2177,7 @@ impl AppState {
                             self.active_workspace_idx(self.focused_monitor),
                         )
                     {
-                        self.on_window_minimized(tracked);
+                        armed_by_tracked_minimize_reconcile = self.on_window_minimized(tracked);
                     } else {
                         self.reconcile_unselected_minimized_window(tracked);
                     }
@@ -2189,7 +2196,17 @@ impl AppState {
             if self.should_suppress_workspace_switch_focus(hwnd, event_time_ms) {
                 return;
             }
-            if self.should_suppress_last_window_departure_focus(
+            let was_recently_restored = self.is_recently_restored_managed_window(hwnd);
+            let follows_recent_restore_after_reconcile =
+                armed_by_tracked_minimize_reconcile && was_recently_restored;
+            if follows_recent_restore_after_reconcile {
+                if self.pending_last_window_departure.is_some_and(|intent| {
+                    intent.origin == LastWindowDepartureOrigin::Minimized
+                        && intent.replacement_hwnd.is_none()
+                }) {
+                    self.pending_last_window_departure = None;
+                }
+            } else if self.should_suppress_last_window_departure_focus(
                 hwnd,
                 event_time_ms,
                 monitor_id,
@@ -2424,6 +2441,9 @@ impl AppState {
         if !(workspace.mark_minimized(hwnd) || cleared_fullscreen || is_floating) {
             return None;
         }
+        if is_floating && self.previous_focused_hwnd == Some(hwnd) {
+            self.previous_focused_hwnd = None;
+        }
 
         let col_loc = workspace.find_window_location(hwnd);
         let col_info = col_loc.map(|(ci, _)| {
@@ -2487,8 +2507,8 @@ impl AppState {
     }
 
     /// Handle a window-minimized event.
-    pub(crate) fn on_window_minimized(&mut self, hwnd: u64) {
-        self.on_window_minimized_with_context(hwnd, None, None, "focused_reconcile");
+    pub(crate) fn on_window_minimized(&mut self, hwnd: u64) -> bool {
+        self.on_window_minimized_with_context(hwnd, None, None, "focused_reconcile")
     }
 
     fn on_window_minimized_from_event(&mut self, hwnd: u64, os_event_time_ms: u32) {
@@ -2509,7 +2529,7 @@ impl AppState {
         layout_snapshot: Option<std::collections::HashMap<u64, leopardwm_core_layout::Rect>>,
         os_event_time_ms: Option<u32>,
         source: &'static str,
-    ) {
+    ) -> bool {
         let handler_time_ms = self.event_time_now_ms();
         let ms_since_last_input = leopardwm_platform_win32::ms_since_last_user_input();
         let was_tracked_focus = self.previous_focused_hwnd == Some(hwnd);
@@ -2521,15 +2541,6 @@ impl AppState {
             was_selected_focus = was_tracked_focus
                 && self.focused_monitor == monitor_id
                 && self.active_workspace_idx(monitor_id) == ws_idx;
-            let is_floating = self
-                .workspaces
-                .get(&monitor_id)
-                .and_then(|workspaces| workspaces.get(ws_idx))
-                .is_some_and(|workspace| workspace.is_floating(hwnd));
-            if is_floating && was_tracked_focus {
-                self.previous_focused_hwnd = None;
-            }
-
             let snapshot = layout_snapshot.unwrap_or_else(|| self.snapshot_layout());
             if let Some(has_visible_window) = self.mark_minimized_and_reflow(hwnd) {
                 has_focused_visible_window = has_visible_window;
@@ -2574,6 +2585,7 @@ impl AppState {
             reason = decision_reason,
             "minimize departure guard decision"
         );
+        armed
     }
 
     /// Handle a window-restored event.
@@ -2609,7 +2621,11 @@ impl AppState {
                 }
             }
             if did_restore {
-                self.last_restored_managed_window = Some((hwnd, std::time::Instant::now()));
+                let restored_at = std::time::Instant::now();
+                self.recently_restored_managed_windows
+                    .retain(|_, at| at.elapsed() < PendingLastWindowDeparture::TTL);
+                self.recently_restored_managed_windows
+                    .insert(hwnd, restored_at);
             }
             if did_restore
                 && self.pending_last_window_departure.is_some_and(|intent| {

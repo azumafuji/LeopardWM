@@ -450,7 +450,7 @@ pub(crate) struct AppState {
     /// monitor's selected workspace becomes genuinely empty. Distinct from
     /// `pending_workspace_switch_focus`.
     pub(crate) pending_last_window_departure: Option<PendingLastWindowDeparture>,
-    pub(crate) last_restored_managed_window: Option<(u64, std::time::Instant)>,
+    pub(crate) recently_restored_managed_windows: HashMap<u64, std::time::Instant>,
     /// `(monitor, hwnd)` of the most-recently-broadcast
     /// `FocusedWindowChanged` event. Independent from
     /// `previous_focused_hwnd`: command-driven focus paths
@@ -921,8 +921,8 @@ pub(crate) enum LastWindowDepartureOrigin {
 /// first eligible managed Focused on another workspace of the same monitor,
 /// then use that exact HWND. Same-workspace activations are not inferred.
 /// EventlessPrune does not infer from None. Unmanaged samples are not rewritten.
-/// A managed restore on the guard's monitor clears a Minimized-origin guard
-/// because its activation is legitimate follow-focus, not Windows' post-minimize handoff.
+/// A managed restore clears a Minimized-origin guard only when it is unbound
+/// or bound to that restored HWND.
 ///
 /// Distinct from `PendingWorkspaceSwitchFocus`; the two guards are not shared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1074,7 +1074,7 @@ impl AppState {
             previous_focused_hwnd: None,
             pending_workspace_switch_focus: None,
             pending_last_window_departure: None,
-            last_restored_managed_window: None,
+            recently_restored_managed_windows: HashMap::new(),
             last_broadcast_focused: None,
             last_focus_change_at: None,
             last_prune_at: None,
