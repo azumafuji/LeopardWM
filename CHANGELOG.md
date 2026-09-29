@@ -4,6 +4,10 @@ All notable changes to LeopardWM will be documented in this file.
 
 ## 0.2.12
 
+### Features
+
+- **Precision Touchpads can opt in to experimental native three-finger swipes.** Off by default. Contributed by @c3us-dev. Opt in with `raw_input = true` under `[gestures]` in `config.toml` or the "Native three-finger swipes" toggle in Settings, then restart LeopardWM. Set Windows three- and four-finger touchpad gestures to Nothing, or Windows will consume the swipe. Wheel-based swipes remain active if Raw Input registration or the device capability check fails at startup. Compatibility varies by device. (#102)
+
 ### Fixes
 
 - **Windows no longer jump back to an earlier animation position after landing when the app is busy.** Late animation moves stay ordered before the landing endpoint. (#127)

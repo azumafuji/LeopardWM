@@ -341,6 +341,8 @@ Run `lwm help` (or `lwm <subcommand> --help`) for the full surface — there are
 Precision Touchpads that do not send three-finger wheel events can opt in to
 native HID swipe detection with `raw_input = true` under `[gestures]` in
 `config.toml` (or the Gestures setting). Restart LeopardWM after changing it.
+Set the Windows three- and four-finger touchpad gestures to Nothing under
+Settings > Bluetooth & devices > Touchpad, or Windows will consume the swipe.
 The existing mouse hook still handles modifier-plus-scroll; if native
 registration or device capability checks fail, wheel-based swipes remain active.
 Raw Input compatibility varies by device.
