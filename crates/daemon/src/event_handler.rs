@@ -1750,16 +1750,17 @@ impl AppState {
 
         let mut start_rects = std::collections::HashMap::new();
         let mut exit_rects = std::collections::HashMap::new();
+        self.prune_recently_restored_managed_windows();
 
         for (wid, rect) in &new_placements {
+            let start_y = if self.recently_restored_managed_windows.contains_key(wid) {
+                rect.y
+            } else {
+                rect.y + y_offset
+            };
             start_rects.insert(
                 *wid,
-                leopardwm_core_layout::Rect::new(
-                    rect.x,
-                    rect.y + y_offset,
-                    rect.width,
-                    rect.height,
-                ),
+                leopardwm_core_layout::Rect::new(rect.x, start_y, rect.width, rect.height),
             );
         }
         for (wid, rect) in &old_placements {
@@ -2058,9 +2059,13 @@ impl AppState {
         suppressed
     }
 
-    fn is_recently_restored_managed_window(&mut self, hwnd: u64) -> bool {
+    fn prune_recently_restored_managed_windows(&mut self) {
         self.recently_restored_managed_windows
             .retain(|_, restored_at| restored_at.elapsed() < PendingLastWindowDeparture::TTL);
+    }
+
+    fn is_recently_restored_managed_window(&mut self, hwnd: u64) -> bool {
+        self.prune_recently_restored_managed_windows();
         self.recently_restored_managed_windows.contains_key(&hwnd)
     }
 
@@ -2622,8 +2627,7 @@ impl AppState {
             }
             if did_restore {
                 let restored_at = std::time::Instant::now();
-                self.recently_restored_managed_windows
-                    .retain(|_, at| at.elapsed() < PendingLastWindowDeparture::TTL);
+                self.prune_recently_restored_managed_windows();
                 self.recently_restored_managed_windows
                     .insert(hwnd, restored_at);
             }

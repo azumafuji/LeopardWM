@@ -6747,6 +6747,41 @@ fn test_restored_parked_window_focus_follows_after_tracked_minimize_reconcile() 
 }
 
 #[test]
+fn test_restored_parked_window_stays_at_final_rect_during_workspace_follow() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    let monitor = state.focused_monitor;
+    state.reduce_motion = false;
+    state.last_prune_at = Some(std::time::Instant::now());
+    state.ensure_workspace_exists(monitor, 1);
+    state.workspaces.get_mut(&monitor).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&monitor).unwrap()[1]
+        .insert_window(200, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&monitor).unwrap()[1]
+        .insert_window(300, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+
+    state.handle_window_event(WindowEvent::Restored(200));
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    let viewport = state.layout_viewport(monitor);
+    let final_rects: std::collections::HashMap<_, _> = state.workspaces[&monitor][1]
+        .compute_placements_animated(viewport)
+        .into_iter()
+        .map(|placement| (placement.window_id, placement.rect))
+        .collect();
+    let transition = state.layout_transition.as_ref().unwrap();
+    assert_eq!(transition.start_rects.get(&200), final_rects.get(&200));
+    assert_eq!(
+        transition.start_rects[&300].y,
+        final_rects[&300].y + state.monitors[&monitor].work_area.height
+    );
+}
+
+#[test]
 fn test_restoring_different_window_preserves_bound_minimize_guard() {
     let mut state = minimized_cross_workspace_state();
     let monitor = state.focused_monitor;

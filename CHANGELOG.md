@@ -12,7 +12,7 @@ All notable changes to LeopardWM will be documented in this file.
 - **Windows that are minimized by Windows are no longer dropped from the layout.** After a monitor disconnect or a normal minimize, they return in their own column, width, and workspace. Apps that hide to the tray are still removed.
 - **Tiling, hotkeys, and tray actions stay responsive when an app stops responding.** Snap-layout suppression and restoration are applied once the app responds.
 - **Minimizing a window no longer switches to a workspace where Windows activates a parked window.** Missed minimize events are also reconciled so minimized windows do not leave empty columns.
-- **Restoring a window from the taskbar that was minimized on another workspace no longer bounces back to the current workspace.** The window is not snapped away during its restore animation, and LeopardWM switches to its workspace once and keeps it focused.
+- **Restoring a window from the taskbar that was minimized on another workspace no longer bounces back to the current workspace.** The window is not snapped away during its restore animation, and LeopardWM switches to its workspace once and keeps it focused; the restored window no longer drops and slides back in as its workspace appears.
 - **Tiling no longer pauses when windows are slow to move after a monitor or dock change.** A first timeout during display reconciliation schedules one retry after the displays settle; its late worker no longer restores windows just before the retry re-tiles them. A retry timeout pauses tiling, while a retry dropped during manual pause restores visibility.
 
 ## 0.2.11
