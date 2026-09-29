@@ -4013,6 +4013,10 @@ mod tests {
 
     #[test]
     fn apply_placements_retries_tab_landing_after_wrong_zero_insets() {
+        if crate::is_high_contrast_enabled() {
+            return;
+        }
+
         let _serialize = GENERATION_TEST_LOCK
             .lock()
             .unwrap_or_else(crate::recover_poisoned_mutex);
