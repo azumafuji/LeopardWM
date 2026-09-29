@@ -206,12 +206,12 @@ impl AppState {
     }
 
     fn managed_process_has_window(&self, process_id: u32) -> bool {
-        self.all_managed_window_ids().iter().any(|hwnd| {
-            self.recreated_window_slots
-                .identities
-                .get(hwnd)
-                .is_some_and(|other| other.process_id == process_id)
-        })
+        self.recreated_window_slots
+            .identities
+            .iter()
+            .any(|(&hwnd, identity)| {
+                identity.process_id == process_id && self.is_managed_member(hwnd)
+            })
     }
 
     pub(crate) fn take_recreated_window_slot(

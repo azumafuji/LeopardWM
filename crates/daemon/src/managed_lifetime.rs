@@ -185,7 +185,7 @@ impl AppState {
         }
     }
 
-    fn is_managed_member(&self, hwnd: u64) -> bool {
+    pub(crate) fn is_managed_member(&self, hwnd: u64) -> bool {
         self.find_window_workspace(hwnd).is_some()
             || self
                 .drag_state

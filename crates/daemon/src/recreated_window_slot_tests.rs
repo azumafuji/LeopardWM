@@ -205,6 +205,7 @@ fn ineligible_recreations_keep_normal_new_column_admission() {
         "expired",
         "concurrent_tiled",
         "concurrent_floating",
+        "concurrent_stashed_scratchpad",
         "no_power",
         "before_suspend",
         "late_hide",
@@ -212,6 +213,14 @@ fn ineligible_recreations_keep_normal_new_column_admission() {
         "donor_reshow",
     ] {
         let mut state = tabbed_state();
+        if case == "concurrent_stashed_scratchpad" {
+            create(&mut state, 15, 100, "AppClass");
+            state.scratchpad_stash();
+            assert!(state
+                .scratchpad
+                .is_some_and(|pad| pad.window_id == 15 && !pad.shown));
+            assert!(state.find_window_workspace(15).is_none());
+        }
         if case != "no_power" && case != "before_suspend" {
             cycle(&mut state);
         }
