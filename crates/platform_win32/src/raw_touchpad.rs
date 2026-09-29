@@ -545,7 +545,8 @@ impl RawTouchpad {
         {
             return None;
         }
-        self.storage.resize((bytes as usize).div_ceil(8), 0);
+        self.storage
+            .resize((bytes as usize).max(size_of::<RAWINPUT>()).div_ceil(8), 0);
         let copied = unsafe {
             GetRawInputData(
                 handle,
@@ -557,7 +558,7 @@ impl RawTouchpad {
         };
         if copied == u32::MAX
             || (copied as usize) < size_of::<RAWINPUTHEADER>() + 8
-            || copied as usize > self.storage.len() * size_of::<u64>()
+            || copied as usize > bytes as usize
         {
             return None;
         }
