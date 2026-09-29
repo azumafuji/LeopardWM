@@ -26,6 +26,8 @@ pub(crate) enum StalePruneLayout {
 /// pass `None` and keep execution-time foreground sampling.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FocusedPruneContext {
+    /// HWND from the Focused event that reached this prune.
+    pub(crate) focused_hwnd: u64,
     /// `previous_focused_hwnd` captured before stale cleanup.
     pub(crate) tracked: Option<u64>,
     /// WinEvent time of the Focused event that reached this prune.
@@ -525,10 +527,11 @@ impl AppState {
         let tracked_selected = self
             .previous_focused_hwnd
             .filter(|hwnd| self.find_window_workspace(*hwnd) == Some(selected));
+        let focused_event_hwnd = focused_prune.map(|focus| focus.focused_hwnd);
         let mut batch_snapshot = None;
         let mut batch_changed = false;
         for hwnd in unmarked_iconic.iter().copied() {
-            if Some(hwnd) == tracked_selected {
+            if Some(hwnd) == tracked_selected || Some(hwnd) == focused_event_hwnd {
                 continue;
             }
             if batch_snapshot.is_none() {
@@ -541,7 +544,9 @@ impl AppState {
             }
         }
 
-        if let Some(hwnd) = tracked_selected.filter(|hwnd| unmarked_iconic.contains(hwnd)) {
+        if let Some(hwnd) = tracked_selected
+            .filter(|hwnd| unmarked_iconic.contains(hwnd) && Some(*hwnd) != focused_event_hwnd)
+        {
             if self.stale_window_probe(hwnd).0 == WindowPresence::Minimized {
                 self.on_window_minimized_with_snapshot(hwnd, batch_snapshot);
                 return result;

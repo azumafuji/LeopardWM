@@ -2080,6 +2080,7 @@ impl AppState {
             let pre_count = self.all_managed_window_ids().len();
             let tracked = self.previous_focused_hwnd;
             let prune = self.prune_stale_windows_with(Some(crate::helpers::FocusedPruneContext {
+                focused_hwnd: hwnd,
                 tracked,
                 event_time_ms,
             }));
@@ -2464,12 +2465,14 @@ impl AppState {
             let snapshot = self.snapshot_layout();
             let mut should_sync_foreground = false;
             let mut was_tiled_restore = false;
+            let mut did_restore = false;
             if let Some(workspace) = self
                 .workspaces
                 .get_mut(&monitor_id)
                 .and_then(|v| v.get_mut(ws_idx))
             {
                 if workspace.mark_restored(hwnd) {
+                    did_restore = true;
                     info!("Window {} restored from minimized", hwnd);
                     if workspace.is_floating(hwnd) {
                         // Keep floating restores from stealing focus back to tiled windows.
@@ -2485,6 +2488,13 @@ impl AppState {
                         was_tiled_restore = true;
                     }
                 }
+            }
+            if did_restore
+                && self
+                    .pending_last_window_departure
+                    .is_some_and(|intent| intent.monitor == monitor_id)
+            {
+                self.pending_last_window_departure = None;
             }
             if was_tiled_restore {
                 self.start_layout_transition(snapshot);

@@ -6652,6 +6652,46 @@ fn minimized_cross_workspace_state() -> AppState {
 }
 
 #[test]
+fn test_taskbar_restored_focus_target_is_not_reconciled_minimized() {
+    let mut state = last_window_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+    state.injected_iconic_hwnds.insert(200);
+
+    state.handle_window_event(WindowEvent::Restored(200));
+    assert!(!state.workspaces[&monitor][1].is_minimized(200));
+
+    state.last_prune_at = None;
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert!(!state.workspaces[&monitor][1].is_minimized(200));
+    assert_eq!(state.active_workspace_idx(monitor), 1);
+    assert_eq!(state.previous_focused_hwnd, Some(200));
+}
+
+#[test]
+fn test_restoring_window_clears_minimized_departure_focus_guard() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+
+    state.handle_window_event(WindowEvent::Minimized(100));
+    let intent = state
+        .pending_last_window_departure
+        .expect("minimizing the tracked window with a visible peer arms the guard");
+    assert_eq!(intent.origin, LastWindowDepartureOrigin::Minimized);
+    assert_eq!(intent.monitor, monitor);
+
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+    state.handle_window_event(WindowEvent::Restored(200));
+    assert_eq!(state.pending_last_window_departure, None);
+
+    state.handle_window_event(WindowEvent::Focused(200, intent.armed_at_event_time_ms));
+
+    assert_eq!(state.active_workspace_idx(monitor), 1);
+    assert_eq!(state.previous_focused_hwnd, Some(200));
+}
+
+#[test]
 fn test_iconic_tracked_focus_reconciles_before_parked_window_focus() {
     let mut state = minimized_cross_workspace_state();
     let mon = state.focused_monitor;
