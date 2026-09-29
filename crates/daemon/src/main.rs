@@ -590,6 +590,7 @@ async fn run_shutdown_cleanup(state: &Arc<Mutex<AppState>>, mode: ShutdownMode) 
             "Timed out waiting for window style restores before {} visibility recovery; continuing",
             mode.label()
         );
+        leopardwm_platform_win32::restore_maximizebox_panic_recovery();
     }
     run_visibility_recovery_pass(&managed_window_ids, mode.label());
 

@@ -122,6 +122,30 @@ fn lock_pending_restores(
         .unwrap_or_else(crate::recover_poisoned_mutex)
 }
 
+static IN_FLIGHT_STYLE_REQUEST: Mutex<Option<(WindowId, WindowIdentity)>> = Mutex::new(None);
+
+fn lock_in_flight_style_request(
+) -> std::sync::MutexGuard<'static, Option<(WindowId, WindowIdentity)>> {
+    IN_FLIGHT_STYLE_REQUEST
+        .lock()
+        .unwrap_or_else(crate::recover_poisoned_mutex)
+}
+
+struct InFlightStyleRequestGuard;
+
+impl InFlightStyleRequestGuard {
+    fn publish(window_id: WindowId, identity: WindowIdentity) -> Self {
+        *lock_in_flight_style_request() = Some((window_id, identity));
+        Self
+    }
+}
+
+impl Drop for InFlightStyleRequestGuard {
+    fn drop(&mut self) {
+        *lock_in_flight_style_request() = None;
+    }
+}
+
 // ============================================================================
 // Maximize-box geometry diagnostics
 // ============================================================================
@@ -277,7 +301,15 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
                             operation,
                             correlation_id,
                         } => {
-                            apply_window_style(window_id, hwnd, identity, operation, correlation_id)
+                            let _in_flight =
+                                InFlightStyleRequestGuard::publish(window_id, identity);
+                            apply_window_style(
+                                window_id,
+                                hwnd,
+                                identity,
+                                operation,
+                                correlation_id,
+                            );
                         }
                         WindowStyleRequest::Barrier(done) => {
                             let _ = done.send(());
@@ -502,17 +534,29 @@ pub fn restore_maximizebox_all(window_ids: &[WindowId]) {
     }
 }
 
-/// Emergency restore of `WS_MAXIMIZEBOX` for all tracked windows.
-/// Drains the global tracking set and restores styles best-effort.
+/// Emergency restore of `WS_MAXIMIZEBOX` for tracked and pending-restore windows.
+/// Drains tracking and restores styles best-effort, leaving the in-flight request to its worker.
 /// Safe to call from panic hooks (no AppState needed).
 pub fn restore_maximizebox_panic_recovery() {
     let window_ids: Vec<(WindowId, WindowIdentity)> = {
-        let mut guard = lock_snap_disabled();
-        guard
+        let pending = lock_pending_restores();
+        let mut tracking = lock_snap_disabled();
+        let mut window_ids: Vec<_> = tracking
             .as_mut()
             .map(|set| set.drain().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        for key in pending.keys().copied() {
+            if !window_ids.contains(&key) {
+                window_ids.push(key);
+            }
+        }
+        window_ids
     };
+    let in_flight = *lock_in_flight_style_request();
+    let window_ids: Vec<_> = window_ids
+        .into_iter()
+        .filter(|entry| Some(*entry) != in_flight)
+        .collect();
 
     if window_ids.is_empty() {
         return;
@@ -805,6 +849,263 @@ mod tests {
                 "style worker did not become idle"
             );
         }
+    }
+
+    struct PendingRestoreControl {
+        block_next: std::sync::atomic::AtomicBool,
+        entered_tx: mpsc::Sender<()>,
+        entered_rx: Mutex<Option<mpsc::Receiver<()>>>,
+        release_tx: mpsc::Sender<()>,
+        release_rx: Mutex<mpsc::Receiver<()>>,
+    }
+
+    unsafe extern "system" fn pending_restore_owner_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: windows::Win32::Foundation::WPARAM,
+        lparam: windows::Win32::Foundation::LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DefWindowProcW, GetWindowLongPtrW, SetWindowLongPtrW, CREATESTRUCTW, GWLP_USERDATA,
+            WM_NCCREATE, WM_STYLECHANGING,
+        };
+
+        if message == WM_NCCREATE {
+            let create = &*(lparam.0 as *const CREATESTRUCTW);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
+        } else if message == WM_STYLECHANGING {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const PendingRestoreControl;
+            if !state_ptr.is_null() {
+                let state = &*state_ptr;
+                if state
+                    .block_next
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    let _ = state.entered_tx.send(());
+                    let _ = state
+                        .release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(10));
+                }
+            }
+        }
+        DefWindowProcW(hwnd, message, wparam, lparam)
+    }
+
+    struct PendingRestoreOwner {
+        hwnd: HWND,
+        thread_id: u32,
+        state: std::sync::Arc<PendingRestoreControl>,
+        done_rx: mpsc::Receiver<()>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl PendingRestoreOwner {
+        fn spawn(class_name: &'static str, block_next: bool) -> Self {
+            use windows::Win32::System::Threading::GetCurrentThreadId;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, RegisterClassW,
+                WNDCLASSW, WS_OVERLAPPEDWINDOW,
+            };
+
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let state = std::sync::Arc::new(PendingRestoreControl {
+                block_next: std::sync::atomic::AtomicBool::new(block_next),
+                entered_tx,
+                entered_rx: Mutex::new(Some(entered_rx)),
+                release_tx,
+                release_rx: Mutex::new(release_rx),
+            });
+            let owner_state = state.clone();
+            let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+            let (done_tx, done_rx) = mpsc::channel();
+            let class_name = class_name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+            let thread = std::thread::spawn(move || unsafe {
+                let class = WNDCLASSW {
+                    lpfnWndProc: Some(pending_restore_owner_proc),
+                    lpszClassName: windows::core::PCWSTR(class_name.as_ptr()),
+                    ..Default::default()
+                };
+                assert_ne!(RegisterClassW(&class), 0);
+                let hwnd = CreateWindowExW(
+                    Default::default(),
+                    windows::core::PCWSTR(class_name.as_ptr()),
+                    None,
+                    WS_OVERLAPPEDWINDOW,
+                    0,
+                    0,
+                    320,
+                    240,
+                    None,
+                    None,
+                    None,
+                    Some(std::sync::Arc::as_ptr(&owner_state) as *const c_void),
+                )
+                .expect("failed to create pending-restore owner window");
+                ready_tx
+                    .send((hwnd.0 as usize, GetCurrentThreadId()))
+                    .expect("pending-restore test stopped receiving its window");
+                let mut message = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+                while GetMessageW(&mut message, None, 0, 0).as_bool() {
+                    DispatchMessageW(&message);
+                }
+                DestroyWindow(hwnd).expect("failed to destroy pending-restore owner window");
+                let _ = done_tx.send(());
+            });
+            let (hwnd, thread_id) = ready_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("pending-restore owner did not start");
+            Self {
+                hwnd: HWND(hwnd as *mut c_void),
+                thread_id,
+                state,
+                done_rx,
+                thread: Some(thread),
+            }
+        }
+
+        fn release(&self) {
+            let _ = self.state.release_tx.send(());
+        }
+
+        fn stop(&self) {
+            use windows::Win32::Foundation::{LPARAM, WPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+            unsafe {
+                let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+        }
+
+        fn join_bounded(&mut self, timeout: Duration) {
+            if self.done_rx.recv_timeout(timeout).is_ok() {
+                if let Some(thread) = self.thread.take() {
+                    thread.join().expect("pending-restore owner panicked");
+                }
+            } else {
+                self.thread.take();
+            }
+        }
+    }
+
+    struct BoundedRecoveryCall {
+        in_flight: std::sync::Arc<PendingRestoreControl>,
+        done_rx: mpsc::Receiver<()>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl BoundedRecoveryCall {
+        fn wait(&mut self, timeout: Duration) -> bool {
+            if self.done_rx.recv_timeout(timeout).is_err() {
+                return false;
+            }
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("recovery call panicked");
+            }
+            true
+        }
+    }
+
+    impl Drop for BoundedRecoveryCall {
+        fn drop(&mut self) {
+            if self.thread.is_none() {
+                return;
+            }
+            let _ = self.in_flight.release_tx.send(());
+            let _ = wait_for_window_style_requests(Duration::from_secs(2));
+            if self.done_rx.recv_timeout(Duration::from_secs(2)).is_ok() {
+                if let Some(thread) = self.thread.take() {
+                    let _ = thread.join();
+                }
+            } else {
+                self.thread.take();
+            }
+        }
+    }
+
+    struct PendingRestoreRaceOwners(PendingRestoreOwner, PendingRestoreOwner);
+
+    impl Drop for PendingRestoreRaceOwners {
+        fn drop(&mut self) {
+            self.0.release();
+            self.1.release();
+            let _ = wait_for_window_style_requests(Duration::from_secs(2));
+            self.0.stop();
+            self.1.stop();
+            self.0.join_bounded(Duration::from_secs(2));
+            self.1.join_bounded(Duration::from_secs(2));
+        }
+    }
+
+    #[test]
+    fn test_panic_recovery_restores_pending_windows_except_in_flight() {
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE};
+
+        let _guard = lock_snap_tracking_fixture();
+        let a = PendingRestoreOwner::spawn("LeopardWMPendingRestoreA", false);
+        let b = PendingRestoreOwner::spawn("LeopardWMPendingRestoreB", false);
+        let _owners = PendingRestoreRaceOwners(a, b);
+        let a_id = _owners.0.hwnd.0 as usize as u64;
+        let b_id = _owners.1.hwnd.0 as usize as u64;
+
+        assert!(remove_maximizebox(a_id).unwrap());
+        assert!(remove_maximizebox(b_id).unwrap());
+        assert!(wait_for_window_style_requests(Duration::from_secs(5)));
+        assert_eq!(
+            unsafe { GetWindowLongW(_owners.0.hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX_BIT,
+            0
+        );
+        assert_eq!(
+            unsafe { GetWindowLongW(_owners.1.hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX_BIT,
+            0
+        );
+
+        _owners
+            .0
+            .state
+            .block_next
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(restore_maximizebox(a_id).unwrap());
+        assert!(restore_maximizebox(b_id).unwrap());
+        _owners
+            .0
+            .state
+            .entered_rx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("owner entry receiver available")
+            .recv_timeout(Duration::from_secs(5))
+            .expect("restore(A) did not block in WM_STYLECHANGING");
+
+        let (recovery_done_tx, recovery_done_rx) = mpsc::channel();
+        let recovery_thread = std::thread::spawn(move || {
+            restore_maximizebox_panic_recovery();
+            let _ = recovery_done_tx.send(());
+        });
+        let mut recovery = BoundedRecoveryCall {
+            in_flight: _owners.0.state.clone(),
+            done_rx: recovery_done_rx,
+            thread: Some(recovery_thread),
+        };
+        assert!(
+            recovery.wait(Duration::from_secs(2)),
+            "panic recovery must return within its bound"
+        );
+        assert_eq!(
+            unsafe { GetWindowLongW(_owners.1.hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX_BIT,
+            WS_MAXIMIZEBOX_BIT,
+            "recovery must restore responsive B while skipping in-flight A"
+        );
+
+        _owners.0.release();
+        assert!(wait_for_window_style_requests(Duration::from_secs(5)));
+        assert_eq!(
+            unsafe { GetWindowLongW(_owners.0.hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX_BIT,
+            WS_MAXIMIZEBOX_BIT,
+            "the worker must complete A's queued restore after it is released"
+        );
     }
 
     struct StyleChangeBlock {
