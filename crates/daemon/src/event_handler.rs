@@ -5,7 +5,7 @@ use crate::state::{
     AppState, ApplicationFullscreenState, DragHintAction, DragState, ElevationBlockedRecord,
     HiddenColumnWidth, LastWindowDepartureOrigin, PendingLastWindowDeparture, RecentlyHiddenEntry,
     EDIT_CONFIG_PULL_TTL, FALLBACK_VIEWPORT_HEIGHT, FALLBACK_VIEWPORT_WIDTH, RECENTLY_HIDDEN_TTL,
-    TRANSIENT_WINDOW_THRESHOLD,
+    RECENTLY_RESTORED_MANAGED_WINDOW_TTL, TRANSIENT_WINDOW_THRESHOLD,
 };
 use crate::ui_sync::DepartureCause;
 use leopardwm_core_layout::{Rect, Workspace};
@@ -1645,6 +1645,7 @@ impl AppState {
         &mut self,
         monitor_id: leopardwm_platform_win32::MonitorId,
         ws_idx: usize,
+        restore_focus_target: Option<u64>,
     ) {
         self.focused_monitor = monitor_id;
 
@@ -1751,9 +1752,13 @@ impl AppState {
         let mut start_rects = std::collections::HashMap::new();
         let mut exit_rects = std::collections::HashMap::new();
         self.prune_recently_restored_managed_windows();
+        let restore_focus_target = restore_focus_target.filter(|hwnd| {
+            self.recently_restored_managed_windows.contains_key(hwnd)
+                && new_placements.iter().any(|(wid, _)| wid == hwnd)
+        });
 
         for (wid, rect) in &new_placements {
-            let start_y = if self.recently_restored_managed_windows.contains_key(wid) {
+            let start_y = if Some(*wid) == restore_focus_target {
                 rect.y
             } else {
                 rect.y + y_offset
@@ -1762,6 +1767,9 @@ impl AppState {
                 *wid,
                 leopardwm_core_layout::Rect::new(rect.x, start_y, rect.width, rect.height),
             );
+        }
+        if let Some(hwnd) = restore_focus_target {
+            self.recently_restored_managed_windows.remove(&hwnd);
         }
         for (wid, rect) in &old_placements {
             start_rects.insert(*wid, *rect);
@@ -1799,7 +1807,7 @@ impl AppState {
         let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) else {
             return false;
         };
-        self.follow_workspace_without_stealing_focus(monitor_id, ws_idx);
+        self.follow_workspace_without_stealing_focus(monitor_id, ws_idx, None);
         if let Some(ref mut transition) = self.layout_transition {
             transition.suppress_landing_focus_resync = true;
         }
@@ -2061,7 +2069,7 @@ impl AppState {
 
     fn prune_recently_restored_managed_windows(&mut self) {
         self.recently_restored_managed_windows
-            .retain(|_, restored_at| restored_at.elapsed() < PendingLastWindowDeparture::TTL);
+            .retain(|_, restored_at| restored_at.elapsed() < RECENTLY_RESTORED_MANAGED_WINDOW_TTL);
     }
 
     fn is_recently_restored_managed_window(&mut self, hwnd: u64) -> bool {
@@ -2128,6 +2136,16 @@ impl AppState {
             }
         }
 
+        let focused_restore_activation = self.is_recently_restored_managed_window(hwnd)
+            || self
+                .find_window_workspace(hwnd)
+                .and_then(|(monitor, workspace)| {
+                    self.workspaces
+                        .get(&monitor)
+                        .and_then(|workspaces| workspaces.get(workspace))
+                })
+                .is_some_and(|workspace| workspace.is_minimized(hwnd));
+
         // Reconcile: prune windows that vanished without events
         // (e.g., Electron close-to-tray apps).
         // Throttle to at most once per second to avoid per-event overhead.
@@ -2142,6 +2160,7 @@ impl AppState {
                 focused_hwnd: hwnd,
                 tracked,
                 event_time_ms,
+                restore_activation: focused_restore_activation,
             }));
             let pruned = pre_count - self.all_managed_window_ids().len();
             match prune {
@@ -2164,7 +2183,6 @@ impl AppState {
             }
         }
 
-        let mut armed_by_tracked_minimize_reconcile = false;
         if let Some(tracked) = self.previous_focused_hwnd {
             if let Some((monitor_id, ws_idx)) = self.find_window_workspace(tracked) {
                 let marked_minimized = self
@@ -2182,9 +2200,18 @@ impl AppState {
                             self.active_workspace_idx(self.focused_monitor),
                         )
                     {
-                        armed_by_tracked_minimize_reconcile = self.on_window_minimized(tracked);
+                        if focused_restore_activation {
+                            self.reconcile_minimized_without_departure(tracked);
+                        } else {
+                            self.on_window_minimized_with_context(
+                                tracked,
+                                None,
+                                Some(event_time_ms),
+                                "focused_reconcile",
+                            );
+                        }
                     } else {
-                        self.reconcile_unselected_minimized_window(tracked);
+                        self.reconcile_minimized_without_departure(tracked);
                     }
                 }
             }
@@ -2201,17 +2228,10 @@ impl AppState {
             if self.should_suppress_workspace_switch_focus(hwnd, event_time_ms) {
                 return;
             }
-            let was_recently_restored = self.is_recently_restored_managed_window(hwnd);
-            let follows_recent_restore_after_reconcile =
-                armed_by_tracked_minimize_reconcile && was_recently_restored;
-            if follows_recent_restore_after_reconcile {
-                if self.pending_last_window_departure.is_some_and(|intent| {
-                    intent.origin == LastWindowDepartureOrigin::Minimized
-                        && intent.replacement_hwnd.is_none()
-                }) {
-                    self.pending_last_window_departure = None;
-                }
-            } else if self.should_suppress_last_window_departure_focus(
+            let recently_restored_focus = self
+                .is_recently_restored_managed_window(hwnd)
+                .then_some(hwnd);
+            if self.should_suppress_last_window_departure_focus(
                 hwnd,
                 event_time_ms,
                 monitor_id,
@@ -2219,7 +2239,11 @@ impl AppState {
             ) {
                 return;
             }
-            self.follow_workspace_without_stealing_focus(monitor_id, ws_idx);
+            self.follow_workspace_without_stealing_focus(
+                monitor_id,
+                ws_idx,
+                recently_restored_focus,
+            );
 
             let viewport_width = self.viewport_width_for(monitor_id);
 
@@ -2494,7 +2518,7 @@ impl AppState {
         Some(workspace.focused_visible_window().is_some())
     }
 
-    fn reconcile_unselected_minimized_window(&mut self, hwnd: u64) {
+    pub(crate) fn reconcile_minimized_without_departure(&mut self, hwnd: u64) {
         let snapshot = self.snapshot_layout();
         if self.mark_minimized_and_reflow(hwnd).is_some() {
             if self.start_layout_transition(snapshot) {
@@ -2511,11 +2535,6 @@ impl AppState {
         }
     }
 
-    /// Handle a window-minimized event.
-    pub(crate) fn on_window_minimized(&mut self, hwnd: u64) -> bool {
-        self.on_window_minimized_with_context(hwnd, None, None, "focused_reconcile")
-    }
-
     fn on_window_minimized_from_event(&mut self, hwnd: u64, os_event_time_ms: u32) {
         self.on_window_minimized_with_context(hwnd, None, Some(os_event_time_ms), "event");
     }
@@ -2525,7 +2544,21 @@ impl AppState {
         hwnd: u64,
         layout_snapshot: Option<std::collections::HashMap<u64, leopardwm_core_layout::Rect>>,
     ) {
-        self.on_window_minimized_with_context(hwnd, layout_snapshot, None, "prune_reconcile");
+        self.on_window_minimized_with_snapshot_at(hwnd, layout_snapshot, None);
+    }
+
+    pub(crate) fn on_window_minimized_with_snapshot_at(
+        &mut self,
+        hwnd: u64,
+        layout_snapshot: Option<std::collections::HashMap<u64, leopardwm_core_layout::Rect>>,
+        event_time_ms: Option<u32>,
+    ) {
+        self.on_window_minimized_with_context(
+            hwnd,
+            layout_snapshot,
+            event_time_ms,
+            "prune_reconcile",
+        );
     }
 
     fn on_window_minimized_with_context(

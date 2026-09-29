@@ -151,6 +151,8 @@ pub(crate) const CROSSFADE_BARRIER_MAX_AGE: Duration = Duration::from_secs(2);
 pub(crate) const TRANSIENT_WINDOW_THRESHOLD: Duration = Duration::from_secs(30);
 /// How long transient window HWNDs stay in the suppression list before expiring.
 pub(crate) const RECENTLY_HIDDEN_TTL: Duration = Duration::from_secs(300);
+/// Keep restore placement exemptions brief to avoid affecting unrelated follows.
+pub(crate) const RECENTLY_RESTORED_MANAGED_WINDOW_TTL: Duration = Duration::from_millis(1500);
 
 /// A short-lived Hidden of a managed window.
 ///

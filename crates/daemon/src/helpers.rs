@@ -32,6 +32,9 @@ pub(crate) struct FocusedPruneContext {
     pub(crate) tracked: Option<u64>,
     /// WinEvent time of the Focused event that reached this prune.
     pub(crate) event_time_ms: u32,
+    /// The focused HWND is a restore activation, so tracked-iconic reconciliation
+    /// must not infer an OS minimize/departure handoff from this Focused event.
+    pub(crate) restore_activation: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -548,7 +551,17 @@ impl AppState {
             .filter(|hwnd| unmarked_iconic.contains(hwnd) && Some(*hwnd) != focused_event_hwnd)
         {
             if self.stale_window_probe(hwnd).0 == WindowPresence::Minimized {
-                self.on_window_minimized_with_snapshot(hwnd, batch_snapshot);
+                if focused_prune.is_some_and(|focus| focus.restore_activation) {
+                    self.reconcile_minimized_without_departure(hwnd);
+                } else if let Some(focus) = focused_prune {
+                    self.on_window_minimized_with_snapshot_at(
+                        hwnd,
+                        batch_snapshot,
+                        Some(focus.event_time_ms),
+                    );
+                } else {
+                    self.on_window_minimized_with_snapshot(hwnd, batch_snapshot);
+                }
                 return result;
             }
         }

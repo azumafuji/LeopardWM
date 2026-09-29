@@ -6779,6 +6779,98 @@ fn test_restored_parked_window_stays_at_final_rect_during_workspace_follow() {
         transition.start_rects[&300].y,
         final_rects[&300].y + state.monitors[&monitor].work_area.height
     );
+    assert!(!state.recently_restored_managed_windows.contains_key(&200));
+}
+
+#[test]
+fn test_unfocused_recent_restore_does_not_skip_workspace_slide() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    let monitor = state.focused_monitor;
+    state.reduce_motion = false;
+    state.last_prune_at = Some(std::time::Instant::now());
+    state.ensure_workspace_exists(monitor, 1);
+    state.workspaces.get_mut(&monitor).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&monitor).unwrap()[1]
+        .insert_window(200, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&monitor).unwrap()[1]
+        .insert_window(300, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+
+    state.handle_window_event(WindowEvent::Restored(200));
+    state.handle_window_event(WindowEvent::Focused(300, 1_000));
+
+    let viewport = state.layout_viewport(monitor);
+    let final_rects: std::collections::HashMap<_, _> = state.workspaces[&monitor][1]
+        .compute_placements_animated(viewport)
+        .into_iter()
+        .map(|placement| (placement.window_id, placement.rect))
+        .collect();
+    let transition = state.layout_transition.as_ref().unwrap();
+    assert_eq!(
+        transition.start_rects[&200].y,
+        final_rects[&200].y + state.monitors[&monitor].work_area.height
+    );
+}
+
+#[test]
+fn test_restore_activation_prune_does_not_reconcile_tracked_minimize_as_departure() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+
+    state.handle_window_event(WindowEvent::Restored(200));
+    state.last_prune_at = None;
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.active_workspace_idx(monitor), 1);
+    assert_eq!(state.previous_focused_hwnd, Some(200));
+    assert_eq!(state.pending_last_window_departure, None);
+}
+
+#[test]
+fn test_restore_activation_direct_reconcile_does_not_sync_sibling_foreground() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.workspaces.get_mut(&monitor).unwrap()[1].mark_minimized(200);
+    state.last_prune_at = Some(std::time::Instant::now());
+
+    state.handle_window_event(WindowEvent::Restored(200));
+    let border_shows_before = state.border_show_count.load(Ordering::Relaxed);
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+
+    assert_eq!(state.active_workspace_idx(monitor), 1);
+    assert_eq!(state.previous_focused_hwnd, Some(200));
+    assert_eq!(
+        state.border_show_count.load(Ordering::Relaxed) - border_shows_before,
+        1,
+        "restore reconciliation must not sync foreground to the tracked sibling"
+    );
+}
+
+#[test]
+fn test_focused_minimize_reconcile_uses_event_time_for_duplicate_handoff() {
+    let mut state = minimized_cross_workspace_state();
+    let monitor = state.focused_monitor;
+    state.last_prune_at = None;
+    state.injected_event_time_ms = Some(0);
+
+    state.handle_window_event(WindowEvent::Focused(200, 1_000));
+    state.handle_window_event(WindowEvent::Focused(200, 1_015));
+
+    assert_eq!(state.active_workspace_idx(monitor), 0);
+    assert_eq!(state.workspaces[&monitor][0].focused_window(), Some(150));
+    assert_eq!(state.previous_focused_hwnd, Some(150));
+    assert_eq!(
+        state
+            .pending_last_window_departure
+            .unwrap()
+            .replacement_hwnd,
+        Some(200)
+    );
 }
 
 #[test]
