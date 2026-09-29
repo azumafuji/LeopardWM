@@ -46,6 +46,8 @@ pub struct Column {
 pub(crate) struct WidthFractionCache {
     pub fraction: f64,
     pub width: i32,
+    pub base: i32,
+    pub gap: i32,
 }
 
 impl PartialEq for Column {

@@ -210,8 +210,8 @@ impl Workspace {
     }
 
     /// Rescale all column widths after viewport or gap values change.
-    /// Converts each column's current pixel width back to a fraction using the
-    /// old geometry, then recomputes the pixel width with the current geometry.
+    /// Reuses the previous rescale's fraction while width and geometry are unchanged;
+    /// otherwise derives it from the current pixel width and old geometry.
     /// Returns `true` when the effective geometry changed.
     pub fn rescale_column_widths(
         &mut self,
@@ -278,13 +278,22 @@ impl Workspace {
         new_base: i32,
     ) -> i32 {
         let fraction = match cache.as_ref() {
-            Some(cached) if cached.width == width => cached.fraction,
+            Some(cached)
+                if cached.width == width && cached.base == old_base && cached.gap == old_gap =>
+            {
+                cached.fraction
+            }
             _ => width.saturating_add(old_gap) as f64 / old_base as f64,
         };
         let width = (new_base as f64 * fraction - new_gap as f64)
             .round()
             .clamp(MIN_COLUMN_WIDTH as f64, i32::MAX as f64) as i32;
-        *cache = Some(crate::column::WidthFractionCache { fraction, width });
+        *cache = Some(crate::column::WidthFractionCache {
+            fraction,
+            width,
+            base: new_base,
+            gap: new_gap,
+        });
         width
     }
 

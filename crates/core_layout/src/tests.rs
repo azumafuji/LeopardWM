@@ -2861,6 +2861,32 @@ mod tests {
     }
 
     #[test]
+    fn test_rescale_column_widths_uses_pixel_width_after_cross_workspace_move() {
+        let mut source = Workspace::with_gaps(10, 10);
+        source.insert_window(1, Some(400)).unwrap();
+        source.set_focused_column_width_fraction(0.5, 5120);
+        source.set_gap(13);
+        source.set_outer_gaps(13, 13, 13, 13);
+        assert!(source.rescale_column_widths(10, 10, 10, 5120, 5120));
+
+        let mut destination = Workspace::with_gaps(10, 10);
+        destination.insert_window(2, Some(400)).unwrap();
+        destination.insert_column_at(source.remove_column(0).unwrap(), 0);
+        let width_before_rescale = destination.columns()[0].width();
+
+        destination.set_gap(13);
+        destination.set_outer_gaps(13, 13, 13, 13);
+        assert!(destination.rescale_column_widths(10, 10, 10, 1920, 1920));
+
+        let old_base = 1920 - 10 - 10 + 10;
+        let new_base = 1920 - 13 - 13 + 13;
+        let expected = ((width_before_rescale + 10) as f64 / old_base as f64 * new_base as f64
+            - 13.0)
+            .round() as i32;
+        assert_eq!(destination.columns()[0].width(), expected);
+    }
+
+    #[test]
     fn test_rescale_column_widths_respects_manual_resize_after_cache() {
         let mut ws = Workspace::with_gaps(10, 10);
         ws.insert_window(1, Some(600)).unwrap();
