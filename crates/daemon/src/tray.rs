@@ -13,7 +13,7 @@
 //! shell notification messages to be dispatched on the owning thread.
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering},
     mpsc, Arc, Mutex,
 };
 use thiserror::Error;
@@ -222,6 +222,8 @@ impl TrayManager {
     pub fn new(
         event_sender: mpsc::Sender<TrayEvent>,
         initial: QuickToggleState,
+        quit_fallback: Arc<crate::quit_fallback::QuitFallback>,
+        quit_thread_id: Arc<AtomicU32>,
     ) -> Result<Self, TrayError> {
         let shared = Arc::new(SharedState {
             paused: AtomicBool::new(false),
@@ -250,6 +252,8 @@ impl TrayManager {
             .recv()
             .map_err(|_| TrayError::Build("Tray thread exited during init".into()))??;
 
+        quit_thread_id.store(thread_id, Ordering::SeqCst);
+
         // Spawn thread to listen for menu events and forward them.
         let menu_sender = event_sender.clone();
         std::thread::Builder::new()
@@ -257,11 +261,9 @@ impl TrayManager {
             .spawn(move || {
                 let rx = MenuEvent::receiver();
                 while let Ok(event) = rx.recv() {
-                    let Some(tray_event) = map_menu_id_to_event(event.id.0.as_str()) else {
-                        debug!("Unknown menu item clicked: {}", event.id.0);
-                        continue;
-                    };
-                    if menu_sender.send(tray_event).is_err() {
+                    if dispatch_menu_event(event.id.0.as_str(), &menu_sender, &quit_fallback)
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -777,6 +779,29 @@ fn build_tray(initial: &QuickToggleState) -> Result<(tray_icon::TrayIcon, TrayIt
     };
 
     Ok((tray, items))
+}
+
+pub(crate) fn post_quit(thread_id: u32) {
+    if thread_id != 0 {
+        unsafe {
+            win32_msg::PostThreadMessageW(thread_id, win32_msg::WM_QUIT, 0, 0);
+        }
+    }
+}
+
+pub(crate) fn dispatch_menu_event(
+    menu_id: &str,
+    sender: &mpsc::Sender<TrayEvent>,
+    quit_fallback: &crate::quit_fallback::QuitFallback,
+) -> Result<(), mpsc::SendError<TrayEvent>> {
+    let Some(event) = map_menu_id_to_event(menu_id) else {
+        debug!("Unknown menu item clicked: {}", menu_id);
+        return Ok(());
+    };
+    if matches!(event, TrayEvent::Exit) {
+        quit_fallback.arm();
+    }
+    sender.send(event)
 }
 
 fn map_menu_id_to_event(menu_id: &str) -> Option<TrayEvent> {

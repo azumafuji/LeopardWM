@@ -214,6 +214,35 @@ pub fn dwm_uncloak_window(window_id: WindowId) {
     }
 }
 
+pub(crate) fn emergency_uncloak_tracked(window_ids: &[WindowId]) {
+    for tracked in [&GLOBAL_CLOAKED, &GHOST_CLOAKED, &DIRECT_CLOAKED] {
+        let ids: Vec<_> = match tracked.try_lock() {
+            Ok(mut guard) => guard
+                .as_mut()
+                .map(|set| {
+                    let ids: Vec<_> = set
+                        .iter()
+                        .copied()
+                        .filter(|id| window_ids.contains(id))
+                        .collect();
+                    for id in &ids {
+                        set.remove(id);
+                    }
+                    ids
+                })
+                .unwrap_or_default(),
+            Err(_) => continue,
+        };
+        for id in ids {
+            if let Ok(hwnd) = window_id_to_hwnd(id) {
+                unsafe {
+                    dwm_set_cloak(hwnd, false);
+                }
+            }
+        }
+    }
+}
+
 /// Force-uncloak every tracked window from both sets. Called during
 /// shutdown and panic recovery. Bypasses `apply_cloak_state`.
 pub fn dwm_uncloak_all() {

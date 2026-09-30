@@ -582,6 +582,73 @@ pub fn restore_maximizebox_all(window_ids: &[WindowId]) {
     }
 }
 
+// SetWindowLongW can block on a hung owner; call only inside the exit controller's budget.
+pub(crate) fn emergency_restore_maximizebox(window_ids: &[WindowId], deadline: std::time::Instant) {
+    let entries = {
+        let Ok(in_flight) = IN_FLIGHT_STYLE_REQUEST.try_lock() else {
+            return;
+        };
+        let pending = PENDING_RESTORES.get().map(|pending| pending.try_lock());
+        let pending = match pending {
+            Some(Ok(guard)) => Some(guard),
+            Some(Err(_)) => return,
+            None => None,
+        };
+        let Ok(tracking) = SNAP_DISABLED_HWNDS.try_lock() else {
+            return;
+        };
+        let mut entries: Vec<_> = tracking
+            .as_ref()
+            .map(|set| set.iter().map(|(&id, &identity)| (id, identity)).collect())
+            .unwrap_or_default();
+        if let Some(pending) = pending {
+            for key in pending.keys() {
+                if !entries.contains(key) {
+                    entries.push(*key);
+                }
+            }
+        }
+        entries.retain(|entry| Some(*entry) != *in_flight && window_ids.contains(&entry.0));
+        entries
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_ASYNCWINDOWPOS,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    for (id, identity) in entries {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        let Ok(hwnd) = window_id_to_hwnd(id) else {
+            continue;
+        };
+        if !window_identity_matches(hwnd, identity) {
+            continue;
+        }
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_STYLE);
+            const MAXIMIZEBOX: i32 = 0x0001_0000;
+            if style & MAXIMIZEBOX == 0 {
+                SetWindowLongW(hwnd, GWL_STYLE, style | MAXIMIZEBOX);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_FRAMECHANGED
+                        | SWP_ASYNCWINDOWPOS
+                        | SWP_NOMOVE
+                        | SWP_NOSIZE
+                        | SWP_NOZORDER
+                        | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+}
+
 /// Emergency restore of `WS_MAXIMIZEBOX` for tracked and pending-restore windows.
 /// Drains tracking and restores styles best-effort, leaving the in-flight request to its worker.
 /// Safe to call from panic hooks (no AppState needed).

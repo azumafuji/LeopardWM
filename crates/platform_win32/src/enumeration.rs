@@ -761,13 +761,13 @@ pub fn get_process_executable(pid: u32) -> Option<String> {
     }
 }
 
-pub(crate) struct TopLevelWindowIdCollection {
-    pub(crate) window_ids: Vec<WindowId>,
-    pub(crate) error: Option<Win32Error>,
+pub struct TopLevelWindowIdCollection {
+    pub window_ids: Vec<WindowId>,
+    pub error: Option<Win32Error>,
 }
 
 /// Collect all top-level window IDs (used by emergency restore).
-pub(crate) fn collect_all_top_level_window_ids() -> TopLevelWindowIdCollection {
+pub fn collect_all_top_level_window_ids() -> TopLevelWindowIdCollection {
     collect_all_top_level_window_ids_with(|window_ids| unsafe {
         EnumWindows(
             Some(collect_all_window_ids_callback),

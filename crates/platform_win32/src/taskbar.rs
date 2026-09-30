@@ -15,7 +15,8 @@ use crate::recover_poisoned_mutex;
 use leopardwm_core_layout::WindowId;
 use std::collections::HashSet;
 use std::ffi::c_void;
-use std::sync::{mpsc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
@@ -29,14 +30,26 @@ enum TaskbarCmd {
     Forget(WindowId),
 }
 
-/// Global sender to the taskbar thread. `None` until `init_taskbar`, and again
-/// after the handle is dropped. Free functions no-op when unset.
-static TASKBAR_TX: Mutex<Option<mpsc::Sender<TaskbarCmd>>> = Mutex::new(None);
+/// Global taskbar connection. Its sender is cleared by ordinary or emergency shutdown.
+/// The completion flag remains available to repeated emergency disconnects.
+struct TaskbarSender {
+    tx: Option<mpsc::Sender<TaskbarCmd>>,
+    stopped: Arc<AtomicBool>,
+}
+
+static TASKBAR_TX: Mutex<Option<TaskbarSender>> = Mutex::new(None);
+
+pub(crate) fn emergency_disconnect() -> Option<Arc<AtomicBool>> {
+    let mut sender = TASKBAR_TX.try_lock().ok()?;
+    let sender = sender.as_mut()?;
+    sender.tx.take();
+    Some(sender.stopped.clone())
+}
 
 /// Remove `wid`'s taskbar button (best-effort; no-op if uninitialized).
 pub fn taskbar_hide(wid: WindowId) {
     let guard = TASKBAR_TX.lock().unwrap_or_else(recover_poisoned_mutex);
-    if let Some(tx) = guard.as_ref() {
+    if let Some(tx) = guard.as_ref().and_then(|sender| sender.tx.as_ref()) {
         let _ = tx.send(TaskbarCmd::Hide(wid));
     }
 }
@@ -44,7 +57,7 @@ pub fn taskbar_hide(wid: WindowId) {
 /// Restore `wid`'s taskbar button (only acts if we'd hidden it).
 pub fn taskbar_show(wid: WindowId) {
     let guard = TASKBAR_TX.lock().unwrap_or_else(recover_poisoned_mutex);
-    if let Some(tx) = guard.as_ref() {
+    if let Some(tx) = guard.as_ref().and_then(|sender| sender.tx.as_ref()) {
         let _ = tx.send(TaskbarCmd::Show(wid));
     }
 }
@@ -54,7 +67,7 @@ pub fn taskbar_show(wid: WindowId) {
 /// in this process's hidden set, so `taskbar_show` wouldn't touch them).
 pub fn taskbar_restore(wid: WindowId) {
     let guard = TASKBAR_TX.lock().unwrap_or_else(recover_poisoned_mutex);
-    if let Some(tx) = guard.as_ref() {
+    if let Some(tx) = guard.as_ref().and_then(|sender| sender.tx.as_ref()) {
         let _ = tx.send(TaskbarCmd::Restore(wid));
     }
 }
@@ -64,7 +77,7 @@ pub fn taskbar_restore(wid: WindowId) {
 /// would otherwise make the change-gate skip re-hiding the new window.
 pub fn taskbar_forget(wid: WindowId) {
     let guard = TASKBAR_TX.lock().unwrap_or_else(recover_poisoned_mutex);
-    if let Some(tx) = guard.as_ref() {
+    if let Some(tx) = guard.as_ref().and_then(|sender| sender.tx.as_ref()) {
         let _ = tx.send(TaskbarCmd::Forget(wid));
     }
 }
@@ -79,12 +92,20 @@ pub struct TaskbarHandle {
 /// thread can't be spawned; taskbar hiding is then a best-effort no-op.
 pub fn init_taskbar() -> Option<TaskbarHandle> {
     let (tx, rx) = mpsc::channel::<TaskbarCmd>();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let worker_stopped = stopped.clone();
     let thread = std::thread::Builder::new()
         .name("taskbar-list".into())
-        .spawn(move || run(rx))
+        .spawn(move || {
+            run(rx);
+            worker_stopped.store(true, Ordering::Release);
+        })
         .map_err(|e| tracing::warn!("Failed to spawn taskbar thread: {}", e))
         .ok()?;
-    *TASKBAR_TX.lock().unwrap_or_else(recover_poisoned_mutex) = Some(tx);
+    *TASKBAR_TX.lock().unwrap_or_else(recover_poisoned_mutex) = Some(TaskbarSender {
+        tx: Some(tx),
+        stopped,
+    });
     Some(TaskbarHandle {
         thread: Some(thread),
     })
@@ -95,7 +116,13 @@ impl Drop for TaskbarHandle {
         // Clear the global sender so the thread's recv() ends; it then restores
         // every hidden button and exits. Join so restore completes before we
         // return (bounded so a hung shell call can't block shutdown forever).
-        *TASKBAR_TX.lock().unwrap_or_else(recover_poisoned_mutex) = None;
+        if let Some(sender) = TASKBAR_TX
+            .lock()
+            .unwrap_or_else(recover_poisoned_mutex)
+            .as_mut()
+        {
+            sender.tx.take();
+        }
         if let Some(thread) = self.thread.take() {
             for _ in 0..50 {
                 if thread.is_finished() {

@@ -33,6 +33,7 @@ mod notify;
 mod overview;
 mod persistence;
 mod physical_placement;
+mod quit_fallback;
 mod recreated_window_slot;
 #[cfg(test)]
 mod recreated_window_slot_tests;
@@ -1468,11 +1469,33 @@ fn setup_gestures(
 }
 
 /// Initialize the system tray icon and bridge its events into the event loop.
-fn setup_tray(
+async fn setup_tray(
+    state: &Arc<Mutex<AppState>>,
     config: &Config,
     event_tx: &mpsc::Sender<DaemonEvent>,
     thread_handles: &mut Vec<std::thread::JoinHandle<()>>,
-) -> Option<tray::TrayManager> {
+) -> (Option<tray::TrayManager>, Arc<quit_fallback::QuitFallback>) {
+    let (quit_cancelled, quit_epoch) = {
+        let state = state.lock().await;
+        (
+            state.apply_worker_cancelled.clone(),
+            state.apply_epoch.clone(),
+        )
+    };
+    let quit_thread_id = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let quit_stop_thread_id = quit_thread_id.clone();
+    let quit_fallback = Arc::new(quit_fallback::QuitFallback::new(
+        quit_cancelled,
+        quit_epoch,
+        move || tray::post_quit(quit_stop_thread_id.load(std::sync::atomic::Ordering::SeqCst)),
+        |deadline| {
+            let ids = leopardwm_platform_win32::collect_all_top_level_window_ids();
+            leopardwm_platform_win32::emergency_restore_windows(&ids.window_ids, deadline);
+        },
+        |code| std::process::exit(code),
+        quit_fallback::QUIT_TIMEOUT,
+        quit_fallback::RESTORE_BUDGET,
+    ));
     let (tray_sync_tx, tray_sync_rx) = std::sync::mpsc::channel();
 
     // Spawn task to forward tray events from sync channel to async channel
@@ -1487,7 +1510,12 @@ fn setup_tray(
     }
 
     let initial_toggles = quick_toggle_state(config);
-    match tray::TrayManager::new(tray_sync_tx, initial_toggles) {
+    let manager = match tray::TrayManager::new(
+        tray_sync_tx,
+        initial_toggles,
+        quit_fallback.clone(),
+        quit_thread_id,
+    ) {
         Ok(manager) => {
             info!("System tray icon initialized");
             Some(manager)
@@ -1496,7 +1524,8 @@ fn setup_tray(
             warn!("Failed to create system tray icon: {}. Tray disabled.", e);
             None
         }
-    }
+    };
+    (manager, quit_fallback)
 }
 
 /// Print the startup banner for immediate user feedback.
@@ -3684,7 +3713,8 @@ async fn main() -> Result<()> {
     };
 
     // Initialize system tray icon
-    let tray_manager = setup_tray(&config, &event_tx, &mut thread_handles);
+    let (tray_manager, quit_fallback) =
+        setup_tray(&state, &config, &event_tx, &mut thread_handles).await;
 
     // Update checker — daily GitHub Releases poll, opt-out via behavior.check_for_updates.
     let update_check_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3933,6 +3963,7 @@ async fn main() -> Result<()> {
     update_check_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     abort_event_timers(&mut ctx);
     stop_animation_worker_and_run_recovery(animation_worker, &state, event_rx).await;
+    quit_fallback.complete();
 
     // Join forwarding threads with timeout for graceful shutdown
     info!("Waiting for forwarding threads to exit...");

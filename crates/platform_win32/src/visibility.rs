@@ -182,6 +182,65 @@ impl Drop for RecoveryDpiContext {
     }
 }
 
+fn emergency_sentinel_pass(window_ids: &[WindowId], work_area: &Rect) {
+    for &id in window_ids {
+        let Ok(hwnd) = window_id_to_hwnd(id) else {
+            continue;
+        };
+        unsafe {
+            let mut rect = RECT::default();
+            if GetWindowRect(hwnd, &mut rect).is_err()
+                || !is_move_offscreen_sentinel_position(rect.left, rect.top)
+            {
+                continue;
+            }
+            let current = Rect::new(
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            );
+            let restored = compute_restore_rect_from_offscreen(&current, work_area);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                restored.x,
+                restored.y,
+                restored.width,
+                restored.height,
+                SWP_NOZORDER
+                    | SWP_NOACTIVATE
+                    | windows::Win32::UI::WindowsAndMessaging::SWP_ASYNCWINDOWPOS,
+            );
+        }
+    }
+}
+
+/// Best-effort tray Quit recovery. The caller must independently enforce `deadline`:
+/// shell, DWM, tracing, and style calls can block even though window moves are asynchronous.
+pub fn emergency_restore_windows(window_ids: &[WindowId], deadline: std::time::Instant) {
+    let Ok(_dpi) = RecoveryDpiContext::enter() else {
+        return;
+    };
+    let Ok(primary) = get_primary_monitor() else {
+        return;
+    };
+    emergency_sentinel_pass(window_ids, &primary.work_area);
+    tracing::warn!("Tray Quit fallback fired: graceful shutdown did not complete within 5 seconds");
+    crate::placement::emergency_uncloak_tracked(window_ids);
+    if let Some(stopped) = crate::taskbar::emergency_disconnect() {
+        let wait_until =
+            deadline.min(std::time::Instant::now() + std::time::Duration::from_millis(250));
+        while !stopped.load(std::sync::atomic::Ordering::Acquire)
+            && std::time::Instant::now() < wait_until
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    crate::window_style::emergency_restore_maximizebox(window_ids, deadline);
+    emergency_sentinel_pass(window_ids, &primary.work_area);
+}
+
 /// Restore one window from MoveOffScreen sentinel coordinates to the primary monitor.
 ///
 /// Returns `Ok(true)` if the window was restored, `Ok(false)` if it was not at

@@ -56,10 +56,11 @@ pub use elevation::{
     INTEGRITY_MEDIUM,
 };
 pub use enumeration::{
-    enumerate_monitors, enumerate_windows, find_monitor_by_id, find_monitor_for_rect,
-    get_primary_monitor, get_process_executable, get_window_info, is_excluded_tool_window_hwnd,
-    is_excluded_topmost_popup_hwnd, is_excluded_window_class_hwnd, monitor_above, monitor_below,
-    monitor_to_left, monitor_to_right, monitors_by_position,
+    collect_all_top_level_window_ids, enumerate_monitors, enumerate_windows, find_monitor_by_id,
+    find_monitor_for_rect, get_primary_monitor, get_process_executable, get_window_info,
+    is_excluded_tool_window_hwnd, is_excluded_topmost_popup_hwnd, is_excluded_window_class_hwnd,
+    monitor_above, monitor_below, monitor_to_left, monitor_to_right, monitors_by_position,
+    TopLevelWindowIdCollection,
 };
 pub use event_hooks::{install_event_hooks, EventHookHandle, WindowEvent};
 pub use focus::{
@@ -83,10 +84,10 @@ pub use system::{
 };
 pub use types::{MonitorId, MonitorInfo, PlatformConfig, Win32Error, WindowInfo};
 pub use visibility::{
-    cascade_windows, is_move_offscreen_sentinel_position, is_move_offscreen_sentinel_rect,
-    move_window_offscreen, position_window, restore_all_windows_moved_offscreen_best_effort,
-    restore_window_moved_offscreen, restore_windows_moved_offscreen, uncloak_all_managed_windows,
-    uncloak_all_visible_windows,
+    cascade_windows, emergency_restore_windows, is_move_offscreen_sentinel_position,
+    is_move_offscreen_sentinel_rect, move_window_offscreen, position_window,
+    restore_all_windows_moved_offscreen_best_effort, restore_window_moved_offscreen,
+    restore_windows_moved_offscreen, uncloak_all_managed_windows, uncloak_all_visible_windows,
 };
 pub use window_identity::{
     clear_window_lifetime_token, read_managed_lifetime_token, read_window_lifetime_token,
