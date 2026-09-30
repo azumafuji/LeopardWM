@@ -394,10 +394,11 @@ fn win_event_callback_inner(
 }
 
 #[cfg(test)]
+pub(crate) static GLOBAL_SENDER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    static GLOBAL_SENDER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_event_sender_can_be_reinstalled_after_clear() {

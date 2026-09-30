@@ -173,3 +173,127 @@ fn test_maximized_admission_does_not_wait_for_non_pumping_owner() {
     );
     assert_eq!(outcome, AdmitOutcome::Admitted);
 }
+
+fn native_admission_state(hwnd: u64) -> AppState {
+    let mut config = test_config();
+    config.behavior.disable_snap_layouts = false;
+    config.behavior.focus_new_windows = false;
+    config.animation.layout_duration_ms = 0;
+    config.animation.scroll_duration_ms = 0;
+    let mut state = AppState::new_with_config(config, test_monitors());
+    state.reduce_motion = true;
+    state.paused = false;
+    state.next_injected_lifetime_token =
+        leopardwm_platform_win32::stamp_managed_lifetime_token(hwnd).unwrap();
+    state
+        .injected_window_info
+        .insert(hwnd, make_test_window_info(hwnd));
+    state
+}
+
+#[test]
+fn test_maximized_admission_without_completion_route_does_not_stick_pending() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = MaximizedOwner::spawn();
+    let hwnd = owner.window_id;
+    let mut state = native_admission_state(hwnd);
+    let start = Instant::now();
+    let outcome = state.try_admit_window(hwnd, AdmissionKind::Automatic);
+    let elapsed = start.elapsed();
+    let pending = state.pending_maximized_admission_restores.contains(&hwnd);
+    let grace = state.window_last_maximized_at.contains_key(&hwnd);
+    let _ = owner.release.send(());
+    assert!(leopardwm_platform_win32::wait_for_window_style_requests(
+        Duration::from_secs(5)
+    ));
+    assert_eq!(outcome, AdmitOutcome::Admitted);
+    assert!(
+        elapsed < Duration::from_millis(400),
+        "no-route restore waited for owner: {elapsed:?}"
+    );
+    assert!(
+        !pending,
+        "admission with no completion route must not remain pending"
+    );
+    assert!(
+        grace,
+        "a natively maximized admission without a report keeps settling grace"
+    );
+    assert!(!unsafe { IsZoomed(HWND(hwnd as *mut _)).as_bool() });
+    let old = Instant::now() - Duration::from_secs(10);
+    state.window_managed_at.insert(hwnd, old);
+    state.window_last_maximized_at.insert(hwnd, old);
+    state.layout_transition = None;
+    state.handle_window_event(WindowEvent::MovedOrResized(hwnd));
+    assert!(!state.window_last_maximized_at.contains_key(&hwnd));
+    let expected = state
+        .focused_workspace()
+        .unwrap()
+        .compute_placements_animated(state.layout_viewport(1))[0]
+        .rect;
+    assert_eq!(state.last_placed_layout_rects.get(&hwnd), Some(&expected));
+    let actual = leopardwm_platform_win32::get_window_visible_rect(hwnd).unwrap();
+    assert!((actual.x - expected.x).abs() <= 2 && (actual.y - expected.y).abs() <= 2);
+    assert!(
+        (actual.width - expected.width).abs() <= 2 && (actual.height - expected.height).abs() <= 2
+    );
+}
+
+#[test]
+fn test_maximized_admission_identity_skip_reports_and_clears_pending() {
+    use windows::Win32::UI::WindowsAndMessaging::RemovePropW;
+
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let (_hooks, events) = leopardwm_platform_win32::install_event_hooks().unwrap();
+    let blocker = MaximizedOwner::spawn();
+    assert!(leopardwm_platform_win32::remove_maximizebox(blocker.window_id).unwrap());
+    assert!(!leopardwm_platform_win32::wait_for_window_style_requests(
+        Duration::from_millis(20)
+    ));
+    let owner = MaximizedOwner::spawn();
+    let hwnd = owner.window_id;
+    let mut state = native_admission_state(hwnd);
+    assert_eq!(
+        state.try_admit_window(hwnd, AdmissionKind::Automatic),
+        AdmitOutcome::Admitted
+    );
+    assert!(state.pending_maximized_admission_restores.contains(&hwnd));
+    let token = state.managed_lifetime_tokens[&hwnd];
+    unsafe {
+        RemovePropW(HWND(hwnd as *mut _), w!("LeopardWMManagedToken")).unwrap();
+    }
+    let _ = blocker.release.send(());
+    let _ = owner.release.send(());
+    assert!(leopardwm_platform_win32::wait_for_window_style_requests(
+        Duration::from_secs(5)
+    ));
+    assert!(
+        unsafe { IsZoomed(HWND(hwnd as *mut _)).as_bool() },
+        "identity mismatch must skip ShowWindow"
+    );
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut completion = None;
+    while Instant::now() < deadline {
+        let Ok(event) = events.recv_timeout(Duration::from_millis(20)) else {
+            continue;
+        };
+        if matches!(event, WindowEvent::MaximizedAdmissionRestored { window_id, .. } if window_id == hwnd)
+        {
+            completion = Some(event);
+            break;
+        }
+    }
+    let completion = completion.expect("identity skip must report a terminal completion");
+    assert!(
+        matches!(completion, WindowEvent::MaximizedAdmissionRestored {
+        managed_lifetime_token: reported_token, still_maximized: true, ..
+    } if reported_token == token)
+    );
+    state.handle_window_event(completion);
+    assert!(!state.pending_maximized_admission_restores.contains(&hwnd));
+    assert!(state.window_last_maximized_at.contains_key(&hwnd));
+}

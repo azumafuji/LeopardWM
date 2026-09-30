@@ -11843,7 +11843,7 @@ fn test_maximized_tiled_admission_restores_and_opens_full_width_column() {
         },
         |_| {
             queue_calls.set(queue_calls.get() + 1);
-            Ok(())
+            Ok(true)
         },
     );
 
@@ -11897,7 +11897,7 @@ fn test_failed_maximized_admission_restore_keeps_settling_grace() {
         crate::event_handler::AdmissionKind::Automatic,
         None,
         |_| true,
-        |_| Ok(()),
+        |_| Ok(true),
     );
 
     assert_eq!(outcome, crate::event_handler::AdmitOutcome::Admitted);
@@ -11931,7 +11931,7 @@ fn test_non_maximized_tiled_admission_keeps_normal_column_width() {
         |_| false,
         |_| {
             queue_calls.set(queue_calls.get() + 1);
-            Ok(())
+            Ok(true)
         },
     );
 

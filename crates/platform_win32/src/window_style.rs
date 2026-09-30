@@ -333,6 +333,7 @@ enum WindowStyleRequest {
         window_id: WindowId,
         hwnd: usize,
         identity: WindowIdentity,
+        completion_sender: Option<Sender<crate::WindowEvent>>,
     },
     Barrier(SyncSender<()>),
 }
@@ -369,9 +370,10 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
                             window_id,
                             hwnd,
                             identity,
+                            completion_sender,
                         } => {
                             restore_maximized_window_with(window_id, hwnd, identity, |event| {
-                                if let Some(sender) = crate::event_hooks::clone_event_sender() {
+                                if let Some(sender) = completion_sender {
                                     let _ = sender.send(event);
                                 }
                             });
@@ -387,7 +389,8 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
     })
 }
 
-pub fn queue_maximized_window_restore(window_id: WindowId) -> Result<(), Win32Error> {
+/// Queue a non-activating restore; `Ok(true)` means a completion route was captured.
+pub fn queue_maximized_window_restore(window_id: WindowId) -> Result<bool, Win32Error> {
     let hwnd = window_id_to_hwnd(window_id)?;
     let identity = capture_window_identity(hwnd).ok_or(Win32Error::WindowNotFound(window_id))?;
     if identity.managed_lifetime_token.is_none() {
@@ -396,14 +399,17 @@ pub fn queue_maximized_window_restore(window_id: WindowId) -> Result<(), Win32Er
             window_id
         )));
     }
+    let completion_sender = crate::event_hooks::clone_event_sender();
+    let will_report = completion_sender.is_some();
     window_style_worker()
         .send(WindowStyleRequest::RestoreMaximized {
             window_id,
             hwnd: hwnd.0 as usize,
             identity,
+            completion_sender,
         })
         .expect("window style worker stopped unexpectedly");
-    Ok(())
+    Ok(will_report)
 }
 
 fn restore_maximized_window_with(
@@ -415,12 +421,17 @@ fn restore_maximized_window_with(
     use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, ShowWindow, SW_SHOWNOACTIVATE};
 
     let hwnd = HWND(hwnd_value as *mut c_void);
-    if !window_identity_matches(hwnd, identity) {
-        return;
-    }
     let Some(managed_lifetime_token) = identity.managed_lifetime_token else {
         return;
     };
+    if !window_identity_matches(hwnd, identity) {
+        report(crate::WindowEvent::MaximizedAdmissionRestored {
+            window_id,
+            managed_lifetime_token,
+            still_maximized: unsafe { !IsWindow(Some(hwnd)).as_bool() || IsZoomed(hwnd).as_bool() },
+        });
+        return;
+    }
     let result = unsafe {
         crate::focus::restore_maximized_window_no_activate_with(
             window_id,
@@ -1602,6 +1613,52 @@ mod tests {
         owner
     }
 
+    struct CompletionSenderFixture {
+        previous: Option<Sender<crate::WindowEvent>>,
+    }
+
+    impl CompletionSenderFixture {
+        fn install(sender: Sender<crate::WindowEvent>) -> Self {
+            let previous = crate::event_hooks::clone_event_sender();
+            crate::event_hooks::clear_event_sender();
+            crate::event_hooks::set_event_sender(sender).unwrap();
+            Self { previous }
+        }
+    }
+
+    impl Drop for CompletionSenderFixture {
+        fn drop(&mut self) {
+            crate::event_hooks::clear_event_sender();
+            if let Some(previous) = self.previous.take() {
+                crate::event_hooks::set_event_sender(previous).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_queued_maximized_restore_completion_survives_sender_clear() {
+        let _sender_lock = crate::event_hooks::GLOBAL_SENDER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(crate::recover_poisoned_mutex);
+        let _guard = lock_snap_tracking_fixture();
+        let (sender, events) = mpsc::channel();
+        let _sender_fixture = CompletionSenderFixture::install(sender);
+        let fixture = HiddenFramedFixture::create();
+        let window_id = fixture.window_id();
+        let token = crate::window_identity::stamp_managed_lifetime_token(window_id).unwrap();
+        let blocker = block_style_worker("LeopardWMCompletionSenderCleared");
+        queue_maximized_window_restore(window_id).unwrap();
+        crate::event_hooks::clear_event_sender();
+        blocker.0.release();
+        pump_until_window_style_idle();
+        assert!(matches!(events.recv_timeout(Duration::from_millis(200)),
+            Ok(crate::WindowEvent::MaximizedAdmissionRestored {
+                window_id: reported_id,
+                managed_lifetime_token: reported_token,
+                still_maximized: false,
+            }) if reported_id == window_id && reported_token == token));
+    }
+
     #[test]
     fn test_queued_maximized_restore_rejects_stale_identity_without_style_tracking() {
         use crate::window_identity::stamp_managed_lifetime_token;
@@ -1642,11 +1699,17 @@ mod tests {
             } else {
                 assert_ne!(stamp_managed_lifetime_token(window_id).unwrap(), token);
             }
-            let reports = std::cell::Cell::new(0);
-            restore_maximized_window_with(window_id, hwnd.0 as usize, identity, |_| {
-                reports.set(reports.get() + 1)
+            let report = std::cell::RefCell::new(None);
+            restore_maximized_window_with(window_id, hwnd.0 as usize, identity, |event| {
+                *report.borrow_mut() = Some(event);
             });
-            assert_eq!(reports.get(), 0);
+            assert!(
+                matches!(*report.borrow(), Some(crate::WindowEvent::MaximizedAdmissionRestored {
+                window_id: reported_id,
+                managed_lifetime_token: reported_token,
+                still_maximized: true,
+            }) if reported_id == window_id && reported_token == token)
+            );
             blocker.0.release();
             pump_until_window_style_idle();
             if !destroyed {

@@ -15,7 +15,7 @@ fn admit_pending_maximized() -> AppState {
             AdmissionKind::Automatic,
             None,
             |_| true,
-            |_| Ok(())
+            |_| Ok(true)
         ),
         AdmitOutcome::Admitted
     );
@@ -106,7 +106,7 @@ fn test_unfocused_maximized_admission_keeps_per_app_column_width() {
             AdmissionKind::Automatic,
             None,
             |_| true,
-            |_| Ok(())
+            |_| Ok(true)
         ),
         AdmitOutcome::Admitted
     );

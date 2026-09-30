@@ -508,13 +508,18 @@ impl AppState {
         &mut self,
         hwnd: u64,
         now: std::time::Instant,
-        queue: &mut impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
+        queue: &mut impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
         is_maximized: &mut impl FnMut(u64) -> bool,
     ) {
         match queue(hwnd) {
-            Ok(()) => {
+            Ok(true) => {
                 self.pending_maximized_admission_restores.insert(hwnd);
                 self.window_last_maximized_at.insert(hwnd, now);
+            }
+            Ok(false) => {
+                if is_maximized(hwnd) {
+                    self.window_last_maximized_at.insert(hwnd, now);
+                }
             }
             Err(error) => {
                 debug!(
@@ -783,7 +788,7 @@ impl AppState {
         kind: AdmissionKind,
         admitted_at_event_ms: Option<u32>,
         is_maximized: impl FnMut(u64) -> bool,
-        queue_maximized_restore: impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
+        queue_maximized_restore: impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
     ) -> AdmitOutcome {
         // Depart before the body. Its own duplicate check then sees a non-member
         // and does not sample foreground a second time. Reconcile only a real
@@ -808,7 +813,10 @@ impl AppState {
         kind: AdmissionKind,
         admitted_at_event_ms: Option<u32>,
         mut is_maximized: impl FnMut(u64) -> bool,
-        mut queue_maximized_restore: impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
+        mut queue_maximized_restore: impl FnMut(
+            u64,
+        )
+            -> Result<bool, leopardwm_platform_win32::Win32Error>,
     ) -> AdmitOutcome {
         // Recycle departs before suppression and the ignore gate. A cloak Hidden
         // can mark this HWND transient, and that entry must not reject the replacement.
