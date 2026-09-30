@@ -216,29 +216,51 @@ fn emergency_sentinel_pass(window_ids: &[WindowId], work_area: &Rect) {
     }
 }
 
+fn emergency_primary_work_area() -> Option<Rect> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    };
+    unsafe {
+        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        let work = info.rcWork;
+        Some(Rect::new(
+            work.left,
+            work.top,
+            work.right - work.left,
+            work.bottom - work.top,
+        ))
+    }
+}
+
 /// Best-effort tray Quit recovery. The caller must independently enforce `deadline`:
 /// shell, DWM, tracing, and style calls can block even though window moves are asynchronous.
 pub fn emergency_restore_windows(window_ids: &[WindowId], deadline: std::time::Instant) {
     let Ok(_dpi) = RecoveryDpiContext::enter() else {
         return;
     };
-    let Ok(primary) = get_primary_monitor() else {
+    let Some(work_area) = emergency_primary_work_area() else {
         return;
     };
-    emergency_sentinel_pass(window_ids, &primary.work_area);
-    tracing::warn!("Tray Quit fallback fired: graceful shutdown did not complete within 5 seconds");
+    emergency_sentinel_pass(window_ids, &work_area);
+    tracing::warn!("Tray Quit fallback fired: shutdown did not complete before its deadline");
     crate::placement::emergency_uncloak_tracked(window_ids);
     if let Some(stopped) = crate::taskbar::emergency_disconnect() {
-        let wait_until =
-            deadline.min(std::time::Instant::now() + std::time::Duration::from_millis(250));
         while !stopped.load(std::sync::atomic::Ordering::Acquire)
-            && std::time::Instant::now() < wait_until
+            && std::time::Instant::now() < deadline
         {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
     crate::window_style::emergency_restore_maximizebox(window_ids, deadline);
-    emergency_sentinel_pass(window_ids, &primary.work_area);
+    emergency_sentinel_pass(window_ids, &work_area);
 }
 
 /// Restore one window from MoveOffScreen sentinel coordinates to the primary monitor.

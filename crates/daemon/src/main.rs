@@ -553,7 +553,12 @@ fn setup_hotkeys(config: &Config, event_tx: mpsc::Sender<DaemonEvent>) -> Hotkey
 }
 
 /// Shared shutdown/recovery cleanup used by all daemon exit paths.
-async fn run_shutdown_cleanup(state: &Arc<Mutex<AppState>>, mode: ShutdownMode) {
+async fn run_shutdown_cleanup(
+    state: &Arc<Mutex<AppState>>,
+    mode: ShutdownMode,
+    quit_fallback: &quit_fallback::QuitFallback,
+) {
+    quit_fallback.started();
     info!("Running {} shutdown cleanup", mode.label());
 
     let (managed_window_ids, pending_apply_workers, apply_timeout) = {
@@ -713,6 +718,7 @@ fn resize_preview_animation_loop(
 
 /// Borrowed event-loop state shared by the main-loop event handlers.
 struct EventLoopCtx<'a> {
+    quit_fallback: &'a quit_fallback::QuitFallback,
     state: &'a Arc<Mutex<AppState>>,
     event_tx: &'a mpsc::Sender<DaemonEvent>,
     hotkey_state: &'a mut HotkeyState,
@@ -1493,8 +1499,7 @@ async fn setup_tray(
             leopardwm_platform_win32::emergency_restore_windows(&ids.window_ids, deadline);
         },
         |code| std::process::exit(code),
-        quit_fallback::QUIT_TIMEOUT,
-        quit_fallback::RESTORE_BUDGET,
+        quit_fallback::QuitTiming::default(),
     ));
     let (tray_sync_tx, tray_sync_rx) = std::sync::mpsc::channel();
 
@@ -1682,7 +1687,7 @@ async fn handle_ipc_command(
                 mode.label()
             );
         }
-        run_shutdown_cleanup(ctx.state, mode).await;
+        run_shutdown_cleanup(ctx.state, mode, ctx.quit_fallback).await;
         return true;
     }
 
@@ -2008,7 +2013,7 @@ async fn handle_hotkey_event(
             hotkey_event.id,
             mode.label()
         );
-        run_shutdown_cleanup(ctx.state, mode).await;
+        run_shutdown_cleanup(ctx.state, mode, ctx.quit_fallback).await;
         return true;
     }
 
@@ -2102,7 +2107,7 @@ async fn handle_gesture_event(ctx: &mut EventLoopCtx<'_>, gesture_event: Gesture
                     gesture_event,
                     mode.label()
                 );
-                run_shutdown_cleanup(ctx.state, mode).await;
+                run_shutdown_cleanup(ctx.state, mode, ctx.quit_fallback).await;
                 return true;
             }
             {
@@ -3812,6 +3817,7 @@ async fn main() -> Result<()> {
     let mut display_change_apply_retry_timer: Option<(u64, tokio::task::JoinHandle<()>)> = None;
 
     let mut ctx = EventLoopCtx {
+        quit_fallback: &quit_fallback,
         state: &state,
         event_tx: &event_tx,
         hotkey_state: &mut hotkey_state,
@@ -3951,7 +3957,7 @@ async fn main() -> Result<()> {
             }
             DaemonEvent::Shutdown => {
                 info!("Shutdown signal received");
-                run_shutdown_cleanup(&state, ShutdownMode::Graceful).await;
+                run_shutdown_cleanup(&state, ShutdownMode::Graceful, &quit_fallback).await;
                 break;
             }
         }

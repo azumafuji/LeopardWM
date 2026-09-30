@@ -8,8 +8,26 @@ const IDLE: u8 = 0;
 const ARMED: u8 = 1;
 const COMPLETED: u8 = 2;
 const TAKEN_OVER: u8 = 3;
+const STARTED: u8 = 4;
+const IDLE_STARTED: u8 = 5;
 pub(crate) const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const RESTORE_BUDGET: Duration = Duration::from_secs(2);
+
+pub(crate) struct QuitTiming {
+    pub(crate) timeout: Duration,
+    pub(crate) graceful_cap: Duration,
+    pub(crate) budget: Duration,
+}
+
+impl Default for QuitTiming {
+    fn default() -> Self {
+        Self {
+            timeout: QUIT_TIMEOUT,
+            graceful_cap: Duration::from_secs(30),
+            budget: RESTORE_BUDGET,
+        }
+    }
+}
 
 type Recovery = dyn Fn(Instant) + Send + Sync;
 type Exit = dyn Fn(i32) + Send + Sync;
@@ -23,8 +41,7 @@ pub(crate) struct QuitFallback {
     stop_tray: Arc<dyn Fn() + Send + Sync>,
     recover: Arc<Recovery>,
     exit: Arc<Exit>,
-    timeout: Duration,
-    budget: Duration,
+    timing: QuitTiming,
 }
 
 impl QuitFallback {
@@ -34,8 +51,7 @@ impl QuitFallback {
         stop_tray: impl Fn() + Send + Sync + 'static,
         recover: impl Fn(Instant) + Send + Sync + 'static,
         exit: impl Fn(i32) + Send + Sync + 'static,
-        timeout: Duration,
-        budget: Duration,
+        timing: QuitTiming,
     ) -> Self {
         let (completed, completion) = mpsc::channel();
         Self {
@@ -47,15 +63,18 @@ impl QuitFallback {
             stop_tray: Arc::new(stop_tray),
             recover: Arc::new(recover),
             exit: Arc::new(exit),
-            timeout,
-            budget,
+            timing,
         }
     }
 
     pub(crate) fn arm(&self) {
         if self
             .state
-            .compare_exchange(IDLE, ARMED, Ordering::SeqCst, Ordering::SeqCst)
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| match state {
+                IDLE => Some(ARMED),
+                IDLE_STARTED => Some(STARTED),
+                _ => None,
+            })
             .is_err()
         {
             return;
@@ -67,17 +86,41 @@ impl QuitFallback {
         let stop_tray = self.stop_tray.clone();
         let recover = self.recover.clone();
         let exit = self.exit.clone();
-        let timeout = self.timeout;
-        let budget = self.budget;
-        std::thread::Builder::new()
+        let armed_at = Instant::now();
+        let short_deadline = armed_at + self.timing.timeout;
+        let graceful_deadline = armed_at + self.timing.graceful_cap;
+        let budget = self.timing.budget;
+        if let Err(error) = std::thread::Builder::new()
             .name("tray-quit-deadline".into())
             .spawn(move || {
-                let _ = completion.recv_timeout(timeout);
-                if state
-                    .compare_exchange(ARMED, TAKEN_OVER, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
-                {
-                    return;
+                loop {
+                    let current = state.load(Ordering::SeqCst);
+                    let deadline = match current {
+                        ARMED => short_deadline,
+                        STARTED => graceful_deadline,
+                        _ => return,
+                    };
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        if state
+                            .compare_exchange(
+                                current,
+                                TAKEN_OVER,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            )
+                            .is_ok()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                    if matches!(
+                        completion.recv_timeout(remaining),
+                        Err(mpsc::RecvTimeoutError::Disconnected)
+                    ) {
+                        std::thread::sleep(remaining);
+                    }
                 }
                 cancelled.store(true, Ordering::SeqCst);
                 epoch.fetch_add(1, Ordering::SeqCst);
@@ -93,14 +136,32 @@ impl QuitFallback {
                 let _ = restored.recv_timeout(deadline.saturating_duration_since(Instant::now()));
                 exit(0);
             })
-            .expect("Failed to start tray Quit deadline controller");
+        {
+            tracing::warn!(
+                "Failed to start tray Quit deadline controller: {error}; forwarding ordinary Exit"
+            );
+        }
+    }
+
+    pub(crate) fn started(&self) {
+        if self
+            .state
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| match state {
+                IDLE => Some(IDLE_STARTED),
+                ARMED => Some(STARTED),
+                _ => None,
+            })
+            .is_ok()
+        {
+            let _ = self.completed.send(());
+        }
     }
 
     pub(crate) fn complete(&self) -> bool {
         let won = self
             .state
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
-                matches!(state, IDLE | ARMED).then_some(COMPLETED)
+                matches!(state, IDLE | ARMED | IDLE_STARTED | STARTED).then_some(COMPLETED)
             })
             .is_ok();
         if won {
@@ -134,8 +195,11 @@ mod tests {
                 move |code| {
                     exit.send(code).unwrap();
                 },
-                timeout,
-                budget,
+                QuitTiming {
+                    timeout,
+                    graceful_cap: timeout * 6,
+                    budget,
+                },
             )),
             exited,
         )
@@ -177,6 +241,54 @@ mod tests {
         assert!(restore_seen.try_recv().is_err());
         assert!(!quit.cancelled.load(Ordering::SeqCst));
         assert_eq!(quit.epoch.load(Ordering::SeqCst), 7);
+    }
+
+    #[test]
+    fn started_shutdown_can_complete_after_short_timeout() {
+        let (restored, restore_seen) = mpsc::channel();
+        let timeout = Duration::from_millis(100);
+        let (quit, exited) = coordinator(
+            move |_| {
+                restored.send(()).unwrap();
+            },
+            timeout,
+            SHORT,
+        );
+        quit.started();
+        quit.arm();
+        assert!(matches!(
+            exited.recv_timeout(timeout * 2),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(quit.complete());
+        assert!(exited.recv_timeout(timeout * 6).is_err());
+        assert!(restore_seen.try_recv().is_err());
+        assert!(!quit.cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn started_shutdown_still_restores_and_exits_at_hard_cap() {
+        let (restored, restore_seen) = mpsc::channel();
+        let timeout = Duration::from_millis(100);
+        let (quit, exited) = coordinator(
+            move |_| {
+                restored.send(()).unwrap();
+            },
+            timeout,
+            SHORT,
+        );
+        let armed_at = Instant::now();
+        quit.arm();
+        quit.started();
+        assert_eq!(
+            exited.recv_timeout(timeout * 6 + SHORT + MARGIN).unwrap(),
+            0
+        );
+        assert!(armed_at.elapsed() >= timeout * 6);
+        assert!(armed_at.elapsed() < timeout * 6 + SHORT + MARGIN);
+        restore_seen.recv_timeout(MARGIN).unwrap();
+        assert!(quit.cancelled.load(Ordering::SeqCst));
+        assert!(!quit.complete());
     }
 
     #[test]
@@ -251,8 +363,7 @@ mod tests {
                     leopardwm_platform_win32::emergency_restore_windows(&[id], deadline)
                 },
                 |code| std::process::exit(code),
-                QUIT_TIMEOUT,
-                RESTORE_BUDGET,
+                QuitTiming::default(),
             );
             let (sender, receiver) = mpsc::channel();
             let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
