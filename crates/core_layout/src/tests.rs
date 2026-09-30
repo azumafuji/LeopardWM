@@ -2861,6 +2861,30 @@ mod tests {
     }
 
     #[test]
+    fn test_rescale_column_widths_preserves_round_trip_after_expel() {
+        let mut restored_widths = Vec::new();
+        for expel_left in [true, false] {
+            let mut ws = Workspace::with_gaps(10, 10);
+            ws.insert_window(1, Some(1267)).unwrap();
+            ws.insert_window_in_column(2, 0).unwrap();
+            ws.set_focus(0, 1).unwrap();
+
+            assert!(ws.rescale_column_widths(10, 10, 10, 5120, 1280));
+            assert_eq!(ws.columns()[0].width(), 307);
+            if expel_left {
+                ws.expel_to_left();
+            } else {
+                ws.expel_to_right();
+            }
+            assert_eq!(ws.column_count(), 2);
+
+            assert!(ws.rescale_column_widths(10, 10, 10, 1280, 5120));
+            restored_widths.push(ws.columns().iter().map(|c| c.width()).collect::<Vec<_>>());
+        }
+        assert_eq!(restored_widths, [[1267; 2]; 2]);
+    }
+
+    #[test]
     fn test_rescale_column_widths_uses_pixel_width_after_cross_workspace_move() {
         let mut source = Workspace::with_gaps(10, 10);
         source.insert_window(1, Some(400)).unwrap();

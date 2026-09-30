@@ -304,7 +304,10 @@ impl Workspace {
             self.focused_window_in_column = old_len.saturating_sub(1);
         }
         let width = self.columns[self.focused_column].width();
-        let new_col = Column::new(wid, width);
+        let mut new_col = Column::new(wid, width);
+        new_col.width_fraction_cache = self.columns[self.focused_column]
+            .width_fraction_cache
+            .clone();
         self.columns.insert(self.focused_column, new_col);
         // Focus the new column (it took the current index)
         self.focused_window_in_column = 0;
@@ -327,7 +330,10 @@ impl Workspace {
             self.focused_window_in_column = old_len.saturating_sub(1);
         }
         let width = self.columns[self.focused_column].width();
-        let new_col = Column::new(wid, width);
+        let mut new_col = Column::new(wid, width);
+        new_col.width_fraction_cache = self.columns[self.focused_column]
+            .width_fraction_cache
+            .clone();
         self.columns.insert(self.focused_column + 1, new_col);
         self.focused_column += 1;
         self.focused_window_in_column = 0;
