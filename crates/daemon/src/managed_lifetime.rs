@@ -147,6 +147,7 @@ impl AppState {
 
     /// Drop the recorded lifetime and its admission time together.
     pub(crate) fn take_managed_lifetime_token(&mut self, hwnd: u64) -> Option<u64> {
+        self.pending_maximized_admission_restores.remove(&hwnd);
         self.forget_recreated_window_lifetime(hwnd);
         self.managed_lifetime_admitted_at_event_ms.remove(&hwnd);
         self.managed_lifetime_tokens.remove(&hwnd)

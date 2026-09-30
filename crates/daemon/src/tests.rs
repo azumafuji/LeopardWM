@@ -11830,9 +11830,8 @@ fn test_maximized_tiled_admission_restores_and_opens_full_width_column() {
     state
         .injected_window_info
         .insert(100, make_test_window_info(100));
-    let maximized = std::cell::Cell::new(true);
     let maximize_queries = std::cell::Cell::new(0);
-    let restore_calls = std::cell::Cell::new(0);
+    let queue_calls = std::cell::Cell::new(0);
 
     let outcome = state.try_admit_window_at_with_native_ops(
         100,
@@ -11840,11 +11839,10 @@ fn test_maximized_tiled_admission_restores_and_opens_full_width_column() {
         None,
         |_| {
             maximize_queries.set(maximize_queries.get() + 1);
-            maximized.get()
+            true
         },
         |_| {
-            restore_calls.set(restore_calls.get() + 1);
-            maximized.set(false);
+            queue_calls.set(queue_calls.get() + 1);
             Ok(())
         },
     );
@@ -11860,8 +11858,32 @@ fn test_maximized_tiled_admission_restores_and_opens_full_width_column() {
         1,
         "sample native maximize before insertion"
     );
-    assert_eq!(restore_calls.get(), 1);
+    assert_eq!(queue_calls.get(), 1);
+    assert!(state.window_last_maximized_at.contains_key(&100));
+    assert!(!state.last_placed_layout_rects.contains_key(&100));
+    state.paused = false;
+    state.layout_transition = None;
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        std::time::Duration::ZERO,
+    ));
+    state.handle_window_event(WindowEvent::MaximizedAdmissionRestored {
+        window_id: 100,
+        managed_lifetime_token: state.managed_lifetime_tokens[&100],
+        still_maximized: false,
+    });
     assert!(!state.window_last_maximized_at.contains_key(&100));
+    assert!(!state.pending_maximized_admission_restores.contains(&100));
+    assert_eq!(
+        state.last_placed_layout_rects[&100].width,
+        state
+            .focused_workspace()
+            .unwrap()
+            .visible_width(viewport_width)
+    );
+    assert_eq!(
+        *state.injected_apply_placements_batches.lock().unwrap(),
+        vec![vec![100]]
+    );
 }
 
 #[test]
@@ -11875,15 +11897,21 @@ fn test_failed_maximized_admission_restore_keeps_settling_grace() {
         crate::event_handler::AdmissionKind::Automatic,
         None,
         |_| true,
-        |_| {
-            Err(leopardwm_platform_win32::Win32Error::SetPositionFailed(
-                "injected restore failure".into(),
-            ))
-        },
+        |_| Ok(()),
     );
 
     assert_eq!(outcome, crate::event_handler::AdmitOutcome::Admitted);
+    assert!(state.pending_maximized_admission_restores.contains(&100));
     assert!(state.window_last_maximized_at.contains_key(&100));
+    let before_result = std::time::Instant::now();
+    state.handle_window_event(WindowEvent::MaximizedAdmissionRestored {
+        window_id: 100,
+        managed_lifetime_token: state.managed_lifetime_tokens[&100],
+        still_maximized: true,
+    });
+    assert!(state.window_last_maximized_at[&100] >= before_result);
+    assert!(!state.pending_maximized_admission_restores.contains(&100));
+    assert!(!state.last_placed_layout_rects.contains_key(&100));
 }
 
 #[test]
@@ -11894,7 +11922,7 @@ fn test_non_maximized_tiled_admission_keeps_normal_column_width() {
     state
         .injected_window_info
         .insert(100, make_test_window_info(100));
-    let restore_calls = std::cell::Cell::new(0);
+    let queue_calls = std::cell::Cell::new(0);
 
     let outcome = state.try_admit_window_at_with_native_ops(
         100,
@@ -11902,7 +11930,7 @@ fn test_non_maximized_tiled_admission_keeps_normal_column_width() {
         None,
         |_| false,
         |_| {
-            restore_calls.set(restore_calls.get() + 1);
+            queue_calls.set(queue_calls.get() + 1);
             Ok(())
         },
     );
@@ -11910,7 +11938,7 @@ fn test_non_maximized_tiled_admission_keeps_normal_column_width() {
     assert_eq!(outcome, crate::event_handler::AdmitOutcome::Admitted);
     let workspace = &state.workspaces[&monitor][state.active_workspace_idx(monitor)];
     assert_ne!(workspace.columns()[0].width(), viewport_width);
-    assert_eq!(restore_calls.get(), 0);
+    assert_eq!(queue_calls.get(), 0);
     assert!(!state.window_last_maximized_at.contains_key(&100));
 }
 
@@ -17555,3 +17583,9 @@ fn test_full_display_invalidation_clears_widths_and_heights() {
         assert_eq!(workspace.columns()[0].width(), 400);
     }
 }
+
+#[path = "maximized_admission_tests.rs"]
+mod maximized_admission_tests;
+
+#[path = "maximized_admission_regression.rs"]
+mod maximized_admission_regression;

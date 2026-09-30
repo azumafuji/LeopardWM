@@ -46,23 +46,6 @@ pub(crate) fn defer_snapback_while_settling(
     settling && recently_maximized
 }
 
-fn restore_maximized_at_admission(
-    hwnd: u64,
-    restore: &mut impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
-    is_maximized: &mut impl FnMut(u64) -> bool,
-) -> bool {
-    match restore(hwnd) {
-        Ok(()) => false,
-        Err(error) => {
-            debug!(
-                "Could not restore maximized window {} without activation: {:?}",
-                hwnd, error
-            );
-            is_maximized(hwnd)
-        }
-    }
-}
-
 fn insert_admitted_tile(
     workspace: &mut Workspace,
     hwnd: u64,
@@ -415,7 +398,10 @@ impl AppState {
             | WindowEvent::MovedOrResized(hwnd)
             | WindowEvent::MoveSizeStart(hwnd)
             | WindowEvent::MoveSizeEnd(hwnd)
-            | WindowEvent::TitleChanged(hwnd) => Some(*hwnd),
+            | WindowEvent::TitleChanged(hwnd)
+            | WindowEvent::MaximizedAdmissionRestored {
+                window_id: hwnd, ..
+            } => Some(*hwnd),
             _ => None,
         } {
             if leopardwm_platform_win32::focus_placeholder::is_focus_placeholder(hwnd) {
@@ -434,7 +420,8 @@ impl AppState {
             | WindowEvent::MovedOrResized(id)
             | WindowEvent::MoveSizeStart(id)
             | WindowEvent::MoveSizeEnd(id)
-            | WindowEvent::TitleChanged(id) => Some(*id),
+            | WindowEvent::TitleChanged(id)
+            | WindowEvent::MaximizedAdmissionRestored { window_id: id, .. } => Some(*id),
             WindowEvent::DisplayChange
             | WindowEvent::WorkAreaChanged
             | WindowEvent::MouseEnterWindow(_)
@@ -471,6 +458,17 @@ impl AppState {
                 self.on_window_minimized_from_event(hwnd, os_event_time_ms)
             }
             WindowEvent::Restored(hwnd) => self.on_window_restored(hwnd),
+            WindowEvent::MaximizedAdmissionRestored {
+                window_id,
+                managed_lifetime_token,
+                still_maximized,
+            } => {
+                self.on_maximized_admission_restored(
+                    window_id,
+                    managed_lifetime_token,
+                    still_maximized,
+                );
+            }
             WindowEvent::MoveSizeStart(hwnd) => self.on_move_size_start(hwnd),
             WindowEvent::MoveSizeEnd(hwnd) => self.on_move_size_end(hwnd),
             WindowEvent::MovedOrResized(hwnd) => self.on_window_moved_or_resized(hwnd),
@@ -502,6 +500,51 @@ impl AppState {
                 if in_visible_tabbed_column {
                     self.update_tab_strip();
                 }
+            }
+        }
+    }
+
+    fn queue_maximized_admission_restore(
+        &mut self,
+        hwnd: u64,
+        now: std::time::Instant,
+        queue: &mut impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
+        is_maximized: &mut impl FnMut(u64) -> bool,
+    ) {
+        match queue(hwnd) {
+            Ok(()) => {
+                self.pending_maximized_admission_restores.insert(hwnd);
+                self.window_last_maximized_at.insert(hwnd, now);
+            }
+            Err(error) => {
+                debug!(
+                    "Could not queue maximized admission restore for {}: {:?}",
+                    hwnd, error
+                );
+                if is_maximized(hwnd) {
+                    self.window_last_maximized_at.insert(hwnd, now);
+                }
+            }
+        }
+    }
+
+    fn on_maximized_admission_restored(&mut self, hwnd: u64, token: u64, still_maximized: bool) {
+        if !self.is_managed_member(hwnd) || self.managed_lifetime_tokens.get(&hwnd) != Some(&token)
+        {
+            return;
+        }
+        self.pending_maximized_admission_restores.remove(&hwnd);
+        if still_maximized {
+            self.window_last_maximized_at
+                .insert(hwnd, std::time::Instant::now());
+        } else {
+            self.window_last_maximized_at.remove(&hwnd);
+            self.last_placed_layout_rects.remove(&hwnd);
+            if let Err(error) = self.apply_layout() {
+                warn!(
+                    "Failed to apply layout after maximized admission restore: {}",
+                    error
+                );
             }
         }
     }
@@ -730,7 +773,7 @@ impl AppState {
             kind,
             admitted_at_event_ms,
             leopardwm_platform_win32::is_window_maximized,
-            leopardwm_platform_win32::restore_maximized_window_no_activate,
+            leopardwm_platform_win32::queue_maximized_window_restore,
         )
     }
 
@@ -740,7 +783,7 @@ impl AppState {
         kind: AdmissionKind,
         admitted_at_event_ms: Option<u32>,
         is_maximized: impl FnMut(u64) -> bool,
-        restore_maximized: impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
+        queue_maximized_restore: impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
     ) -> AdmitOutcome {
         // Depart before the body. Its own duplicate check then sees a non-member
         // and does not sample foreground a second time. Reconcile only a real
@@ -751,7 +794,7 @@ impl AppState {
             kind,
             admitted_at_event_ms,
             is_maximized,
-            restore_maximized,
+            queue_maximized_restore,
         );
         if replaced {
             self.reconcile_replaced_lifetime_admission(hwnd);
@@ -765,7 +808,7 @@ impl AppState {
         kind: AdmissionKind,
         admitted_at_event_ms: Option<u32>,
         mut is_maximized: impl FnMut(u64) -> bool,
-        mut restore_maximized: impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
+        mut queue_maximized_restore: impl FnMut(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
     ) -> AdmitOutcome {
         // Recycle departs before suppression and the ignore gate. A cloak Hidden
         // can mark this HWND transient, and that entry must not reject the replacement.
@@ -1031,17 +1074,6 @@ impl AppState {
                 if added {
                     let now = std::time::Instant::now();
                     self.window_managed_at.insert(hwnd, now);
-                    let still_maximized = native_maximized_at_admission
-                        && restore_maximized_at_admission(
-                            hwnd,
-                            &mut restore_maximized,
-                            &mut is_maximized,
-                        );
-                    // Only an unsuccessful native restore needs maximize grace;
-                    // a restored window must be placed at its layout bounds.
-                    if still_maximized {
-                        self.window_last_maximized_at.insert(hwnd, now);
-                    }
                     info!(
                         "Window created: {} ({}) - added to monitor {} workspace {} as {:?}",
                         win_info.title,
@@ -1071,6 +1103,14 @@ impl AppState {
                         workspace.ensure_focused_visible_animated(viewport_width);
                     }
                     self.record_managed_lifetime(hwnd, admitted_at_event_ms);
+                    if native_maximized_at_admission {
+                        self.queue_maximized_admission_restore(
+                            hwnd,
+                            now,
+                            &mut queue_maximized_restore,
+                            &mut is_maximized,
+                        );
+                    }
                     self.record_managed_window_identity(&win_info);
                     if recreated_slot.is_some() {
                         if opens_in_background {
@@ -3184,6 +3224,9 @@ impl AppState {
 
     /// Handle a window move/resize notification.
     fn on_window_moved_or_resized(&mut self, hwnd: u64) {
+        if self.pending_maximized_admission_restores.contains(&hwnd) {
+            return;
+        }
         // Placement feedback stays suppressed, except a direct maximize of a
         // managed tiled window needs its timestamp and target-only visual cleanup
         // immediately so the later restore is classified correctly.

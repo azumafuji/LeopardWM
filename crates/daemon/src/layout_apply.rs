@@ -194,7 +194,9 @@ impl AppState {
         let now = std::time::Instant::now();
         for hwnd in maximized {
             self.window_last_maximized_at.insert(*hwnd, now);
-            self.stop_ghosting_window_visuals(*hwnd);
+            if !self.pending_maximized_admission_restores.contains(hwnd) {
+                self.stop_ghosting_window_visuals(*hwnd);
+            }
         }
     }
 
@@ -259,13 +261,16 @@ impl AppState {
                 {
                     return true;
                 }
-                let settling = crate::event_handler::defer_snapback_while_settling(
-                    self.window_managed_at.get(&placement.window_id).copied(),
-                    self.window_last_maximized_at
-                        .get(&placement.window_id)
-                        .copied(),
-                    now,
-                );
+                let settling = self
+                    .pending_maximized_admission_restores
+                    .contains(&placement.window_id)
+                    || crate::event_handler::defer_snapback_while_settling(
+                        self.window_managed_at.get(&placement.window_id).copied(),
+                        self.window_last_maximized_at
+                            .get(&placement.window_id)
+                            .copied(),
+                        now,
+                    );
                 let maximized = maximized.contains(&placement.window_id);
                 if !should_dispatch_visible_tiled_placement(
                     maximized,

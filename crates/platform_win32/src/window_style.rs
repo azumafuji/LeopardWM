@@ -329,6 +329,11 @@ enum WindowStyleRequest {
         operation: WindowStyleOperation,
         correlation_id: u64,
     },
+    RestoreMaximized {
+        window_id: WindowId,
+        hwnd: usize,
+        identity: WindowIdentity,
+    },
     Barrier(SyncSender<()>),
 }
 
@@ -360,6 +365,17 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
                                 &mut in_flight,
                             );
                         }
+                        WindowStyleRequest::RestoreMaximized {
+                            window_id,
+                            hwnd,
+                            identity,
+                        } => {
+                            restore_maximized_window_with(window_id, hwnd, identity, |event| {
+                                if let Some(sender) = crate::event_hooks::clone_event_sender() {
+                                    let _ = sender.send(event);
+                                }
+                            });
+                        }
                         WindowStyleRequest::Barrier(done) => {
                             let _ = done.send(());
                         }
@@ -369,6 +385,68 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
             .expect("failed to spawn window style worker");
         sender
     })
+}
+
+pub fn queue_maximized_window_restore(window_id: WindowId) -> Result<(), Win32Error> {
+    let hwnd = window_id_to_hwnd(window_id)?;
+    let identity = capture_window_identity(hwnd).ok_or(Win32Error::WindowNotFound(window_id))?;
+    if identity.managed_lifetime_token.is_none() {
+        return Err(Win32Error::SetPositionFailed(format!(
+            "Missing managed lifetime for maximized window {}",
+            window_id
+        )));
+    }
+    window_style_worker()
+        .send(WindowStyleRequest::RestoreMaximized {
+            window_id,
+            hwnd: hwnd.0 as usize,
+            identity,
+        })
+        .expect("window style worker stopped unexpectedly");
+    Ok(())
+}
+
+fn restore_maximized_window_with(
+    window_id: WindowId,
+    hwnd_value: usize,
+    identity: WindowIdentity,
+    report: impl FnOnce(crate::WindowEvent),
+) {
+    use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, ShowWindow, SW_SHOWNOACTIVATE};
+
+    let hwnd = HWND(hwnd_value as *mut c_void);
+    if !window_identity_matches(hwnd, identity) {
+        return;
+    }
+    let Some(managed_lifetime_token) = identity.managed_lifetime_token else {
+        return;
+    };
+    let result = unsafe {
+        crate::focus::restore_maximized_window_no_activate_with(
+            window_id,
+            || IsWindow(Some(hwnd)).as_bool(),
+            || IsZoomed(hwnd).as_bool(),
+            || {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            },
+        )
+    };
+    let still_maximized = match result {
+        Ok(()) => false,
+        Err(error) => {
+            tracing::debug!(
+                "Could not restore maximized window {} without activation: {:?}",
+                window_id,
+                error
+            );
+            unsafe { IsZoomed(hwnd).as_bool() }
+        }
+    };
+    report(crate::WindowEvent::MaximizedAdmissionRestored {
+        window_id,
+        managed_lifetime_token,
+        still_maximized,
+    });
 }
 
 fn apply_window_style(
@@ -1522,6 +1600,66 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("style worker did not block in WM_STYLECHANGING");
         owner
+    }
+
+    #[test]
+    fn test_queued_maximized_restore_rejects_stale_identity_without_style_tracking() {
+        use crate::window_identity::stamp_managed_lifetime_token;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DestroyWindow, IsZoomed, ShowWindow, SW_SHOWMAXIMIZED,
+        };
+
+        let _guard = lock_snap_tracking_fixture();
+        for (class_name, destroyed) in [
+            ("LeopardWMMaximizedTokenChanged", false),
+            ("LeopardWMMaximizedOwnerGone", true),
+        ] {
+            let mut fixture = HiddenFramedFixture::create();
+            let hwnd = fixture.hwnd();
+            let window_id = fixture.window_id();
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+            }
+            assert!(unsafe { IsZoomed(hwnd).as_bool() });
+            let token = stamp_managed_lifetime_token(window_id).unwrap();
+            let identity = capture_window_identity(hwnd).unwrap();
+            let blocker = block_style_worker(class_name);
+            let in_flight = *lock_in_flight_style_request();
+            queue_maximized_window_restore(window_id).unwrap();
+            assert!(!lock_pending_restores()
+                .keys()
+                .any(|(id, _)| *id == window_id));
+            assert!(!lock_snap_disabled()
+                .as_ref()
+                .unwrap()
+                .contains_key(&window_id));
+            assert_eq!(*lock_in_flight_style_request(), in_flight);
+            restore_maximizebox_panic_recovery();
+            if destroyed {
+                unsafe {
+                    DestroyWindow(fixture.hwnd.take().unwrap()).unwrap();
+                }
+            } else {
+                assert_ne!(stamp_managed_lifetime_token(window_id).unwrap(), token);
+            }
+            let reports = std::cell::Cell::new(0);
+            restore_maximized_window_with(window_id, hwnd.0 as usize, identity, |_| {
+                reports.set(reports.get() + 1)
+            });
+            assert_eq!(reports.get(), 0);
+            blocker.0.release();
+            pump_until_window_style_idle();
+            if !destroyed {
+                assert!(
+                    unsafe { IsZoomed(hwnd).as_bool() },
+                    "a queued restore must not restore a replacement lifetime"
+                );
+            }
+            assert!(!lock_pending_restores()
+                .keys()
+                .any(|(id, _)| *id == window_id));
+            assert!(lock_in_flight_style_request().is_none());
+        }
     }
 
     #[test]

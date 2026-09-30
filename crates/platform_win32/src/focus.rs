@@ -7,8 +7,8 @@ use windows::Win32::Foundation::RECT;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic,
-    IsWindow, IsZoomed, PostMessageW, SetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindow,
-    HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE,
+    IsWindow, PostMessageW, SetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOP,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE,
 };
 
 /// The current OS foreground window as a `WindowId`, if any. This is
@@ -89,25 +89,7 @@ pub fn restore_window_no_activate(window_id: WindowId) -> Result<(), Win32Error>
     }
 }
 
-/// Restore a maximized window to its normal bounds without activating it.
-///
-/// `ShowWindow` reports the previous visibility state rather than restore success,
-/// so success is determined by checking whether the window remains maximized afterward.
-pub fn restore_maximized_window_no_activate(window_id: WindowId) -> Result<(), Win32Error> {
-    let hwnd = window_id_to_hwnd(window_id)?;
-    unsafe {
-        restore_maximized_window_no_activate_with(
-            window_id,
-            || IsWindow(Some(hwnd)).as_bool(),
-            || IsZoomed(hwnd).as_bool(),
-            || {
-                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            },
-        )
-    }
-}
-
-fn restore_maximized_window_no_activate_with(
+pub(crate) fn restore_maximized_window_no_activate_with(
     window_id: WindowId,
     is_window: impl Fn() -> bool,
     is_zoomed: impl Fn() -> bool,

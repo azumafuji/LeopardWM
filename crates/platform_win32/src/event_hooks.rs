@@ -52,6 +52,11 @@ pub enum WindowEvent {
     Minimized(WindowId, u32),
     /// A window was restored from minimized state.
     Restored(WindowId),
+    MaximizedAdmissionRestored {
+        window_id: WindowId,
+        managed_lifetime_token: u64,
+        still_maximized: bool,
+    },
     /// A window was moved or resized by the user.
     MovedOrResized(WindowId),
     /// User started dragging/resizing a window.

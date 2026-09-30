@@ -684,6 +684,7 @@ pub(crate) struct AppState {
     /// distinguish transient popups (managed briefly) from real windows
     /// (managed for a long time, e.g., close-to-tray apps).
     pub(crate) window_managed_at: HashMap<u64, std::time::Instant>,
+    pub(crate) pending_maximized_admission_restores: HashSet<u64>,
     /// Last time each tiled window was seen maximized. Lets a window that opens
     /// maximized and momentarily restores itself mid-burst (an app opening
     /// several windows/tabs at once) re-assert maximize instead of being snapped
@@ -1194,6 +1195,7 @@ impl AppState {
             move_origins: HashMap::new(),
             stashed_monitor_layouts: HashMap::new(),
             window_managed_at: HashMap::new(),
+            pending_maximized_admission_restores: HashSet::new(),
             window_last_maximized_at: HashMap::new(),
             snap_disabled_hwnds: HashSet::new(),
             on_battery_or_saver,
