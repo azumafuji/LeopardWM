@@ -84,6 +84,7 @@ fn is_border_color_unsupported_hresult(code: windows::core::HRESULT) -> bool {
 struct WindowIdentity {
     process_id: u32,
     thread_id: u32,
+    managed_lifetime_token: Option<u64>,
 }
 
 fn capture_window_identity(hwnd: HWND) -> Option<WindowIdentity> {
@@ -94,11 +95,23 @@ fn capture_window_identity(hwnd: HWND) -> Option<WindowIdentity> {
     (thread_id != 0).then_some(WindowIdentity {
         process_id,
         thread_id,
+        managed_lifetime_token: crate::window_identity::read_managed_lifetime_token(
+            hwnd.0 as usize as u64,
+        )
+        .ok()
+        .flatten(),
     })
 }
 
 fn window_identity_matches(hwnd: HWND, identity: WindowIdentity) -> bool {
-    (unsafe { IsWindow(Some(hwnd)).as_bool() }) && capture_window_identity(hwnd) == Some(identity)
+    (unsafe { IsWindow(Some(hwnd)).as_bool() })
+        && capture_window_identity(hwnd).is_some_and(|current| {
+            current.process_id == identity.process_id
+                && current.thread_id == identity.thread_id
+                && identity
+                    .managed_lifetime_token
+                    .is_none_or(|token| current.managed_lifetime_token == Some(token))
+        })
 }
 
 /// Global set of window IDs whose WS_MAXIMIZEBOX style has been removed.
@@ -1428,6 +1441,121 @@ mod tests {
         );
     }
 
+    fn block_style_worker(class_name: &'static str) -> SinglePendingRestoreOwner {
+        let owner = SinglePendingRestoreOwner(PendingRestoreOwner::spawn(class_name, true));
+        assert!(remove_maximizebox(owner.0.hwnd.0 as usize as u64).unwrap());
+        owner
+            .0
+            .state
+            .entered_rx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("owner entry receiver available")
+            .recv_timeout(Duration::from_secs(5))
+            .expect("style worker did not block in WM_STYLECHANGING");
+        owner
+    }
+
+    #[test]
+    fn test_queued_style_changes_reject_changed_managed_token() {
+        use crate::window_identity::stamp_managed_lifetime_token;
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, RemovePropW, SetWindowLongW, GWL_STYLE,
+        };
+
+        let _guard = lock_snap_tracking_fixture();
+        for (class_name, restore, missing) in [
+            ("LeopardWMTokenRemoveChanged", false, false),
+            ("LeopardWMTokenRemoveMissing", false, true),
+            ("LeopardWMTokenRestoreChanged", true, false),
+            ("LeopardWMTokenRestoreMissing", true, true),
+        ] {
+            let fixture = HiddenFramedFixture::create();
+            let hwnd = fixture.hwnd();
+            let window_id = fixture.window_id();
+            let token = stamp_managed_lifetime_token(window_id).unwrap();
+            let identity = capture_window_identity(hwnd).expect("live fixture identity");
+            if restore {
+                unsafe {
+                    let style = GetWindowLongW(hwnd, GWL_STYLE);
+                    SetWindowLongW(hwnd, GWL_STYLE, style & !WS_MAXIMIZEBOX_BIT);
+                }
+            }
+            let blocker = block_style_worker(class_name);
+            if restore {
+                assert!(restore_maximizebox(window_id).unwrap());
+            } else {
+                assert!(remove_maximizebox(window_id).unwrap());
+            }
+            if missing {
+                unsafe { RemovePropW(hwnd, w!("LeopardWMManagedToken")) }.unwrap();
+            } else {
+                assert_ne!(stamp_managed_lifetime_token(window_id).unwrap(), token);
+            }
+            blocker.0.release();
+            pump_until_window_style_idle();
+            assert_eq!(
+                unsafe { GetWindowLongW(hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX_BIT,
+                if restore { 0 } else { WS_MAXIMIZEBOX_BIT },
+                "a queued style change must not touch a replaced managed lifetime: {class_name}"
+            );
+            assert_ne!(
+                lock_snap_disabled()
+                    .as_ref()
+                    .and_then(|set| set.get(&window_id)),
+                Some(&identity),
+                "stale remove tracking must be retired"
+            );
+            assert!(
+                !lock_pending_restores().contains_key(&(window_id, identity)),
+                "skipped restores must retire their pending count"
+            );
+        }
+    }
+
+    #[test]
+    fn test_queued_style_changes_without_managed_token_use_pid_tid_fallback() {
+        use crate::window_identity::{read_managed_lifetime_token, stamp_managed_lifetime_token};
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW, GWL_STYLE};
+
+        let _guard = lock_snap_tracking_fixture();
+        for (class_name, restore, stamp_later) in [
+            ("LeopardWMNoTokenRemove", false, false),
+            ("LeopardWMNoTokenRestore", true, false),
+            ("LeopardWMLateTokenRemove", false, true),
+            ("LeopardWMLateTokenRestore", true, true),
+        ] {
+            let fixture = HiddenFramedFixture::create();
+            let hwnd = fixture.hwnd();
+            let window_id = fixture.window_id();
+            assert_eq!(read_managed_lifetime_token(window_id).unwrap(), None);
+            if restore {
+                unsafe {
+                    let style = GetWindowLongW(hwnd, GWL_STYLE);
+                    SetWindowLongW(hwnd, GWL_STYLE, style & !WS_MAXIMIZEBOX_BIT);
+                }
+            }
+            let blocker = block_style_worker(class_name);
+            if restore {
+                assert!(restore_maximizebox(window_id).unwrap());
+            } else {
+                assert!(remove_maximizebox(window_id).unwrap());
+            }
+            if stamp_later {
+                stamp_managed_lifetime_token(window_id).unwrap();
+            }
+            blocker.0.release();
+            pump_until_window_style_idle();
+            assert_eq!(
+                unsafe { GetWindowLongW(hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX_BIT,
+                if restore { WS_MAXIMIZEBOX_BIT } else { 0 },
+                "an unstamped queued request must use PID/TID fallback: {class_name}"
+            );
+        }
+    }
+
     #[test]
     fn test_queued_style_request_rejects_changed_window_identity() {
         use windows::core::w;
@@ -1497,8 +1625,8 @@ mod tests {
         let window_id = hwnd_value as u64;
         let actual_identity = capture_window_identity(hwnd).expect("live fixture identity");
         let stale_identity = WindowIdentity {
-            process_id: actual_identity.process_id,
             thread_id: actual_identity.thread_id.wrapping_add(1),
+            ..actual_identity
         };
         lock_snap_disabled()
             .get_or_insert_with(HashMap::new)
@@ -1549,8 +1677,8 @@ mod tests {
         let window_id = fixture.window_id();
         let actual_identity = capture_window_identity(hwnd).expect("live fixture identity");
         let stale_identity = WindowIdentity {
-            process_id: actual_identity.process_id,
             thread_id: actual_identity.thread_id.wrapping_add(1),
+            ..actual_identity
         };
         unsafe {
             let style = GetWindowLongW(hwnd, GWL_STYLE);
