@@ -11286,6 +11286,7 @@ fn test_inactive_minimized_window_restore_waits_for_focus_event() {
 
     let mut state = AppState::new_with_config(test_config(), two_monitors());
     state.paused = false;
+    state.reduce_motion = false;
     state.ensure_workspace_exists(1, 2);
     state.workspaces.get_mut(&1).unwrap()[0]
         .insert_window(ACTIVE, Some(800))

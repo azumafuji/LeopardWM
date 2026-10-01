@@ -72,6 +72,19 @@ impl Drop for MaximizedOwner {
     }
 }
 
+// The real window cannot grow past the host desktop, which is 1024x768 on CI runners,
+// so lay it out on a monitor that fits there.
+fn desktop_fitting_monitors() -> Vec<MonitorInfo> {
+    vec![MonitorInfo {
+        id: 1,
+        rect: Rect::new(0, 0, 800, 600),
+        work_area: Rect::new(0, 0, 800, 560),
+        is_primary: true,
+        device_name: "DISPLAY1".to_string(),
+        scale_factor: 1.0,
+    }]
+}
+
 #[test]
 fn test_maximized_admission_does_not_wait_for_non_pumping_owner() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
@@ -90,7 +103,7 @@ fn test_maximized_admission_does_not_wait_for_non_pumping_owner() {
         config.behavior.focus_new_windows = false;
         config.animation.layout_duration_ms = 0;
         config.animation.scroll_duration_ms = 0;
-        let mut state = AppState::new_with_config(config, test_monitors());
+        let mut state = AppState::new_with_config(config, desktop_fitting_monitors());
         state.reduce_motion = true;
         state.paused = false;
         state.next_injected_lifetime_token = token;
@@ -180,7 +193,7 @@ fn native_admission_state(hwnd: u64) -> AppState {
     config.behavior.focus_new_windows = false;
     config.animation.layout_duration_ms = 0;
     config.animation.scroll_duration_ms = 0;
-    let mut state = AppState::new_with_config(config, test_monitors());
+    let mut state = AppState::new_with_config(config, desktop_fitting_monitors());
     state.reduce_motion = true;
     state.paused = false;
     state.next_injected_lifetime_token =
