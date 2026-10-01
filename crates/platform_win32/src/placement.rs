@@ -4078,7 +4078,8 @@ mod tests {
         );
         apply_placements(std::slice::from_ref(&hidden), &config, None, false).unwrap();
 
-        let requested = Rect::new(-30000, -1000, 1267, 1334);
+        // Windows caps resizable windows near the desktop size, which is 1024x768 on CI runners.
+        let requested = Rect::new(-30000, -1000, 900, 700);
         assert!(
             requested.x + requested.width < virtual_left,
             "test target must remain left of every monitor (virtual left={virtual_left})"
