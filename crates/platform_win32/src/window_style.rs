@@ -418,13 +418,15 @@ fn restore_maximized_window_with(
     identity: WindowIdentity,
     report: impl FnOnce(crate::WindowEvent),
 ) {
-    use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, ShowWindow, SW_SHOWNOACTIVATE};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IsWindowVisible, IsZoomed, ShowWindow, SW_SHOWNOACTIVATE,
+    };
 
     let hwnd = HWND(hwnd_value as *mut c_void);
     let Some(managed_lifetime_token) = identity.managed_lifetime_token else {
         return;
     };
-    if !window_identity_matches(hwnd, identity) {
+    if !window_identity_matches(hwnd, identity) || !unsafe { IsWindowVisible(hwnd).as_bool() } {
         report(crate::WindowEvent::MaximizedAdmissionRestored {
             window_id,
             managed_lifetime_token,
@@ -1633,6 +1635,54 @@ mod tests {
                 crate::event_hooks::set_event_sender(previous).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn test_queued_maximized_restore_keeps_subsequently_hidden_window_hidden() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsWindowVisible, IsZoomed, ShowWindow, SW_HIDE, SW_SHOWMAXIMIZED,
+        };
+
+        let _sender_lock = crate::event_hooks::GLOBAL_SENDER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(crate::recover_poisoned_mutex);
+        let _guard = lock_snap_tracking_fixture();
+        let (sender, events) = mpsc::channel();
+        let _sender_fixture = CompletionSenderFixture::install(sender);
+        let fixture = HiddenFramedFixture::create();
+        let hwnd = fixture.hwnd();
+        let window_id = fixture.window_id();
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+        }
+        assert!(unsafe { IsWindowVisible(hwnd).as_bool() && IsZoomed(hwnd).as_bool() });
+        let token = crate::window_identity::stamp_managed_lifetime_token(window_id).unwrap();
+        let blocker = block_style_worker("LeopardWMMaximizedWindowHiddenBeforeRestore");
+        queue_maximized_window_restore(window_id).unwrap();
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+        assert!(unsafe { !IsWindowVisible(hwnd).as_bool() && IsZoomed(hwnd).as_bool() });
+        blocker.0.release();
+        pump_until_window_style_idle();
+        let completion = events.recv_timeout(Duration::from_millis(200));
+        let re_shown = unsafe { IsWindowVisible(hwnd).as_bool() };
+        if re_shown {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        }
+        assert!(
+            !re_shown,
+            "queued restore must not re-show a window hidden by its app"
+        );
+        assert!(
+            matches!(completion, Ok(crate::WindowEvent::MaximizedAdmissionRestored {
+            window_id: reported_id,
+            managed_lifetime_token: reported_token,
+            still_maximized: true,
+        }) if reported_id == window_id && reported_token == token)
+        );
     }
 
     #[test]
