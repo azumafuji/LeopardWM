@@ -40,6 +40,10 @@ impl MaximizedOwner {
             )
             .unwrap();
             let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+            // STARTUPINFO can override the process's first ShowWindow command.
+            if !IsZoomed(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+            }
             ready_tx
                 .send((hwnd.0 as usize as u64, GetCurrentThreadId()))
                 .unwrap();
@@ -211,6 +215,7 @@ fn test_maximized_admission_without_completion_route_does_not_stick_pending() {
         .unwrap_or_else(|error| error.into_inner());
     let owner = MaximizedOwner::spawn();
     let hwnd = owner.window_id;
+    assert!(unsafe { IsZoomed(HWND(hwnd as *mut _)).as_bool() });
     let mut state = native_admission_state(hwnd);
     let start = Instant::now();
     let outcome = state.try_admit_window(hwnd, AdmissionKind::Automatic);
@@ -269,6 +274,7 @@ fn test_maximized_admission_identity_skip_reports_and_clears_pending() {
     ));
     let owner = MaximizedOwner::spawn();
     let hwnd = owner.window_id;
+    assert!(unsafe { IsZoomed(HWND(hwnd as *mut _)).as_bool() });
     let mut state = native_admission_state(hwnd);
     assert_eq!(
         state.try_admit_window(hwnd, AdmissionKind::Automatic),
