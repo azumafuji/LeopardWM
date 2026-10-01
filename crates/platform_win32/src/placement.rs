@@ -2710,8 +2710,24 @@ mod tests {
                 assert!(Instant::now() < deadline, "placement queue did not finish");
                 if PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
                     if message.message == WM_APP {
+                        // Windows may apply queued async moves after a later posted message,
+                        // so measure only once the window stops moving.
                         let mut rect = RECT::default();
                         GetWindowRect(hwnd, &mut rect).unwrap();
+                        let mut stable_since = Instant::now();
+                        while stable_since.elapsed() < Duration::from_millis(50) {
+                            assert!(Instant::now() < deadline, "placement queue did not settle");
+                            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                                DispatchMessageW(&message);
+                            }
+                            let mut current = RECT::default();
+                            GetWindowRect(hwnd, &mut current).unwrap();
+                            if current != rect {
+                                rect = current;
+                                stable_since = Instant::now();
+                            }
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
                         DestroyWindow(window.0).unwrap();
                         std::mem::forget(window);
                         return (
