@@ -419,7 +419,7 @@ fn restore_maximized_window_with(
     report: impl FnOnce(crate::WindowEvent),
 ) {
     use windows::Win32::UI::WindowsAndMessaging::{
-        IsWindowVisible, IsZoomed, ShowWindow, SW_SHOWNOACTIVATE,
+        IsWindowVisible, IsZoomed, ShowWindow, ShowWindowAsync, SW_SHOWNOACTIVATE,
     };
 
     let hwnd = HWND(hwnd_value as *mut c_void);
@@ -442,6 +442,10 @@ fn restore_maximized_window_with(
             || {
                 let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             },
+            || {
+                let _ = ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
+            },
+            |ms| std::thread::sleep(std::time::Duration::from_millis(ms as u64)),
         )
     };
     let still_maximized = match result {
