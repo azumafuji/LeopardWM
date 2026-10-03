@@ -70,7 +70,7 @@ impl QuitFallback {
     pub(crate) fn arm(&self) {
         if self
             .state
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| match state {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |state| match state {
                 IDLE => Some(ARMED),
                 IDLE_STARTED => Some(STARTED),
                 _ => None,
@@ -146,7 +146,7 @@ impl QuitFallback {
     pub(crate) fn started(&self) {
         if self
             .state
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| match state {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |state| match state {
                 IDLE => Some(IDLE_STARTED),
                 ARMED => Some(STARTED),
                 _ => None,
@@ -160,7 +160,7 @@ impl QuitFallback {
     pub(crate) fn complete(&self) -> bool {
         let won = self
             .state
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
                 matches!(state, IDLE | ARMED | IDLE_STARTED | STARTED).then_some(COMPLETED)
             })
             .is_ok();
