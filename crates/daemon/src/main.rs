@@ -873,7 +873,7 @@ fn init_logging(
 )> {
     use tracing_subscriber::prelude::*;
     let log_dir = leopardwm_ipc::log_dir();
-    let (file_appender, log_health) = daemon_log::open(&log_dir);
+    let (file_appender, log_health) = daemon_log::open(&log_dir, log_level);
     let capture_handle = if capture_secs > 0 {
         gesture_diagnostics::start_capture(
             &log_dir,

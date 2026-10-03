@@ -7,6 +7,7 @@ All notable changes to LeopardWM will be documented in this file.
 ### Fixes
 
 - **Tiling no longer pauses after wake when an app stays unresponsive during a monitor or dock change.** Responsive windows are tiled immediately, while busy apps receive their queued placement once they respond. The daemon log names the windows deferred during display reconciliation. (#122)
+- **The daemon log and `lwm doctor` now show the log level.** The startup line in the daemon log names the level the daemon is filtering at, and `lwm doctor` reports the `log_level` set in `config.toml`, so a log that stays quiet at `"warn"` or `"error"` is easy to recognize. The daemon reads the level only at startup, so restart it after changing `log_level`. (#113)
 
 ## 0.2.12
 

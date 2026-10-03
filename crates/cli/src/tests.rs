@@ -1659,12 +1659,13 @@ fn daemon_log_check_reports_failures_staleness_and_unavailable_status() {
     use leopardwm_ipc::DaemonLogStatus;
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = UNIX_EPOCH + Duration::from_secs(1000);
+    let level = "warn (only warnings and errors are written)";
     let writing = DaemonLogStatus::Writing {
         path: "reported.log".into(),
     };
     for (age_before_start, warn) in [(0, false), (60, false), (61, true)] {
         let modified = now - Duration::from_secs(100 + age_before_start);
-        let result = daemon_log_check(Some(&writing), Some(modified), now, Some(100));
+        let result = daemon_log_check(Some(&writing), Some(modified), now, Some(100), level);
         if warn {
             assert!(
                 matches!(result, CheckResult::Warn(message) if message.contains("has not written") && message.contains("reported.log"))
@@ -1672,7 +1673,10 @@ fn daemon_log_check_reports_failures_staleness_and_unavailable_status() {
         } else {
             assert_eq!(
                 result,
-                CheckResult::Pass("Daemon log: writing reported.log".into())
+                CheckResult::Pass(
+                    "Daemon log: writing reported.log; configured log level: warn (only warnings and errors are written)"
+                        .into()
+                )
             );
         }
     }
@@ -1686,7 +1690,13 @@ fn daemon_log_check_reports_failures_staleness_and_unavailable_status() {
             error: "disk full".into(),
         },
     ] {
-        let result = daemon_log_check(Some(&status), Some(SystemTime::UNIX_EPOCH), now, Some(100));
+        let result = daemon_log_check(
+            Some(&status),
+            Some(SystemTime::UNIX_EPOCH),
+            now,
+            Some(100),
+            level,
+        );
         let expected = match status {
             DaemonLogStatus::OpenFailed { .. } => "cannot open reported.log: access denied",
             _ => "cannot write reported.log: disk full",
@@ -1695,13 +1705,40 @@ fn daemon_log_check_reports_failures_staleness_and_unavailable_status() {
     }
     for status in [None, Some(&DaemonLogStatus::Unknown)] {
         assert!(matches!(
-            daemon_log_check(status, None, now, None),
+            daemon_log_check(status, None, now, None, level),
             CheckResult::Warn(_)
         ));
     }
     assert!(
-        matches!(daemon_log_check(Some(&writing), None, now, Some(100)), CheckResult::Warn(message) if message.contains("modified time unavailable"))
+        matches!(daemon_log_check(Some(&writing), None, now, Some(100), level), CheckResult::Warn(message) if message.contains("modified time unavailable"))
     );
+}
+
+#[test]
+fn configured_log_level_reports_the_daemon_startup_level() {
+    let default = "info (default; no recognized behavior.log_level in the config file)";
+    for (config, expected) in [
+        (
+            Some("[behavior]\nlog_level = \"warn\"\n"),
+            "warn (only warnings and errors are written)",
+        ),
+        (
+            Some("[behavior]\nlog_level = \"ERROR\"\n"),
+            "error (only errors are written)",
+        ),
+        (
+            Some("[behavior]\nlog_level = \"info\"\n"),
+            "info (info, warnings and errors are written)",
+        ),
+        (None, default),
+        (Some("[behavior]\nfocus_follows_mouse = true\n"), default),
+        (Some("[behavior]\nlog_level = \"verbose\"\n"), default),
+        (Some("[behavior]\nlog_level = 3\n"), default),
+        (Some("log_level = \"warn\"\n"), default),
+        (Some("[behavior\nlog_level = \"warn\"\n"), default),
+    ] {
+        assert_eq!(configured_log_level(config), expected, "{config:?}");
+    }
 }
 
 #[test]

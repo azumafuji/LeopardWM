@@ -2,6 +2,7 @@ use leopardwm_ipc::DaemonLogStatus;
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use tracing::Level;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
@@ -69,7 +70,10 @@ impl<W: Write> Write for LogWriter<W> {
     }
 }
 
-pub(crate) fn open(log_dir: &Path) -> (Option<LogWriter<RollingFileAppender>>, LogHealth) {
+pub(crate) fn open(
+    log_dir: &Path,
+    log_level: Level,
+) -> (Option<LogWriter<RollingFileAppender>>, LogHealth) {
     let path = log_dir.join("leopardwm-daemon.log").display().to_string();
     match RollingFileAppender::builder()
         .rotation(Rotation::NEVER)
@@ -88,9 +92,10 @@ pub(crate) fn open(log_dir: &Path) -> (Option<LogWriter<RollingFileAppender>>, L
                 .expect("formatting a timestamp into a String cannot fail");
             let _ = writeln!(
                 writer,
-                "{timestamp} LeopardWM daemon {} (pid {}) opened this log",
+                "{timestamp} LeopardWM daemon {} (pid {}) opened this log at log level {}",
                 env!("CARGO_PKG_VERSION"),
-                std::process::id()
+                std::process::id(),
+                log_level.as_str().to_ascii_lowercase()
             );
             (Some(writer), health)
         }
@@ -116,7 +121,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("leopardwm-log-blocked-{}", std::process::id()));
         std::fs::write(&path, b"not a directory").unwrap();
-        let (writer, health) = open(&path);
+        let (writer, health) = open(&path, Level::INFO);
         std::fs::remove_file(&path).unwrap();
         assert!(writer.is_none());
         assert!(
@@ -128,7 +133,7 @@ mod tests {
     fn never_rotation_writes_the_exact_daemon_filename() {
         let dir =
             std::env::temp_dir().join(format!("leopardwm-log-writing-{}", std::process::id()));
-        let (writer, health) = open(&dir);
+        let (writer, health) = open(&dir, Level::WARN);
         let writer = writer.unwrap();
         let startup = std::fs::read_to_string(dir.join("leopardwm-daemon.log")).unwrap();
         let (timestamp, message) = startup.split_once(' ').unwrap();
@@ -136,7 +141,7 @@ mod tests {
         assert_eq!(
             message,
             format!(
-                "LeopardWM daemon {} (pid {}) opened this log\n",
+                "LeopardWM daemon {} (pid {}) opened this log at log level warn\n",
                 env!("CARGO_PKG_VERSION"),
                 std::process::id()
             )

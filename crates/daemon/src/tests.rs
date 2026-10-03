@@ -13905,7 +13905,7 @@ fn test_cmd_health_check() {
         std::process::id()
     ));
     std::fs::write(&blocked_path, b"not a directory").unwrap();
-    let (_, log_health) = crate::daemon_log::open(&blocked_path);
+    let (_, log_health) = crate::daemon_log::open(&blocked_path, tracing::Level::INFO);
     std::fs::remove_file(&blocked_path).unwrap();
     state.daemon_log = Some(log_health);
     let resp = state.handle_command(IpcCommand::HealthCheck);
