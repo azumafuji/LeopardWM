@@ -944,6 +944,50 @@ fn skip_visible_tiled_maximized(
     skip
 }
 
+/// Resolve a position-only placement without exposing extra app-owned width
+/// on a monitor that the requested slot did not already overlap.
+pub fn offscreen_frame_origin(
+    placement: &WindowPlacement,
+    frame_rect: Rect,
+    actual_size: (i32, i32),
+    monitor_rects: &[Rect],
+) -> (i32, i32) {
+    if placement.visibility != Visibility::Visible
+        && placement.rect.width == 0
+        && placement.rect.height == 0
+    {
+        return (placement.rect.x, placement.rect.y);
+    }
+    if placement.visibility != Visibility::OffScreenLeft || actual_size.0 <= frame_rect.width {
+        return (frame_rect.x, frame_rect.y);
+    }
+    let x = frame_rect
+        .x
+        .saturating_sub(actual_size.0 - frame_rect.width);
+    let footprint = Rect::new(x, frame_rect.y, actual_size.0, actual_size.1);
+    if monitor_rects
+        .iter()
+        .any(|monitor| footprint.intersects(monitor) && !frame_rect.intersects(monitor))
+    {
+        let sentinel = crate::MOVE_OFFSCREEN_SENTINEL_COORD;
+        let park_x = monitor_rects
+            .iter()
+            .map(|monitor| monitor.x.saturating_sub(actual_size.0))
+            .min()
+            .unwrap_or(sentinel)
+            .min(sentinel);
+        let park_y = monitor_rects
+            .iter()
+            .map(|monitor| monitor.y.saturating_sub(actual_size.1))
+            .min()
+            .unwrap_or(sentinel)
+            .min(sentinel);
+        (park_x, park_y)
+    } else {
+        (x, frame_rect.y)
+    }
+}
+
 /// Build the defer-entry list for all placements, skipping cache-unchanged windows.
 fn build_defer_entries(
     placements: &[WindowPlacement],
@@ -964,6 +1008,7 @@ fn build_defer_entries(
     let mut maximized_skipped_window_ids = Vec::new();
     let mut async_recovery_window_ids = HashSet::new();
     let mut failed_recovery_window_ids = HashSet::new();
+    let mut monitor_rects = None;
 
     for placement in placements {
         let Ok(hwnd) = window_id_to_hwnd(placement.window_id) else {
@@ -1056,16 +1101,35 @@ fn build_defer_entries(
             // Converting them through frame insets makes the parked origin
             // depend on whether the inset cache is warm or cold after restart.
             let zero_size_hidden_tab = placement.rect.width == 0 && placement.rect.height == 0;
-            let (x, y, w) = if zero_size_hidden_tab {
-                (placement.rect.x, placement.rect.y, 0)
-            } else if placement.visibility == Visibility::OffScreenLeft {
-                // SWP_NOSIZE retains app-owned width; anchor wider frames by their
-                // right edge because cross-process DWM cloaking cannot hide them.
-                let extra_width = crate::get_window_chrome_rect(placement.window_id)
-                    .map_or(0, |actual| (actual.width - frame_rect.width).max(0));
-                (frame_rect.x - extra_width, frame_rect.y, frame_rect.width)
+            let actual_size =
+                if !zero_size_hidden_tab && placement.visibility == Visibility::OffScreenLeft {
+                    crate::get_window_chrome_rect(placement.window_id)
+                        .map(|rect| (rect.width, rect.height))
+                        .unwrap_or((frame_rect.width, frame_rect.height))
+                } else {
+                    (frame_rect.width, frame_rect.height)
+                };
+            let monitors = if !zero_size_hidden_tab
+                && placement.visibility == Visibility::OffScreenLeft
+                && actual_size.0 > frame_rect.width
+            {
+                monitor_rects
+                    .get_or_insert_with(|| {
+                        crate::enumerate_monitors()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|monitor| monitor.rect)
+                            .collect::<Vec<_>>()
+                    })
+                    .as_slice()
             } else {
-                (frame_rect.x, frame_rect.y, frame_rect.width)
+                &[]
+            };
+            let (x, y) = offscreen_frame_origin(placement, frame_rect, actual_size, monitors);
+            let w = if zero_size_hidden_tab {
+                0
+            } else {
+                frame_rect.width
             };
             entries.push(DeferEntry {
                 hwnd,
@@ -4272,6 +4336,59 @@ mod tests {
         assert_eq!(
             defer_origin(placement, insets, true),
             (logical.x, logical.y, logical.width, 0)
+        );
+    }
+
+    #[test]
+    fn test_offscreen_frame_origin_avoids_new_monitor_overlap() {
+        let slot = Rect::new(-300, 0, 300, 560);
+        let placement = offscreen_placement(1, slot, Visibility::OffScreenLeft);
+        let owner = Rect::new(0, 0, 800, 560);
+        let neighbor = Rect::new(-1110, 0, 800, 560);
+        let origin = offscreen_frame_origin(&placement, slot, (315, 560), &[owner, neighbor]);
+        let footprint = Rect::new(origin.0, origin.1, 315, 560);
+        assert!(!footprint.intersects(&owner) && !footprint.intersects(&neighbor));
+        assert_eq!(
+            offscreen_frame_origin(&placement, slot, (315, 560), &[owner]),
+            (-315, 0)
+        );
+        let overlapping_neighbor = Rect::new(-1920, 0, 1920, 560);
+        assert_eq!(
+            offscreen_frame_origin(&placement, slot, (315, 560), &[owner, overlapping_neighbor]),
+            (-315, 0),
+            "a monitor already overlapped by the slot must not trigger parking"
+        );
+        let bordered_frame = Rect::new(-307, -1, 314, 569);
+        assert_eq!(
+            offscreen_frame_origin(&placement, bordered_frame, (330, 569), &[owner]),
+            (-323, -1),
+            "invisible borders already overlapping the owner are not new monitor overlap"
+        );
+        let slot = Rect::new(-300, 10, 300, 560);
+        let frame = Rect::new(-307, 9, 314, 569);
+        let monitors = [Rect::new(-1920, 0, 1920, 1080)];
+        for (visibility, size) in [
+            (Visibility::OffScreenLeft, (300, 600)),
+            (Visibility::OffScreenLeft, (314, 600)),
+            (Visibility::OffScreenRight, (500, 600)),
+            (Visibility::Visible, (500, 600)),
+        ] {
+            let placement = offscreen_placement(1, slot, visibility);
+            assert_eq!(
+                offscreen_frame_origin(&placement, frame, size, &monitors),
+                (-307, 9)
+            );
+        }
+        let placeholder =
+            offscreen_placement(1, Rect::new(-800, 0, 0, 0), Visibility::OffScreenLeft);
+        assert_eq!(
+            offscreen_frame_origin(
+                &placeholder,
+                Rect::new(-807, -1, 14, 9),
+                (500, 600),
+                &monitors
+            ),
+            (-800, 0)
         );
     }
 

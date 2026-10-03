@@ -11948,7 +11948,7 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
         );
     }
 
-    owner.resize(-500, 315);
+    owner.resize(-315, 315);
     state.arm_moved_or_resized_suppression([owner.hwnd]);
     state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
     state.moved_or_resized_suppression.insert(
@@ -11959,12 +11959,132 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
     state.recheck_deferred_offscreen_windows();
     assert_eq!(
         owner.rect().x,
-        -500,
-        "a non-intruding off-screen window must be left alone"
+        -315,
+        "an off-screen window at its anchored origin must be left alone"
     );
     assert_eq!(
         state.physical_request_seq, request_seq,
         "no snap-back should be dispatched"
+    );
+}
+
+#[test]
+fn test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut monitors = test_monitors();
+    monitors[0].rect = Rect::new(0, 0, 800, 600);
+    monitors[0].work_area = Rect::new(0, 0, 800, 560);
+    monitors.push(MonitorInfo {
+        id: 2,
+        rect: Rect::new(-1920, 0, 1920, 600),
+        work_area: Rect::new(-1920, 0, 1920, 560),
+        is_primary: false,
+        device_name: "DISPLAY2".to_string(),
+        scale_factor: 1.0,
+    });
+    let mut state = AppState::new_with_config(test_config(), monitors);
+    state.paused = false;
+    state.reduce_motion = true;
+    let mut workspace = Workspace::with_gaps(0, 0);
+    workspace.set_reduce_motion(true);
+    workspace.insert_window(owner.hwnd, Some(300)).unwrap();
+    workspace.insert_window_in_column(101, 0).unwrap();
+    workspace.toggle_focused_column_tabbed_mode();
+    workspace.focus_window(101).unwrap();
+    state.workspaces.get_mut(&1).unwrap()[0] = workspace;
+    state.apply_layout().unwrap();
+    assert_eq!(
+        state.expected_physical_rect(owner.hwnd),
+        Some(Rect::new(-800, 0, 0, 0))
+    );
+    assert_eq!(owner.rect().x, -800);
+    assert!(owner.rect().intersects(&state.monitors[&2].work_area));
+    let requests = state.physical_request_seq;
+    for _ in 0..4 {
+        state.arm_moved_or_resized_suppression([owner.hwnd]);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        state.moved_or_resized_suppression.insert(
+            owner.hwnd,
+            std::time::Instant::now() - Duration::from_millis(1),
+        );
+        state.recheck_deferred_offscreen_windows();
+        assert_eq!(
+            state.physical_request_seq, requests,
+            "a legitimate hidden-tab origin must not dispatch snap-back"
+        );
+        assert_eq!(owner.rect().x, -800);
+    }
+}
+
+#[test]
+fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut monitors = test_monitors();
+    monitors[0].rect = Rect::new(0, 0, 800, 600);
+    monitors[0].work_area = Rect::new(0, 0, 800, 560);
+    let mut state = AppState::new_with_config(test_config(), monitors);
+    state.paused = false;
+    state.reduce_motion = true;
+    let mut workspace = Workspace::with_gaps(0, 0);
+    workspace.set_reduce_motion(true);
+    workspace.insert_window(owner.hwnd, Some(300)).unwrap();
+    workspace.set_scroll_offset(300.0);
+    state.workspaces.get_mut(&1).unwrap()[0] = workspace;
+    state.apply_layout().unwrap();
+    state.injected_apply_placements_behavior =
+        Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
+    owner.resize(-300, 315);
+    for _ in 0..4 {
+        state.arm_moved_or_resized_suppression([owner.hwnd]);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        state.moved_or_resized_suppression.insert(
+            owner.hwnd,
+            std::time::Instant::now() - Duration::from_millis(1),
+        );
+        state.recheck_deferred_offscreen_windows();
+        assert_eq!(
+            owner.rect().x,
+            -300,
+            "the injected worker must leave the fixture displaced"
+        );
+        assert_eq!(
+            state
+                .injected_apply_placements_call_count
+                .load(Ordering::SeqCst),
+            1,
+            "the same target gets only one periodic snap-back"
+        );
+    }
+    owner.resize(-300, 330);
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    state.recheck_deferred_offscreen_windows();
+    assert_eq!(
+        state
+            .injected_apply_placements_call_count
+            .load(Ordering::SeqCst),
+        2,
+        "a changed target permits another attempt"
+    );
+    owner.resize(-330, 330);
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    state.recheck_deferred_offscreen_windows();
+    owner.resize(-300, 330);
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    state.recheck_deferred_offscreen_windows();
+    assert_eq!(
+        state
+            .injected_apply_placements_call_count
+            .load(Ordering::SeqCst),
+        3,
+        "landing clears the prior attempt bound"
     );
 }
 

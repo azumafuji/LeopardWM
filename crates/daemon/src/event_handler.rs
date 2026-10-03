@@ -471,7 +471,7 @@ impl AppState {
             }
             WindowEvent::MoveSizeStart(hwnd) => self.on_move_size_start(hwnd),
             WindowEvent::MoveSizeEnd(hwnd) => self.on_move_size_end(hwnd),
-            WindowEvent::MovedOrResized(hwnd) => self.on_window_moved_or_resized(hwnd),
+            WindowEvent::MovedOrResized(hwnd) => self.on_window_moved_or_resized(hwnd, false),
             WindowEvent::DisplayChange => self.on_display_change(),
             // Work-area changes reach the reconcile via the debounced
             // DisplayChangeSettled path (see process_window_event), so a raw
@@ -1348,6 +1348,8 @@ impl AppState {
         // Drop the recorded layout rect so the map doesn't retain
         // entries for windows that no longer exist.
         self.last_placed_layout_rects.remove(&hwnd);
+        self.deferred_moved_or_resized.remove(&hwnd);
+        self.offscreen_recheck_attempts.remove(&hwnd);
         self.clear_physical_window_state(hwnd);
         self.application_fullscreen.remove(&hwnd);
 
@@ -3232,13 +3234,15 @@ impl AppState {
     /// Re-check suppressed off-screen moves once placement feedback has settled.
     pub(crate) fn recheck_deferred_offscreen_windows(&mut self) -> bool {
         let mut checked = false;
-        let deferred = std::mem::take(&mut self.deferred_moved_or_resized);
+        let mut deferred = std::mem::take(&mut self.deferred_moved_or_resized);
+        deferred.extend(self.offscreen_recheck_attempts.keys().copied());
         for hwnd in deferred {
             if self.find_window_workspace(hwnd).is_none()
                 || !self
                     .current_physical_visibility(hwnd)
                     .is_some_and(|visibility| visibility != Visibility::Visible)
             {
+                self.offscreen_recheck_attempts.remove(&hwnd);
                 continue;
             }
             if self.applying_layout
@@ -3248,14 +3252,14 @@ impl AppState {
                 self.deferred_moved_or_resized.insert(hwnd);
                 continue;
             }
-            self.on_window_moved_or_resized(hwnd);
+            self.on_window_moved_or_resized(hwnd, true);
             checked = true;
         }
         checked
     }
 
     /// Handle a window move/resize notification.
-    fn on_window_moved_or_resized(&mut self, hwnd: u64) {
+    fn on_window_moved_or_resized(&mut self, hwnd: u64, periodic_recheck: bool) {
         if self.pending_maximized_admission_restores.contains(&hwnd) {
             return;
         }
@@ -3493,30 +3497,44 @@ impl AppState {
                 let offscreen = self
                     .current_physical_visibility(hwnd)
                     .is_some_and(|visibility| visibility != Visibility::Visible);
-                let at_expected_position = if offscreen {
-                    let visible = chrome_actual.map(|rect| {
-                        let (left, top, right, bottom) =
-                            leopardwm_platform_win32::get_window_invisible_insets(hwnd);
-                        Rect::new(
-                            rect.x + left,
-                            rect.y + top,
-                            rect.width - left - right,
-                            rect.height - top - bottom,
+                let offscreen_origin = if offscreen {
+                    expected.zip(chrome_actual).map(|(rect, actual)| {
+                        let placement = leopardwm_core_layout::WindowPlacement {
+                            window_id: hwnd,
+                            rect,
+                            visibility: self.current_physical_visibility(hwnd).unwrap(),
+                            column_index: 0,
+                        };
+                        let frame_rect = leopardwm_platform_win32::visible_rect_to_frame_rect(
+                            rect,
+                            leopardwm_platform_win32::get_window_invisible_insets(hwnd),
+                            self.high_contrast,
+                        );
+                        let monitors: Vec<_> =
+                            self.monitors.values().map(|monitor| monitor.rect).collect();
+                        leopardwm_platform_win32::offscreen_frame_origin(
+                            &placement,
+                            frame_rect,
+                            (actual.width, actual.height),
+                            &monitors,
                         )
-                    });
-                    let hidden = visible.is_some_and(|rect| {
-                        self.monitors
-                            .values()
-                            .all(|monitor| !rect.intersects(&monitor.work_area))
-                    });
-                    if !hidden {
+                    })
+                } else {
+                    None
+                };
+                let at_expected_position = if offscreen {
+                    // Position-only origins are sent verbatim; even 1px of drift can expose a sliver.
+                    let at_origin = chrome_actual
+                        .zip(offscreen_origin)
+                        .is_some_and(|(actual, origin)| (actual.x, actual.y) == origin);
+                    if !at_origin {
                         debug!(
-                            "Window {} off expected position: expected {:?} chrome_visible {:?} monitor_work_areas {:?}",
-                            hwnd, expected, visible,
-                            self.monitors.values().map(|monitor| monitor.work_area).collect::<Vec<_>>()
+                            "Window {} off expected position: expected {:?} frame_origin {:?} chrome {:?} monitor_rects {:?}",
+                            hwnd, expected, offscreen_origin, chrome_actual,
+                            self.monitors.values().map(|monitor| monitor.rect).collect::<Vec<_>>()
                         );
                     }
-                    hidden
+                    at_origin
                 } else {
                     match expected {
                         Some(expected) => {
@@ -3554,11 +3572,26 @@ impl AppState {
                     }
                 };
                 if at_expected_position {
+                    self.offscreen_recheck_attempts.remove(&hwnd);
                     debug!(
                         "Ignoring spurious MovedOrResized for {} — already at expected layout position",
                         hwnd
                     );
                 } else {
+                    if let Some(origin) = offscreen_origin {
+                        if periodic_recheck
+                            && self.offscreen_recheck_attempts.get(&hwnd) == Some(&origin)
+                        {
+                            return;
+                        }
+                        if periodic_recheck {
+                            self.offscreen_recheck_attempts.insert(hwnd, origin);
+                        } else if self.offscreen_recheck_attempts.get(&hwnd) != Some(&origin) {
+                            self.offscreen_recheck_attempts.remove(&hwnd);
+                        }
+                    } else if offscreen && periodic_recheck {
+                        return;
+                    }
                     debug!("Managed window {} moved/resized — snapping back", hwnd);
                     // Evict the displaced hwnd's last-applied entry so
                     // apply_layout's fast-path can't short-circuit when
@@ -3572,6 +3605,13 @@ impl AppState {
                     }
                     if let Err(e) = self.apply_layout() {
                         warn!("Failed to snap back layout after move/resize: {}", e);
+                    }
+                    if let Some(origin) = offscreen_origin {
+                        if leopardwm_platform_win32::get_window_chrome_rect(hwnd)
+                            .is_some_and(|actual| origin == (actual.x, actual.y))
+                        {
+                            self.offscreen_recheck_attempts.remove(&hwnd);
+                        }
                     }
                 }
             }
