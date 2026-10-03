@@ -426,28 +426,29 @@ fn restore_maximized_window_with(
     let Some(managed_lifetime_token) = identity.managed_lifetime_token else {
         return;
     };
-    if !window_identity_matches(hwnd, identity) || !unsafe { IsWindowVisible(hwnd).as_bool() } {
+    let is_zoomed = || unsafe { IsZoomed(hwnd).as_bool() };
+    let is_admission_target =
+        || window_identity_matches(hwnd, identity) && unsafe { IsWindowVisible(hwnd).as_bool() };
+    if !is_admission_target() {
         report(crate::WindowEvent::MaximizedAdmissionRestored {
             window_id,
             managed_lifetime_token,
-            still_maximized: unsafe { !IsWindow(Some(hwnd)).as_bool() || IsZoomed(hwnd).as_bool() },
+            still_maximized: unsafe { !IsWindow(Some(hwnd)).as_bool() } || is_zoomed(),
         });
         return;
     }
-    let result = unsafe {
-        crate::focus::restore_maximized_window_no_activate_with(
-            window_id,
-            || IsWindow(Some(hwnd)).as_bool(),
-            || IsZoomed(hwnd).as_bool(),
-            || {
-                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            },
-            || {
-                let _ = ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
-            },
-            |ms| std::thread::sleep(std::time::Duration::from_millis(ms as u64)),
-        )
-    };
+    let result = crate::focus::restore_maximized_window_no_activate_with(
+        window_id,
+        is_admission_target,
+        is_zoomed,
+        || unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        },
+        || unsafe {
+            let _ = ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
+        },
+        |ms| std::thread::sleep(std::time::Duration::from_millis(ms as u64)),
+    );
     let still_maximized = match result {
         Ok(()) => false,
         Err(error) => {

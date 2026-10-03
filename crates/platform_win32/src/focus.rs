@@ -96,60 +96,60 @@ pub fn restore_window_no_activate(window_id: WindowId) -> Result<(), Win32Error>
 pub(crate) const MAXIMIZED_ASYNC_RESTORE_WAIT_MS: u32 = 500;
 const MAXIMIZED_ASYNC_RESTORE_POLL_MS: u32 = 10;
 
-/// Restore a maximized window without activating it.
-///
-/// Windows sometimes ignores a cross-process `ShowWindow(SW_SHOWNOACTIVATE)`
-/// even though it delivers the position messages, leaving the window zoomed.
-/// When that happens the restore is reposted to the owner's thread with
-/// `ShowWindowAsync`, which runs in the window's own context and cannot block
-/// the caller on a busy owner. The outcome is then polled for a bounded time.
+/// `target_ok` reports that `hwnd` is still a live, matching, visible
+/// maximized window owned by the expected thread and lifetime. It is checked
+/// before every zoom reading because a destroyed or replaced handle makes
+/// `IsZoomed` report false, which would otherwise read as a successful restore.
 pub(crate) fn restore_maximized_window_no_activate_with(
     window_id: WindowId,
-    is_window: impl Fn() -> bool,
+    target_ok: impl Fn() -> bool,
     is_zoomed: impl Fn() -> bool,
     show_window: impl FnOnce(),
     show_window_async: impl FnOnce(),
-    sleep: impl Fn(u32),
+    mut sleep: impl FnMut(u32),
 ) -> Result<(), Win32Error> {
-    if !is_window() {
+    if !target_ok() {
         return Err(Win32Error::WindowNotFound(window_id));
     }
     if !is_zoomed() {
         return Ok(());
     }
     show_window();
-    if !is_window() {
+    if !target_ok() {
         return Err(Win32Error::WindowNotFound(window_id));
     }
     if !is_zoomed() {
         return Ok(());
     }
+    // The synchronous attempt can destroy the window, hand its handle to a
+    // replacement, or let the owner hide the window; the fallback must not
+    // post to, or report success for, anything but the original target.
     show_window_async();
     let mut waited_ms = 0;
-    while is_zoomed() {
-        if !is_window() {
+    while waited_ms < MAXIMIZED_ASYNC_RESTORE_WAIT_MS {
+        if !target_ok() {
             return Err(Win32Error::WindowNotFound(window_id));
         }
-        if waited_ms >= MAXIMIZED_ASYNC_RESTORE_WAIT_MS {
+        if !is_zoomed() {
             tracing::debug!(
-                "Async fallback did not restore maximized window {} within {} ms",
+                "Async fallback restored maximized window {} after {} ms",
                 window_id,
-                MAXIMIZED_ASYNC_RESTORE_WAIT_MS
+                waited_ms
             );
-            return Err(Win32Error::SetPositionFailed(format!(
-                "Failed to restore maximized window {} without activation",
-                window_id
-            )));
+            return Ok(());
         }
         sleep(MAXIMIZED_ASYNC_RESTORE_POLL_MS);
         waited_ms += MAXIMIZED_ASYNC_RESTORE_POLL_MS;
     }
     tracing::debug!(
-        "Async fallback restored maximized window {} after {} ms",
+        "Async fallback did not restore maximized window {} within {} ms",
         window_id,
-        waited_ms
+        MAXIMIZED_ASYNC_RESTORE_WAIT_MS
     );
-    Ok(())
+    Err(Win32Error::SetPositionFailed(format!(
+        "Failed to restore maximized window {} without activation",
+        window_id
+    )))
 }
 
 fn restore_window_no_activate_with(
@@ -350,102 +350,189 @@ pub fn close_window(hwnd: WindowId) -> Result<(), Win32Error> {
 mod tests {
     use super::*;
 
+    /// Stand-in for one admitted target window: alive, identity-matching,
+    /// visible and zoomed until the scripted action changes it. `generation`
+    /// stands in for the identity and managed-lifetime token, which a handle
+    /// recycled by a replacement window fails even while it is live and zoomed.
+    #[derive(Default)]
+    struct Target {
+        alive: std::cell::Cell<bool>,
+        visible: std::cell::Cell<bool>,
+        zoomed: std::cell::Cell<bool>,
+        generation: std::cell::Cell<u32>,
+        async_posts: std::cell::Cell<u32>,
+        slept_ms: std::cell::Cell<u32>,
+    }
+
+    impl Target {
+        fn new() -> Self {
+            Self {
+                alive: std::cell::Cell::new(true),
+                visible: std::cell::Cell::new(true),
+                zoomed: std::cell::Cell::new(true),
+                ..Default::default()
+            }
+        }
+
+        fn is_zoomed(&self) -> bool {
+            self.alive.get() && self.zoomed.get()
+        }
+
+        fn destroy(&self) {
+            self.alive.set(false);
+            self.zoomed.set(false);
+        }
+
+        /// The original is destroyed and a new window recycles the handle.
+        fn recycle(&self) {
+            self.alive.set(true);
+            self.generation.set(self.generation.get() + 1);
+        }
+
+        fn hide(&self) {
+            self.visible.set(false);
+        }
+
+        fn restore(&self) {
+            self.zoomed.set(false);
+        }
+
+        fn run(&self, on_sync: impl FnOnce(), on_poll: impl Fn(u32)) -> Result<(), Win32Error> {
+            let admitted_generation = self.generation.get();
+            let is_target = || {
+                self.alive.get()
+                    && self.visible.get()
+                    && self.generation.get() == admitted_generation
+            };
+            let mut polls = 0;
+            restore_maximized_window_no_activate_with(
+                42,
+                is_target,
+                || self.is_zoomed(),
+                on_sync,
+                || self.async_posts.set(self.async_posts.get() + 1),
+                |ms| {
+                    self.slept_ms.set(self.slept_ms.get() + ms);
+                    on_poll(polls);
+                    polls += 1;
+                },
+            )
+        }
+    }
+
     #[test]
     fn restore_maximized_without_activation_verifies_restored_state() {
-        let zoomed = std::cell::Cell::new(true);
-        let async_calls = std::cell::Cell::new(0);
-        restore_maximized_window_no_activate_with(
-            42,
-            || true,
-            || zoomed.get(),
-            || zoomed.set(false),
-            || async_calls.set(async_calls.get() + 1),
-            |_| {},
-        )
-        .unwrap();
-        assert!(!zoomed.get());
-        assert_eq!(
-            async_calls.get(),
-            0,
-            "sync restore succeeded; no fallback needed"
-        );
+        let target = Target::new();
+        target.run(|| target.restore(), |_| {}).unwrap();
+
+        assert!(!target.zoomed.get());
+        assert_eq!(target.async_posts.get(), 0, "sync restore succeeded");
     }
 
     #[test]
     fn restore_maximized_without_activation_skips_normal_window() {
-        let show_calls = std::cell::Cell::new(0);
-        restore_maximized_window_no_activate_with(
-            42,
-            || true,
-            || false,
-            || show_calls.set(show_calls.get() + 1),
-            || show_calls.set(show_calls.get() + 1),
-            |_| {},
-        )
-        .unwrap();
-        assert_eq!(show_calls.get(), 0);
+        let target = Target::new();
+        target.zoomed.set(false);
+        target
+            .run(|| panic!("must not restore a normal window"), |_| {})
+            .unwrap();
+
+        assert_eq!(target.async_posts.get(), 0);
     }
 
     #[test]
     fn restore_maximized_without_activation_falls_back_to_owner_thread() {
-        let zoomed = std::cell::Cell::new(true);
-        let async_calls = std::cell::Cell::new(0);
+        let target = Target::new();
         // The async post only lands on the second poll, mirroring an owner
         // thread that reaches its message queue after a short delay.
-        let polls = std::cell::Cell::new(0);
-        let slept_ms = std::cell::Cell::new(0);
-        restore_maximized_window_no_activate_with(
-            42,
-            || true,
-            || zoomed.get(),
-            || {},
-            || async_calls.set(async_calls.get() + 1),
-            |ms| {
-                slept_ms.set(slept_ms.get() + ms);
-                polls.set(polls.get() + 1);
-                if polls.get() == 2 {
-                    zoomed.set(false);
-                }
-            },
-        )
-        .unwrap();
+        target
+            .run(
+                || {},
+                |poll| {
+                    if poll == 1 {
+                        target.restore();
+                    }
+                },
+            )
+            .unwrap();
 
-        assert_eq!(async_calls.get(), 1, "fallback runs exactly once");
-        assert_eq!(slept_ms.get(), 20);
-        assert!(!zoomed.get());
+        assert_eq!(target.async_posts.get(), 1, "fallback runs exactly once");
+        assert_eq!(target.slept_ms.get(), 2 * MAXIMIZED_ASYNC_RESTORE_POLL_MS);
     }
 
     #[test]
     fn restore_maximized_without_activation_reports_window_that_ignores_fallback() {
-        let slept_ms = std::cell::Cell::new(0);
-        let result = restore_maximized_window_no_activate_with(
-            42,
-            || true,
-            || true,
-            || {},
-            || {},
-            |ms| slept_ms.set(slept_ms.get() + ms),
-        );
+        let target = Target::new();
+        let result = target.run(|| {}, |_| {});
 
         assert!(matches!(result, Err(Win32Error::SetPositionFailed(_))));
         assert_eq!(
-            slept_ms.get(),
-            crate::focus::MAXIMIZED_ASYNC_RESTORE_WAIT_MS,
+            target.slept_ms.get(),
+            MAXIMIZED_ASYNC_RESTORE_WAIT_MS,
             "wait is bounded"
         );
     }
 
     #[test]
-    fn restore_maximized_without_activation_rejects_window_destroyed_while_waiting() {
-        let alive = std::cell::Cell::new(true);
-        let result = restore_maximized_window_no_activate_with(
-            42,
-            || alive.get(),
-            || true,
-            || {},
-            || {},
-            |_| alive.set(false),
+    fn restore_maximized_without_activation_skips_fallback_for_hidden_window() {
+        let target = Target::new();
+        // The owner hides the window while handling the synchronous attempt.
+        let result = target.run(
+            || target.hide(),
+            |_| panic!("must not poll a hidden window"),
         );
+
+        assert!(matches!(result, Err(Win32Error::WindowNotFound(42))));
+        assert_eq!(
+            target.async_posts.get(),
+            0,
+            "a hidden window must not be re-shown"
+        );
+    }
+
+    #[test]
+    fn restore_maximized_without_activation_skips_fallback_for_replacement_window() {
+        let target = Target::new();
+        // The synchronous attempt destroys the window and a still zoomed
+        // replacement recycles the handle.
+        let result = target.run(
+            || target.recycle(),
+            |_| panic!("must not poll a replacement window"),
+        );
+
+        assert!(matches!(result, Err(Win32Error::WindowNotFound(42))));
+        assert_eq!(
+            target.async_posts.get(),
+            0,
+            "the fallback must not restore a replacement"
+        );
+    }
+
+    #[test]
+    fn restore_maximized_without_activation_reports_destroyed_window_during_wait() {
+        let target = Target::new();
+        let result = target.run(
+            || {},
+            |poll| {
+                if poll == 0 {
+                    target.destroy();
+                }
+            },
+        );
+
+        assert!(matches!(result, Err(Win32Error::WindowNotFound(42))));
+        assert_eq!(
+            target.slept_ms.get(),
+            MAXIMIZED_ASYNC_RESTORE_POLL_MS,
+            "stops on the first poll that sees the window gone"
+        );
+    }
+
+    #[test]
+    fn restore_maximized_without_activation_rejects_dead_window() {
+        let target = Target::new();
+        target.destroy();
+        let result = target.run(|| panic!("must not touch a dead window"), |_| {});
 
         assert!(matches!(result, Err(Win32Error::WindowNotFound(42))));
     }
