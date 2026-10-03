@@ -9,6 +9,7 @@ use leopardwm_ipc::{
     NativeSwipeStatus,
 };
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -70,8 +71,9 @@ pub(crate) fn daemon_log_path(
 /// The `behavior.log_level` in the config file and what it writes. A missing
 /// file, missing key, or unrecognized value means info, as in daemon startup.
 /// The daemon applies the level only at startup, so this is the configured
-/// level, not necessarily the running daemon's.
-pub(crate) fn configured_log_level(config_text: Option<&str>) -> String {
+/// level, not necessarily the running daemon's. A file that exists but cannot
+/// be read is unknown, because the daemon may be able to read it.
+pub(crate) fn configured_log_level(config: Option<(PathBuf, io::Result<String>)>) -> String {
     const LEVELS: [(&str, &str); 5] = [
         ("trace", "everything is written"),
         ("debug", "debug, info, warnings and errors are written"),
@@ -79,7 +81,14 @@ pub(crate) fn configured_log_level(config_text: Option<&str>) -> String {
         ("warn", "only warnings and errors are written"),
         ("error", "only errors are written"),
     ];
-    let configured = config_text
+    let text = match config {
+        Some((path, Err(error))) => {
+            return format!("unknown (could not read {}: {error})", path.display());
+        }
+        Some((_, Ok(text))) => Some(text),
+        None => None,
+    };
+    let configured = text
         .and_then(|text| text.parse::<toml::Table>().ok())
         .and_then(|table| {
             let level = table.get("behavior")?.get("log_level")?.as_str()?;
@@ -153,15 +162,16 @@ fn print_daemon_log_check(status: Option<&DaemonLogStatus>, uptime_seconds: Opti
     let modified = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .ok();
-    let config_text = doctor_config_path()
-        .0
-        .and_then(|path| fs::read_to_string(path).ok());
+    let config = doctor_config_path().0.map(|path| {
+        let text = fs::read_to_string(&path);
+        (path, text)
+    });
     daemon_log_check(
         status,
         modified,
         SystemTime::now(),
         uptime_seconds,
-        &configured_log_level(config_text.as_deref()),
+        &configured_log_level(config),
     )
     .print();
 }

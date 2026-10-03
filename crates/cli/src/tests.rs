@@ -1717,27 +1717,41 @@ fn daemon_log_check_reports_failures_staleness_and_unavailable_status() {
 #[test]
 fn configured_log_level_reports_the_daemon_startup_level() {
     let default = "info (default; no recognized behavior.log_level in the config file)";
+    let read = |text: &str| {
+        Some((
+            PathBuf::from("config.toml"),
+            Ok::<_, std::io::Error>(text.to_string()),
+        ))
+    };
     for (config, expected) in [
         (
-            Some("[behavior]\nlog_level = \"warn\"\n"),
+            read("[behavior]\nlog_level = \"warn\"\n"),
             "warn (only warnings and errors are written)",
         ),
         (
-            Some("[behavior]\nlog_level = \"ERROR\"\n"),
+            read("[behavior]\nlog_level = \"ERROR\"\n"),
             "error (only errors are written)",
         ),
         (
-            Some("[behavior]\nlog_level = \"info\"\n"),
+            read("[behavior]\nlog_level = \"info\"\n"),
             "info (info, warnings and errors are written)",
         ),
         (None, default),
-        (Some("[behavior]\nfocus_follows_mouse = true\n"), default),
-        (Some("[behavior]\nlog_level = \"verbose\"\n"), default),
-        (Some("[behavior]\nlog_level = 3\n"), default),
-        (Some("log_level = \"warn\"\n"), default),
-        (Some("[behavior\nlog_level = \"warn\"\n"), default),
+        (read("[behavior]\nfocus_follows_mouse = true\n"), default),
+        (read("[behavior]\nlog_level = \"verbose\"\n"), default),
+        (read("[behavior]\nlog_level = 3\n"), default),
+        (read("log_level = \"warn\"\n"), default),
+        (read("[behavior\nlog_level = \"warn\"\n"), default),
+        (
+            Some((
+                PathBuf::from("config.toml"),
+                Err(std::io::Error::other("access denied")),
+            )),
+            "unknown (could not read config.toml: access denied)",
+        ),
     ] {
-        assert_eq!(configured_log_level(config), expected, "{config:?}");
+        let case = format!("{config:?}");
+        assert_eq!(configured_log_level(config), expected, "{case}");
     }
 }
 
