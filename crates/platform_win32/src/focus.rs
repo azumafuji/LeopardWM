@@ -151,18 +151,6 @@ pub(crate) fn restore_maximized_window_no_activate_with(
         sleep(MAXIMIZED_ASYNC_RESTORE_POLL_MS);
         waited_ms += MAXIMIZED_ASYNC_RESTORE_POLL_MS;
     }
-    // A restore that lands during the final interval has not been seen yet.
-    if !target_ok() {
-        return Err(Win32Error::WindowNotFound(window_id));
-    }
-    if !is_zoomed() {
-        tracing::debug!(
-            "Async fallback restored maximized window {} after {} ms",
-            window_id,
-            waited_ms
-        );
-        return Ok(());
-    }
     tracing::debug!(
         "Async fallback did not restore maximized window {} within {} ms",
         window_id,

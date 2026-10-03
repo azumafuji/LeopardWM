@@ -449,13 +449,27 @@ fn restore_maximized_window_with(
         },
         |ms| std::thread::sleep(std::time::Duration::from_millis(ms as u64)),
     );
-    let still_maximized =
-        maximized_admission_still_maximized(result, || is_admission_target() && is_zoomed());
+    let still_maximized = maximized_admission_still_maximized(result, || {
+        report_target_still_zoomed(&is_admission_target, &is_zoomed)
+    });
     report(crate::WindowEvent::MaximizedAdmissionRestored {
         window_id,
         managed_lifetime_token,
         still_maximized,
     });
+}
+
+/// The zoom reading a restore failure reports. A target that is no longer
+/// available cannot be read as a restored window: the handle may now name a
+/// replacement, or none at all, so report the conservative outcome instead.
+fn report_target_still_zoomed(
+    is_admission_target: &impl Fn() -> bool,
+    is_zoomed: &impl Fn() -> bool,
+) -> bool {
+    if !is_admission_target() {
+        return true;
+    }
+    is_zoomed()
 }
 
 /// Decide the `still_maximized` value a restore outcome reports. `target_still_zoomed`
@@ -857,6 +871,27 @@ mod tests {
             "an unconfirmable restore must not look restored"
         );
         assert_eq!(reads.get(), 0, "the stale handle must not be inspected");
+    }
+
+    #[test]
+    fn timed_out_restore_reports_a_target_that_vanished_before_reporting() {
+        // The restore timed out, then the window was destroyed, replaced or
+        // hidden before the completion event was built.
+        let available = std::cell::Cell::new(false);
+        let zoom_reads = std::cell::Cell::new(0);
+        let is_admission_target = || available.get();
+        let is_zoomed = || {
+            zoom_reads.set(zoom_reads.get() + 1);
+            false
+        };
+
+        let still_maximized = maximized_admission_still_maximized(
+            Err(Win32Error::SetPositionFailed("timed out".to_string())),
+            || report_target_still_zoomed(&is_admission_target, &is_zoomed),
+        );
+
+        assert!(still_maximized, "a vanished target must not look restored");
+        assert_eq!(zoom_reads.get(), 0, "the stale handle must not be read");
     }
 
     #[test]
