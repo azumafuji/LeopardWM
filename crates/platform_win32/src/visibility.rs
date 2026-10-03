@@ -116,16 +116,26 @@ fn compute_restore_rect_from_offscreen(current_rect: &Rect, work_area: &Rect) ->
     Rect::new(work_area.x, work_area.y, width, height)
 }
 
-fn queued_target_is_offscreen(target: &Rect) -> bool {
+fn queued_target_is_offscreen(window_id: WindowId, target: &Rect) -> bool {
     if is_move_offscreen_sentinel_rect(target) {
         return true;
     }
-    crate::enumeration::enumerate_monitors().is_ok_and(|monitors| {
-        !monitors.is_empty()
-            && monitors
-                .iter()
-                .all(|monitor| !target.intersects(&monitor.work_area))
-    })
+    match crate::enumeration::enumerate_monitors() {
+        Ok(monitors) if !monitors.is_empty() => monitors
+            .iter()
+            .all(|monitor| !target.intersects(&monitor.work_area)),
+        Ok(_) => {
+            tracing::warn!(
+                window_id,
+                "Skipping queued owner recovery: monitor enumeration returned no monitors"
+            );
+            false
+        }
+        Err(error) => {
+            tracing::warn!(window_id, %error, "Skipping queued owner recovery: monitor enumeration failed");
+            false
+        }
+    }
 }
 
 fn restore_window_if_offscreen_to_work_area(
@@ -158,7 +168,7 @@ fn restore_window_if_offscreen_to_work_area(
         let owner_wait = owner_target.is_some();
         let restore_needed = owner_target.as_ref().map_or_else(
             || is_move_offscreen_sentinel_rect(&current_rect),
-            queued_target_is_offscreen,
+            |target| queued_target_is_offscreen(window_id, target),
         );
         if !restore_needed {
             return Ok(false);
@@ -189,11 +199,7 @@ fn restore_window_if_offscreen_to_work_area(
             )));
         }
         if owner_wait {
-            crate::placement::record_queued_owner_position(
-                window_id,
-                restore_rect.x,
-                restore_rect.y,
-            );
+            crate::placement::record_queued_owner_rect(window_id, &restore_rect);
         }
     }
 
@@ -249,7 +255,7 @@ fn emergency_sentinel_pass(window_ids: &[WindowId], work_area: &Rect) {
             let owner_wait = owner_target.is_some();
             let restore_needed = owner_target.as_ref().map_or_else(
                 || is_move_offscreen_sentinel_rect(&current),
-                queued_target_is_offscreen,
+                |target| queued_target_is_offscreen(id, target),
             );
             if !restore_needed {
                 continue;
@@ -267,7 +273,7 @@ fn emergency_sentinel_pass(window_ids: &[WindowId], work_area: &Rect) {
             .is_ok()
                 && owner_wait
             {
-                crate::placement::record_queued_owner_position(id, restored.x, restored.y);
+                crate::placement::record_queued_owner_rect(id, &restored);
             }
         }
     }

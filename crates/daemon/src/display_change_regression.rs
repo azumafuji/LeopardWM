@@ -548,6 +548,80 @@ fn test_owner_wait_recovery_leaves_an_on_screen_target_untouched() {
 }
 
 #[test]
+fn test_owner_wait_recovery_updates_size_before_a_size_preserving_park() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let primary = leopardwm_platform_win32::get_primary_monitor().unwrap();
+    let monitors = leopardwm_platform_win32::enumerate_monitors().unwrap();
+    let leftmost = monitors
+        .iter()
+        .min_by_key(|monitor| monitor.work_area.x)
+        .unwrap();
+    let current = Rect::new(primary.work_area.x + 48, primary.work_area.y + 48, 160, 120);
+    let blocked = PlacementOwner::spawn_at(current);
+    let window_id = blocked.window_id;
+    let park_rect = Rect::new(
+        leftmost.work_area.x - 240,
+        leftmost.work_area.y + 48,
+        320,
+        240,
+    );
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let state = placement_state(&[]);
+        let mut resize = fixture_placement(window_id, Visibility::Visible);
+        resize.rect = Rect::new(current.x, current.y, 320, 240);
+        let (_, deferred) = leopardwm_platform_win32::apply_display_change_placements(
+            &[resize],
+            &state.platform_config,
+            false,
+        )
+        .unwrap();
+        leopardwm_platform_win32::queue_window_offscreen(window_id).unwrap();
+        let first =
+            leopardwm_platform_win32::restore_windows_moved_offscreen(&[window_id]).unwrap();
+        let mut park = fixture_placement(window_id, Visibility::OffScreenLeft);
+        park.rect = park_rect;
+        leopardwm_platform_win32::apply_placements(&[park], &state.platform_config, None, false)
+            .unwrap();
+        let second =
+            leopardwm_platform_win32::restore_windows_moved_offscreen(&[window_id]).unwrap();
+        done_tx
+            .send((deferred.contains(&window_id), first, second))
+            .unwrap();
+    });
+    let fast = done_rx.recv_timeout(Duration::from_millis(600));
+    let returned_while_blocked = fast.is_ok();
+    blocked.resume();
+    let (deferred, first, second) =
+        fast.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    worker.join().unwrap();
+    assert!(
+        returned_while_blocked,
+        "park/recovery sequence blocked on the owner"
+    );
+    assert!(deferred);
+    assert_eq!(first, 1);
+    assert_eq!(
+        second, 1,
+        "recovery misclassified a size-preserving park using the pre-restore size"
+    );
+    let expected = Rect::new(primary.work_area.x, primary.work_area.y, 160, 120);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while leopardwm_platform_win32::get_window_chrome_rect(window_id).unwrap() != expected
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        leopardwm_platform_win32::get_window_chrome_rect(window_id).unwrap(),
+        expected,
+        "the size-preserving park overtook the final visible restore"
+    );
+}
+
+#[test]
 fn test_owner_wait_recovery_follows_a_park_that_has_not_landed() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()

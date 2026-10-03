@@ -1358,6 +1358,16 @@ pub(crate) fn record_queued_owner_position(window_id: WindowId, x: i32, y: i32) 
     record_async_coordinates(window_id, x, y, None, true);
 }
 
+pub(crate) fn record_queued_owner_rect(window_id: WindowId, rect: &Rect) {
+    record_async_coordinates(
+        window_id,
+        rect.x,
+        rect.y,
+        Some((rect.width, rect.height)),
+        true,
+    );
+}
+
 fn record_async_coordinates(
     window_id: WindowId,
     x: i32,
