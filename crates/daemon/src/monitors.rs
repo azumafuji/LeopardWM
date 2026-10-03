@@ -403,12 +403,12 @@ impl AppState {
                         continue;
                     }
                     #[cfg(not(test))]
-                    if let Err(e) = leopardwm_platform_win32::move_window_offscreen(wid) {
+                    if let Err(e) = leopardwm_platform_win32::queue_window_offscreen(wid) {
                         warn!("Failed to park inactive workspace window {:#x}: {}", wid, e);
                     }
                     #[cfg(test)]
                     if self.injected_native_offscreen_enabled {
-                        if let Err(e) = leopardwm_platform_win32::move_window_offscreen(wid) {
+                        if let Err(e) = leopardwm_platform_win32::queue_window_offscreen(wid) {
                             warn!("Failed to park inactive workspace window {:#x}: {}", wid, e);
                         }
                     }

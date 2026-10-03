@@ -45,6 +45,41 @@ fn bounded_timeout_diagnostic(value: String) -> Option<String> {
     Some(bounded)
 }
 
+fn collect_layout_apply_candidates(
+    window_ids: &[u64],
+    lookup_window_info: impl Fn(u64) -> Option<leopardwm_platform_win32::WindowInfo>,
+) -> Vec<LayoutApplyTimeoutCandidate> {
+    let mut executable_by_pid: HashMap<u32, Option<String>> = HashMap::new();
+
+    window_ids
+        .iter()
+        .map(|&hwnd| {
+            let Some(info) = lookup_window_info(hwnd) else {
+                return LayoutApplyTimeoutCandidate {
+                    hwnd,
+                    class_name: None,
+                    title: None,
+                    executable: None,
+                };
+            };
+            let executable = executable_by_pid
+                .entry(info.process_id)
+                .or_insert_with(|| {
+                    leopardwm_platform_win32::get_process_executable(info.process_id)
+                })
+                .clone()
+                .and_then(bounded_timeout_diagnostic);
+
+            LayoutApplyTimeoutCandidate {
+                hwnd,
+                class_name: bounded_timeout_diagnostic(info.class_name),
+                title: bounded_timeout_diagnostic(info.title),
+                executable,
+            }
+        })
+        .collect()
+}
+
 fn run_layout_apply_recovery_pass(window_ids: &[u64], context: &str) {
     #[cfg(not(test))]
     run_visibility_recovery_pass(window_ids, context);
@@ -495,35 +530,7 @@ impl AppState {
         &self,
         window_ids: &[u64],
     ) -> Vec<LayoutApplyTimeoutCandidate> {
-        let mut executable_by_pid: HashMap<u32, Option<String>> = HashMap::new();
-
-        window_ids
-            .iter()
-            .map(|&hwnd| {
-                let Some(info) = self.lookup_window_info(hwnd) else {
-                    return LayoutApplyTimeoutCandidate {
-                        hwnd,
-                        class_name: None,
-                        title: None,
-                        executable: None,
-                    };
-                };
-                let executable = executable_by_pid
-                    .entry(info.process_id)
-                    .or_insert_with(|| {
-                        leopardwm_platform_win32::get_process_executable(info.process_id)
-                    })
-                    .clone()
-                    .and_then(bounded_timeout_diagnostic);
-
-                LayoutApplyTimeoutCandidate {
-                    hwnd,
-                    class_name: bounded_timeout_diagnostic(info.class_name),
-                    title: bounded_timeout_diagnostic(info.title),
-                    executable,
-                }
-            })
-            .collect()
+        collect_layout_apply_candidates(window_ids, |hwnd| self.lookup_window_info(hwnd))
     }
 
     pub(crate) fn resume_deferred_apply_worker_recovery(&mut self) {
@@ -1014,16 +1021,6 @@ impl AppState {
     )> {
         let platform_config = self.platform_config.clone();
         let display_change_apply = self.display_change_apply_in_progress;
-        let display_change_candidates = if display_change_apply {
-            self.collect_layout_apply_timeout_candidates(
-                &all_placements
-                    .iter()
-                    .map(|p| p.window_id)
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            Vec::new()
-        };
         let apply_worker_cancelled = self.apply_worker_cancelled.clone();
         let apply_epoch_ref = self.apply_epoch.clone();
         let apply_epoch = apply_epoch_ref.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1191,9 +1188,12 @@ impl AppState {
                 } {
                     Ok((r, unresponsive_window_ids)) => {
                         if !unresponsive_window_ids.is_empty() {
-                            let windows: Vec<_> = display_change_candidates
+                            let candidates = collect_layout_apply_candidates(
+                                &unresponsive_window_ids.iter().copied().collect::<Vec<_>>(),
+                                leopardwm_platform_win32::get_window_info,
+                            );
+                            let windows: Vec<_> = candidates
                                 .iter()
-                                .filter(|candidate| unresponsive_window_ids.contains(&candidate.hwnd))
                                 .map(|candidate| format!(
                                     "hwnd={:#x} class={:?} title={:?} executable={:?}",
                                     candidate.hwnd, candidate.class_name, candidate.title, candidate.executable

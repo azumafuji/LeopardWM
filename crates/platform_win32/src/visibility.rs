@@ -13,8 +13,8 @@ use windows::Win32::UI::HiDpi::{
     SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, IsIconic, IsWindow, SetWindowPos, ShowWindow, HWND_TOP, SWP_NOACTIVATE,
-    SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
+    GetWindowRect, IsIconic, IsWindow, SetWindowPos, ShowWindow, HWND_TOP, SET_WINDOW_POS_FLAGS,
+    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
 };
 
 // ============================================================================
@@ -34,6 +34,23 @@ pub fn is_move_offscreen_sentinel_rect(rect: &Rect) -> bool {
 /// Move a single window to the off-screen sentinel position.
 /// Used by workspace switching to hide inactive workspace windows.
 pub fn move_window_offscreen(window_id: WindowId) -> Result<(), Win32Error> {
+    move_window_offscreen_with_flags(window_id, SET_WINDOW_POS_FLAGS(0))
+}
+
+pub fn queue_window_offscreen(window_id: WindowId) -> Result<(), Win32Error> {
+    move_window_offscreen_with_flags(window_id, SWP_ASYNCWINDOWPOS)?;
+    crate::placement::record_queued_owner_position(
+        window_id,
+        MOVE_OFFSCREEN_SENTINEL_COORD,
+        MOVE_OFFSCREEN_SENTINEL_COORD,
+    );
+    Ok(())
+}
+
+fn move_window_offscreen_with_flags(
+    window_id: WindowId,
+    extra_flags: SET_WINDOW_POS_FLAGS,
+) -> Result<(), Win32Error> {
     let hwnd = window_id_to_hwnd(window_id)?;
     unsafe {
         if let Err(e) = SetWindowPos(
@@ -43,7 +60,7 @@ pub fn move_window_offscreen(window_id: WindowId) -> Result<(), Win32Error> {
             MOVE_OFFSCREEN_SENTINEL_COORD,
             0,
             0,
-            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | extra_flags,
         ) {
             return Err(Win32Error::SetPositionFailed(format!(
                 "Failed to move window {} offscreen: {}",

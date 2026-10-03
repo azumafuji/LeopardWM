@@ -1,14 +1,33 @@
 use super::*;
+use leopardwm_core_layout::{Visibility, WindowPlacement};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 use windows::core::w;
-use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, PostThreadMessageW, MSG,
-    WM_QUIT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, GetPropW,
+    IsZoomed, PostThreadMessageW, SetPropW, SetWindowLongPtrW, ShowWindow, GWLP_WNDPROC, MSG,
+    SWP_NOSIZE, SW_HIDE, SW_SHOWMAXIMIZED, WINDOWPOS, WM_QUIT, WM_WINDOWPOSCHANGING,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW, WS_POPUP,
 };
+
+unsafe extern "system" fn placement_owner_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_WINDOWPOSCHANGING {
+        let position = &mut *(lparam.0 as *mut WINDOWPOS);
+        if !position.flags.contains(SWP_NOSIZE) {
+            let min_width = GetPropW(hwnd, w!("LeopardWMFixtureMinWidth")).0 as usize as i32;
+            position.cx = position.cx.max(min_width);
+        }
+    }
+    DefWindowProcW(hwnd, message, wparam, lparam)
+}
 
 struct PlacementOwner {
     window_id: u64,
@@ -24,6 +43,10 @@ impl PlacementOwner {
     }
 
     fn spawn_at(rect: Rect) -> Self {
+        Self::spawn_with(rect, 0, false)
+    }
+
+    fn spawn_with(rect: Rect, min_width: i32, parked_maximized: bool) -> Self {
         let (ready_tx, ready_rx) = mpsc::channel();
         let (release, resume) = mpsc::channel();
         let (pumping_tx, pumping) = mpsc::channel();
@@ -32,7 +55,11 @@ impl PlacementOwner {
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 w!("STATIC"),
                 w!("display-change placement fixture"),
-                WS_POPUP,
+                if parked_maximized {
+                    WS_OVERLAPPEDWINDOW
+                } else {
+                    WS_POPUP
+                },
                 rect.x,
                 rect.y,
                 rect.width,
@@ -43,6 +70,29 @@ impl PlacementOwner {
                 None,
             )
             .unwrap();
+            if min_width > 0 {
+                SetPropW(
+                    hwnd,
+                    w!("LeopardWMFixtureMinWidth"),
+                    Some(HANDLE(min_width as usize as *mut _)),
+                )
+                .unwrap();
+                SetWindowLongPtrW(
+                    hwnd,
+                    GWLP_WNDPROC,
+                    placement_owner_proc as *const () as isize,
+                );
+            }
+            if parked_maximized {
+                let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+                if !IsZoomed(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+                }
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                leopardwm_platform_win32::park_window_for_placement(hwnd.0 as usize as u64)
+                    .unwrap();
+                assert!(IsZoomed(hwnd).as_bool());
+            }
             ready_tx
                 .send((hwnd.0 as usize as u64, GetCurrentThreadId()))
                 .unwrap();
@@ -173,6 +223,8 @@ fn test_display_change_places_responsive_windows_while_owner_is_not_pumping() {
         Some(expected[&blocked.window_id])
     );
     state.apply_layout().unwrap();
+    assert!(!state.last_physical_presentations[&blocked.window_id].confirmed);
+    state.apply_layout().unwrap();
     assert!(state.last_physical_presentations[&blocked.window_id].confirmed);
     assert!(!state.paused);
 }
@@ -275,5 +327,226 @@ fn test_display_change_size_only_deferral_waits_for_owner() {
         Some(expected)
     );
     state.apply_layout().unwrap();
+    assert!(!state.last_physical_presentations[&blocked.window_id].confirmed);
+    state.apply_layout().unwrap();
     assert!(state.last_physical_presentations[&blocked.window_id].confirmed);
+}
+
+#[test]
+fn test_owner_wait_unchanged_rect_does_not_drain_while_blocked() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let template = placement_state(&[100]);
+    let expected =
+        template.workspaces[&1][0].compute_placements_animated(template.layout_viewport(1))[0].rect;
+    let blocked = PlacementOwner::spawn_at(expected);
+    let mut state = placement_state(&[blocked.window_id]);
+    state.handle_window_event(WindowEvent::DisplayChange);
+    let result = state.apply_layout();
+    let active = result.is_ok() && !state.paused;
+    if !active {
+        blocked.resume();
+        join_pending_test_apply_workers(&mut state);
+    }
+    assert!(
+        active,
+        "matching geometry drained a blocked owner's deferral: {result:?}"
+    );
+    assert!(!state.last_physical_presentations[&blocked.window_id].confirmed);
+}
+
+#[test]
+fn test_owner_wait_clamped_size_returns_to_feedback_after_resume() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let blocked = PlacementOwner::spawn_with(Rect::new(48, 48, 160, 120), 360, false);
+    let mut state = placement_state(&[blocked.window_id]);
+    state.handle_window_event(WindowEvent::DisplayChange);
+    blocked.resume();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while leopardwm_platform_win32::get_window_visible_rect(blocked.window_id)
+        .unwrap()
+        .width
+        != 360
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        leopardwm_platform_win32::get_window_visible_rect(blocked.window_id)
+            .unwrap()
+            .width,
+        360
+    );
+    for _ in 0..3 {
+        state.apply_layout().unwrap();
+    }
+    assert!(
+        state.last_physical_presentations[&blocked.window_id].confirmed,
+        "a pumping owner that clamps its size stayed measurement-deferred"
+    );
+    let placed =
+        state.workspaces[&1][0].compute_placements_animated(state.layout_viewport(1))[0].rect;
+    assert!(
+        placed.width >= 360,
+        "native width feedback was never restored: {placed:?}"
+    );
+}
+
+fn fixture_placement(window_id: u64, visibility: Visibility) -> WindowPlacement {
+    WindowPlacement {
+        window_id,
+        rect: if visibility == Visibility::Visible {
+            Rect::new(32, 32, 320, 240)
+        } else {
+            Rect::new(-10_000, -10_000, 320, 240)
+        },
+        visibility,
+        column_index: 0,
+    }
+}
+
+#[test]
+fn test_owner_wait_offscreen_deferral_drains_after_resume() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let blocked = PlacementOwner::spawn();
+    let state = placement_state(&[]);
+    let placement = fixture_placement(blocked.window_id, Visibility::OffScreenLeft);
+    let (first, _) = leopardwm_platform_win32::apply_display_change_placements(
+        std::slice::from_ref(&placement),
+        &state.platform_config,
+        false,
+    )
+    .unwrap();
+    assert!(first.landings[0].measurement_deferred);
+    blocked.resume();
+    let mut last = first;
+    for _ in 0..3 {
+        last = leopardwm_platform_win32::apply_placements(
+            std::slice::from_ref(&placement),
+            &state.platform_config,
+            None,
+            false,
+        )
+        .unwrap();
+    }
+    assert!(
+        !last.landings[0].measurement_deferred,
+        "SWP_NOSIZE off-screen deferral never drained after the owner pumped"
+    );
+    assert!(!last.landings[0].failed);
+}
+
+#[test]
+fn test_owner_wait_parked_maximized_recovery_is_classified_before_positioning() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let blocked = PlacementOwner::spawn_with(Rect::new(48, 48, 320, 240), 0, true);
+    assert!(leopardwm_platform_win32::is_placement_parked(
+        blocked.window_id
+    ));
+    let state = placement_state(&[]);
+    let placement = fixture_placement(blocked.window_id, Visibility::Visible);
+    let config = state.platform_config.clone();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker_placement = placement.clone();
+    let worker = thread::spawn(move || {
+        let result = leopardwm_platform_win32::apply_display_change_placements(
+            std::slice::from_ref(&worker_placement),
+            &config,
+            false,
+        );
+        done_tx.send(result).unwrap();
+    });
+    let fast = done_rx.recv_timeout(Duration::from_millis(400));
+    let returned_while_blocked = fast.is_ok();
+    blocked.resume();
+    let (result, deferred) = fast
+        .unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+        .unwrap();
+    worker.join().unwrap();
+    assert!(
+        returned_while_blocked,
+        "parked-maximized recovery positioned synchronously before probing"
+    );
+    assert!(deferred.contains(&blocked.window_id));
+    assert!(result.landings[0].measurement_deferred);
+    for _ in 0..3 {
+        let result = leopardwm_platform_win32::apply_placements(
+            std::slice::from_ref(&placement),
+            &state.platform_config,
+            None,
+            false,
+        )
+        .unwrap();
+        if !result.landings[0].measurement_deferred {
+            return;
+        }
+    }
+    panic!("parked-maximized recovery did not drain after owner resumed");
+}
+
+#[test]
+fn test_owner_wait_inactive_workspace_parking_does_not_block_display_change() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let blocked = PlacementOwner::spawn();
+    let window_id = blocked.window_id;
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let mut state = placement_state(&[]);
+        state.injected_native_offscreen_enabled = true;
+        let inactive = state.workspaces[&1][0].clone();
+        state.workspaces.get_mut(&1).unwrap().push(inactive);
+        state.workspaces.get_mut(&1).unwrap()[1]
+            .insert_window(window_id, Some(320))
+            .unwrap();
+        state
+            .injected_window_info
+            .insert(window_id, make_test_window_info(window_id));
+        state.handle_window_event(WindowEvent::DisplayChange);
+        done_tx.send(!state.paused).unwrap();
+    });
+    let fast = done_rx.recv_timeout(Duration::from_millis(400));
+    let returned_while_blocked = fast.is_ok();
+    blocked.resume();
+    let active = fast.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    worker.join().unwrap();
+    assert!(
+        returned_while_blocked,
+        "display reconciliation synchronously parked an inactive-workspace window"
+    );
+    assert!(active);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !leopardwm_platform_win32::is_move_offscreen_sentinel_rect(
+        &leopardwm_platform_win32::get_window_chrome_rect(window_id).unwrap(),
+    ) && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(leopardwm_platform_win32::is_move_offscreen_sentinel_rect(
+        &leopardwm_platform_win32::get_window_chrome_rect(window_id).unwrap()
+    ));
+    let placement = fixture_placement(window_id, Visibility::Visible);
+    let state = placement_state(&[]);
+    for _ in 0..3 {
+        leopardwm_platform_win32::apply_placements(
+            std::slice::from_ref(&placement),
+            &state.platform_config,
+            None,
+            false,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        leopardwm_platform_win32::get_window_visible_rect(window_id),
+        Some(placement.rect),
+        "queued inactive parking overtook return-to-visible placement"
+    );
 }
