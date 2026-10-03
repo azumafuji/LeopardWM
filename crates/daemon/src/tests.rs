@@ -16496,6 +16496,54 @@ fn saved_two_column_workspace() -> leopardwm_core_layout::Workspace {
 }
 
 #[test]
+fn test_restore_center_single_column_runtime_setting() {
+    for restore_path in 0..3 {
+        let mut state = structure_restore_state();
+        state.config.layout.center_single_column = true;
+        let initial_len = state.workspaces[&2].len();
+        let workspace_index = if restore_path == 2 {
+            0
+        } else {
+            initial_len + 2
+        };
+        let mut saved = leopardwm_core_layout::Workspace::new();
+        saved.insert_window(100, Some(400)).unwrap();
+        saved.set_scroll_offset(137.0);
+        saved.set_center_single_column(true);
+        let snapshot = crate::state::StateSnapshot {
+            saved_at: "0".to_string(),
+            workspaces: vec![crate::state::WorkspaceSnapshot {
+                monitor_device_name: "DISPLAY2".to_string(),
+                workspace_index,
+                workspace: saved,
+            }],
+            focused_monitor_name: "DISPLAY1".to_string(),
+            active_workspace: std::collections::HashMap::new(),
+            tab_title_overrides: std::collections::HashMap::new(),
+        };
+        let snapshot = serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+        if restore_path == 0 {
+            state.restore_workspace_structure_with(&snapshot, |_| true);
+        } else {
+            state.restore_state(&snapshot);
+        }
+        let first = if restore_path == 2 { 0 } else { initial_len };
+        for idx in first..=workspace_index {
+            let ws = &mut state.workspaces.get_mut(&2).unwrap()[idx];
+            if ws.is_empty() {
+                ws.insert_window(1000 + idx as u64, Some(400)).unwrap();
+            }
+            assert_eq!(
+                ws.compute_placements(Rect::new(0, 0, 1000, 600))[0].rect.x,
+                300,
+                "restore path {restore_path}, slot {idx}"
+            );
+        }
+        assert_eq!(state.workspaces[&2][workspace_index].scroll_offset(), 137.0);
+    }
+}
+
+#[test]
 fn test_restore_structure_preserves_columns_widths_grouping_scroll() {
     let mut state = structure_restore_state();
     let snapshot = crate::state::StateSnapshot {

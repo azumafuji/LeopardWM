@@ -289,6 +289,7 @@ impl AppState {
             params.apply_to(&mut ws);
             ws.set_centering_mode(self.config.layout.centering_mode.into());
             ws.set_center_past_edges(self.config.layout.center_past_edges);
+            ws.set_center_single_column(self.config.layout.center_single_column);
             ws.set_reduce_motion(self.reduce_motion);
             ws.set_scroll_animation(
                 self.config.animation.scroll_duration_ms,
@@ -313,6 +314,7 @@ impl AppState {
                 empty.set_tab_strip_reserve_px(params.tab_strip_reserve_px);
                 empty.set_centering_mode(self.config.layout.centering_mode.into());
                 empty.set_center_past_edges(self.config.layout.center_past_edges);
+                empty.set_center_single_column(self.config.layout.center_single_column);
                 empty.set_reduce_motion(self.reduce_motion);
                 empty.set_scroll_animation(
                     self.config.animation.scroll_duration_ms,
@@ -383,6 +385,7 @@ impl AppState {
                         ws.set_tab_strip_reserve_px(params.tab_strip_reserve_px);
                         ws.set_centering_mode(self.config.layout.centering_mode.into());
                         ws.set_center_past_edges(self.config.layout.center_past_edges);
+                        ws.set_center_single_column(self.config.layout.center_single_column);
                         ws.set_reduce_motion(self.reduce_motion);
                         ws.set_scroll_animation(
                             self.config.animation.scroll_duration_ms,
@@ -392,6 +395,8 @@ impl AppState {
                     }
                     // Restore scroll offset from saved workspace
                     let saved_offset = ws_snapshot.workspace.scroll_offset();
+                    ws_vec[ws_idx]
+                        .set_center_single_column(self.config.layout.center_single_column);
                     ws_vec[ws_idx].set_scroll_offset(saved_offset);
                     restored_monitors.insert(id);
                     info!(

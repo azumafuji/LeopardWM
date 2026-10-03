@@ -94,6 +94,14 @@ impl Workspace {
         } else {
             self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll as f64);
         }
+        if self.center_single_column {
+            let centered = self.single_column_viewport_left(viewport_width);
+            self.rendered_viewport.record(
+                viewport_width,
+                centered.map_or(self.scroll_offset, f64::from),
+                self.single_active_column().is_some(),
+            );
+        }
     }
 
     /// Resize the focused column by a delta amount.
@@ -418,6 +426,9 @@ impl Workspace {
     /// Cancels any active scroll animation so the manual scroll takes effect
     /// immediately. Special float values (NaN, Infinity) are treated as zero.
     pub fn scroll_by(&mut self, delta: f64, viewport_width: i32) {
+        if self.single_column_viewport_left(viewport_width).is_some() {
+            self.stop_animation();
+        }
         // Cancel any in-flight animation so manual scroll is not overridden
         self.cancel_animation();
         // Treat NaN and Infinity as zero for safety
@@ -426,6 +437,10 @@ impl Workspace {
         let vis_w = self.visible_width(viewport_width);
         let max_scroll = (self.total_width() - vis_w).max(0);
         self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll as f64);
+        if let Some(offset) = self.single_column_viewport_left(viewport_width) {
+            self.rendered_viewport
+                .record(viewport_width, offset as f64, true);
+        }
     }
 
     /// Repair bounds without revealing focus; preserve valid animations and edge centering.
@@ -455,6 +470,17 @@ impl Workspace {
             .as_ref()
             .map_or(current, |anim| anim.target());
         let bounds = min_scroll..=max_scroll;
+        if let Some(landing_offset) = self.scroll_animation_landing_offset {
+            let valid_target = self
+                .single_column_viewport_left(viewport_width)
+                .map_or_else(
+                    || bounds.contains(&target),
+                    |offset| target == offset as f64,
+                );
+            if bounds.contains(&landing_offset) && valid_target {
+                return;
+            }
+        }
         if bounds.contains(&current) && bounds.contains(&target) {
             return;
         }
@@ -493,16 +519,47 @@ impl Workspace {
         let vis_w = self.visible_width(viewport_width);
         let max_scroll = (self.total_width() - vis_w).max(0);
         let clamped_target = target.clamp(0.0, max_scroll as f64);
-        self.animate_scroll_to(clamped_target, duration_ms, easing);
+        self.animate_scroll_to(clamped_target, duration_ms, easing, viewport_width);
     }
 
-    fn animate_scroll_to(&mut self, target: f64, duration_ms: Option<u64>, easing: Option<Easing>) {
-        // Use current effective position as start (handles interrupting animations)
-        let start = self.effective_scroll_offset();
+    fn animate_scroll_to(
+        &mut self,
+        target: f64,
+        duration_ms: Option<u64>,
+        easing: Option<Easing>,
+        viewport_width: i32,
+    ) {
+        let landing_offset = target;
+        let anchor_layout = self.center_single_column && self.fullscreen_window.is_none();
+        let (start, target) = if anchor_layout {
+            let start = self.active_animation.as_ref().map_or_else(
+                || {
+                    self.rendered_viewport
+                        .offset(viewport_width)
+                        .unwrap_or_else(|| self.layout_viewport_left(viewport_width) as f64)
+                },
+                ScrollAnimation::current_offset,
+            );
+            let target = self
+                .single_column_viewport_left(viewport_width)
+                .map_or(target, f64::from);
+            self.rendered_viewport.record(
+                viewport_width,
+                start,
+                self.single_active_column().is_some(),
+            );
+            (start, target)
+        } else {
+            (self.effective_scroll_offset(), target)
+        };
+        self.scroll_animation_landing_offset = anchor_layout.then_some(landing_offset);
 
         // If already at target, no animation needed
         if (start - target).abs() < 0.5 {
-            self.scroll_offset = target;
+            self.scroll_offset = self
+                .scroll_animation_landing_offset
+                .take()
+                .unwrap_or(target);
             self.active_animation = None;
             return;
         }
@@ -526,7 +583,13 @@ impl Workspace {
 
         if !still_running {
             // Animation complete - finalize scroll offset and clear animation
-            self.scroll_offset = anim.target();
+            if self.center_single_column {
+                self.rendered_viewport.finish(anim.target());
+            }
+            self.scroll_offset = self
+                .scroll_animation_landing_offset
+                .take()
+                .unwrap_or_else(|| anim.target());
             self.active_animation = None;
             false
         } else {
@@ -537,14 +600,24 @@ impl Workspace {
     /// Stop the current animation and snap to the target position.
     pub fn stop_animation(&mut self) {
         if let Some(anim) = self.active_animation.take() {
-            self.scroll_offset = anim.target();
+            if self.center_single_column {
+                self.rendered_viewport.finish(anim.target());
+            }
+            self.scroll_offset = self
+                .scroll_animation_landing_offset
+                .take()
+                .unwrap_or_else(|| anim.target());
         }
     }
 
     /// Cancel the current animation and stay at the current position.
     pub fn cancel_animation(&mut self) {
         if let Some(anim) = self.active_animation.take() {
+            if self.center_single_column {
+                self.rendered_viewport.finish(anim.current_offset());
+            }
             self.scroll_offset = anim.current_offset();
+            self.scroll_animation_landing_offset = None;
         }
     }
 
@@ -575,7 +648,10 @@ impl Workspace {
             let current = self
                 .active_animation
                 .as_ref()
-                .map_or(self.scroll_offset, |anim| anim.target());
+                .map_or(self.scroll_offset, |anim| {
+                    self.scroll_animation_landing_offset
+                        .unwrap_or_else(|| anim.target())
+                });
             let scroll_left = current.round() as i32;
             let scroll_right = scroll_left.saturating_add(vis_w);
             let col_right = col_x.saturating_add(col_width);
@@ -590,6 +666,8 @@ impl Workspace {
                     0.0
                 } else if current > max_scroll + 0.5 {
                     max_scroll
+                } else if self.center_single_column {
+                    current
                 } else {
                     return;
                 }
@@ -602,7 +680,7 @@ impl Workspace {
         } else {
             target_offset.clamp(0.0, max_scroll)
         };
-        self.animate_scroll_to(target, None, None);
+        self.animate_scroll_to(target, None, None, viewport_width);
     }
 
     /// Center the focused column in the viewport, regardless of centering mode.
@@ -629,7 +707,7 @@ impl Workspace {
                 return;
             }
 
-            self.animate_scroll_to(target, None, None);
+            self.animate_scroll_to(target, None, None, viewport_width);
         } else {
             // Clamped — use the standard scroll animation path
             if self.reduce_motion {

@@ -78,36 +78,73 @@ mod tests {
             CenteringMode::JustInView,
             CenteringMode::OnOverflow,
         ] {
-            let mut ws = Workspace::with_gaps(10, 20);
-            ws.set_centering_mode(mode);
-            ws.insert_window(1, Some(400)).unwrap();
-            ws.set_scroll_offset(137.0);
-            ws.set_center_single_column(true);
-            assert_eq!(ws.compute_placements(viewport)[0].rect.x, 300);
-            assert_eq!(ws.scroll_offset(), 137.0);
-            ws.insert_window(2, Some(800)).unwrap();
-            let mut normal = ws.clone();
-            normal.set_center_single_column(false);
-            assert_eq!(
-                placement_geometry(ws.compute_placements(viewport)),
-                placement_geometry(normal.compute_placements(viewport))
-            );
-            ws.ensure_focused_visible_animated(viewport.width);
-            normal.ensure_focused_visible_animated(viewport.width);
-            assert_eq!(
-                ws.effective_scroll_offset(),
-                normal.effective_scroll_offset()
-            );
-            ws.stop_animation();
-            normal.stop_animation();
-            assert_eq!(ws.scroll_offset(), normal.scroll_offset());
-            assert_eq!(
-                placement_geometry(ws.compute_placements(viewport)),
-                placement_geometry(normal.compute_placements(viewport))
-            );
-            ws.remove_window(2).unwrap();
-            assert_eq!(ws.compute_placements(viewport)[0].rect.x, 300);
+            for past_edges in [false, true] {
+                let mut ws = Workspace::with_gaps(10, 20);
+                ws.set_centering_mode(mode);
+                ws.set_center_past_edges(past_edges);
+                ws.insert_window(1, Some(400)).unwrap();
+                ws.set_scroll_offset(137.0);
+                ws.set_center_single_column(true);
+                assert_eq!(ws.compute_placements(viewport)[0].rect.x, 300);
+                assert_eq!(ws.scroll_offset(), 137.0);
+                ws.insert_window(2, Some(800)).unwrap();
+                let mut normal = ws.clone();
+                normal.set_center_single_column(false);
+                assert_eq!(ws.compute_placements_animated(viewport)[0].rect.x, 300);
+                ws.ensure_focused_visible_animated(viewport.width);
+                ws.reconcile_scroll_bounds(viewport.width);
+                normal.ensure_focused_visible_animated(viewport.width);
+                assert_eq!(ws.compute_placements_animated(viewport)[0].rect.x, 300);
+                assert!(ws.is_animating());
+                ws.tick_animation(50);
+                let intermediate_x = ws.compute_placements_animated(viewport)[0].rect.x;
+                assert!(intermediate_x < 300 && intermediate_x > -230);
+                ws.stop_animation();
+                normal.stop_animation();
+                assert_eq!(ws.scroll_offset(), normal.scroll_offset());
+                assert_eq!(
+                    placement_geometry(ws.compute_placements(viewport)),
+                    placement_geometry(normal.compute_placements(viewport))
+                );
+                assert_eq!(ws.compute_placements_animated(viewport)[0].rect.x, -230);
+                ws.remove_window(2).unwrap();
+                ws.ensure_focused_visible_animated(viewport.width);
+                ws.reconcile_scroll_bounds(viewport.width);
+                assert_eq!(ws.compute_placements_animated(viewport)[0].rect.x, -230);
+                assert!(ws.is_animating());
+                ws.tick_animation(50);
+                let intermediate_x = ws.compute_placements_animated(viewport)[0].rect.x;
+                assert!(intermediate_x > -230 && intermediate_x < 300);
+                assert!(!ws.tick_animation(200));
+                assert_eq!(ws.compute_placements_animated(viewport)[0].rect.x, 300);
+                normal.remove_window(2).unwrap();
+                normal.ensure_focused_visible_animated(viewport.width);
+                normal.stop_animation();
+                assert_eq!(ws.scroll_offset(), normal.scroll_offset());
+                ws.scroll_by(100.0, viewport.width);
+                normal.scroll_by(100.0, viewport.width);
+                assert_eq!(ws.scroll_offset(), normal.scroll_offset());
+                assert_eq!(ws.compute_placements_animated(viewport)[0].rect.x, 300);
+            }
         }
+    }
+
+    #[test]
+    fn test_center_single_column_reduce_motion_transition() {
+        let viewport = Rect::new(0, 0, 1000, 600);
+        let mut ws = Workspace::with_gaps(10, 20);
+        ws.set_center_single_column(true);
+        ws.set_reduce_motion(true);
+        ws.insert_window(1, Some(400)).unwrap();
+        assert_eq!(ws.compute_placements_animated(viewport)[0].rect.x, 300);
+        ws.insert_window(2, Some(800)).unwrap();
+        ws.ensure_focused_visible_animated(viewport.width);
+        assert!(!ws.is_animating());
+        assert_eq!(ws.compute_placements_animated(viewport)[0].rect.x, -230);
+        ws.remove_window(2).unwrap();
+        ws.ensure_focused_visible_animated(viewport.width);
+        assert!(!ws.is_animating());
+        assert_eq!(ws.compute_placements_animated(viewport)[0].rect.x, 300);
     }
 
     #[test]
