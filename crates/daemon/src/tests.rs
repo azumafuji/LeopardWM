@@ -17616,3 +17616,6 @@ mod maximized_admission_tests;
 
 #[path = "maximized_admission_regression.rs"]
 mod maximized_admission_regression;
+
+#[path = "display_change_regression.rs"]
+mod display_change_regression;

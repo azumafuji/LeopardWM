@@ -896,7 +896,10 @@ impl AppState {
         }
         // Force timed-out placements past the unchanged-layout fast path.
         self.last_placed_layout_rects.clear();
-        self.apply_layout()?;
+        self.display_change_apply_in_progress = true;
+        let result = self.apply_layout();
+        self.display_change_apply_in_progress = false;
+        result?;
         Ok(())
     }
 
@@ -1010,6 +1013,17 @@ impl AppState {
         std::sync::Arc<std::sync::atomic::AtomicBool>,
     )> {
         let platform_config = self.platform_config.clone();
+        let display_change_apply = self.display_change_apply_in_progress;
+        let display_change_candidates = if display_change_apply {
+            self.collect_layout_apply_timeout_candidates(
+                &all_placements
+                    .iter()
+                    .map(|p| p.window_id)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            Vec::new()
+        };
         let apply_worker_cancelled = self.apply_worker_cancelled.clone();
         let apply_epoch_ref = self.apply_epoch.clone();
         let apply_epoch = apply_epoch_ref.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1160,19 +1174,44 @@ impl AppState {
                     height_violations,
                     maximized_skipped_window_ids,
                     landings,
-                ) = match leopardwm_platform_win32::apply_placements(
-                    &all_placements,
-                    &platform_config,
-                    None,
-                    post_animation_nudge,
-                ) {
-                    Ok(r) => (
-                        Ok(()),
-                        r.width_violations,
-                        r.height_violations,
-                        r.maximized_skipped_window_ids,
-                        r.landings,
-                    ),
+                ) = match if display_change_apply {
+                    leopardwm_platform_win32::apply_display_change_placements(
+                        &all_placements,
+                        &platform_config,
+                        post_animation_nudge,
+                    )
+                } else {
+                    leopardwm_platform_win32::apply_placements(
+                        &all_placements,
+                        &platform_config,
+                        None,
+                        post_animation_nudge,
+                    )
+                    .map(|result| (result, std::collections::HashSet::new()))
+                } {
+                    Ok((r, unresponsive_window_ids)) => {
+                        if !unresponsive_window_ids.is_empty() {
+                            let windows: Vec<_> = display_change_candidates
+                                .iter()
+                                .filter(|candidate| unresponsive_window_ids.contains(&candidate.hwnd))
+                                .map(|candidate| format!(
+                                    "hwnd={:#x} class={:?} title={:?} executable={:?}",
+                                    candidate.hwnd, candidate.class_name, candidate.title, candidate.executable
+                                ))
+                                .collect();
+                            warn!(
+                                "Display-change placement queued asynchronously for unresponsive or unprobed windows: {}",
+                                windows.join("; ")
+                            );
+                        }
+                        (
+                            Ok(()),
+                            r.width_violations,
+                            r.height_violations,
+                            r.maximized_skipped_window_ids,
+                            r.landings,
+                        )
+                    },
                     Err(e) => (
                         Err(anyhow!(e.to_string())),
                         Vec::new(),

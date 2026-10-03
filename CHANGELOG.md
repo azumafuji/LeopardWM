@@ -2,6 +2,12 @@
 
 All notable changes to LeopardWM will be documented in this file.
 
+## 0.2.13
+
+### Fixes
+
+- **Tiling no longer pauses after wake when an app stays unresponsive during a monitor or dock change.** Responsive windows are tiled immediately, while busy apps receive their queued placement once they respond. The daemon log names the windows deferred during display reconciliation. (#122)
+
 ## 0.2.12
 
 ### Features
