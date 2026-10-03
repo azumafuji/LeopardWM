@@ -449,22 +449,43 @@ fn restore_maximized_window_with(
         },
         |ms| std::thread::sleep(std::time::Duration::from_millis(ms as u64)),
     );
-    let still_maximized = match result {
-        Ok(()) => false,
-        Err(error) => {
-            tracing::debug!(
-                "Could not restore maximized window {} without activation: {:?}",
-                window_id,
-                error
-            );
-            unsafe { IsZoomed(hwnd).as_bool() }
-        }
-    };
+    let still_maximized =
+        maximized_admission_still_maximized(result, || is_admission_target() && is_zoomed());
     report(crate::WindowEvent::MaximizedAdmissionRestored {
         window_id,
         managed_lifetime_token,
         still_maximized,
     });
+}
+
+/// Decide the `still_maximized` value a restore outcome reports. `target_still_zoomed`
+/// supplies the live zoom reading and is only consulted for a target that is
+/// still confirmed present, so a stale handle can never be read as a restored
+/// window.
+fn maximized_admission_still_maximized(
+    result: Result<(), Win32Error>,
+    target_still_zoomed: impl FnOnce() -> bool,
+) -> bool {
+    match result {
+        Ok(()) => false,
+        Err(Win32Error::WindowNotFound(_)) => {
+            // The window is gone or replaced, so its handle proves nothing
+            // about zoom state. Report the conservative outcome: a restore
+            // that cannot be confirmed leaves the window's placement
+            // suppressed rather than tiling a window that may be maximized.
+            tracing::debug!(
+                "Maximized admission target is no longer available; reporting it unrestored"
+            );
+            true
+        }
+        Err(error) => {
+            tracing::debug!(
+                "Could not restore a maximized window without activation: {:?}",
+                error
+            );
+            target_still_zoomed()
+        }
+    }
 }
 
 fn apply_window_style(
@@ -821,6 +842,42 @@ pub fn restore_maximizebox_panic_recovery() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_target_is_reported_as_not_restored() {
+        let reads = std::cell::Cell::new(0);
+        let still_maximized =
+            maximized_admission_still_maximized(Err(Win32Error::WindowNotFound(42)), || {
+                reads.set(reads.get() + 1);
+                false
+            });
+
+        assert!(
+            still_maximized,
+            "an unconfirmable restore must not look restored"
+        );
+        assert_eq!(reads.get(), 0, "the stale handle must not be inspected");
+    }
+
+    #[test]
+    fn failed_restore_reports_a_live_target_that_is_still_zoomed() {
+        let result = Err(Win32Error::SetPositionFailed("ignored".to_string()));
+        assert!(maximized_admission_still_maximized(result, || true));
+        assert!(!maximized_admission_still_maximized(
+            Err(Win32Error::SetPositionFailed("ignored".to_string())),
+            || false
+        ));
+    }
+
+    #[test]
+    fn successful_restore_reports_the_window_as_not_maximized() {
+        let reads = std::cell::Cell::new(0);
+        assert!(!maximized_admission_still_maximized(Ok(()), || {
+            reads.set(reads.get() + 1);
+            true
+        }));
+        assert_eq!(reads.get(), 0);
+    }
 
     #[test]
     fn test_is_border_color_unsupported_hresult_mapping() {

@@ -96,10 +96,20 @@ pub fn restore_window_no_activate(window_id: WindowId) -> Result<(), Win32Error>
 pub(crate) const MAXIMIZED_ASYNC_RESTORE_WAIT_MS: u32 = 500;
 const MAXIMIZED_ASYNC_RESTORE_POLL_MS: u32 = 10;
 
-/// `target_ok` reports that `hwnd` is still a live, matching, visible
-/// maximized window owned by the expected thread and lifetime. It is checked
-/// before every zoom reading because a destroyed or replaced handle makes
-/// `IsZoomed` report false, which would otherwise read as a successful restore.
+/// Restore a maximized window without activating it.
+///
+/// A cross-process `ShowWindow(SW_SHOWNOACTIVATE)` can deliver the window
+/// position messages yet leave the window zoomed, so it may report success
+/// while nothing changed. When that happens the restore is reposted to the
+/// owner's thread with `ShowWindowAsync`, which runs the show in the window's
+/// own context and so cannot be ignored the same way, nor block this worker on
+/// a busy owner. The outcome is then polled for a bounded time.
+///
+/// `target_ok` reports that the admitted window is still live,
+/// identity-matching and visible, independent of its zoom state. It is read
+/// before every zoom result, because a destroyed or replaced handle makes
+/// `IsZoomed` report false, which would otherwise look like a successful
+/// restore.
 pub(crate) fn restore_maximized_window_no_activate_with(
     window_id: WindowId,
     target_ok: impl Fn() -> bool,
@@ -121,12 +131,9 @@ pub(crate) fn restore_maximized_window_no_activate_with(
     if !is_zoomed() {
         return Ok(());
     }
-    // The synchronous attempt can destroy the window, hand its handle to a
-    // replacement, or let the owner hide the window; the fallback must not
-    // post to, or report success for, anything but the original target.
     show_window_async();
     let mut waited_ms = 0;
-    while waited_ms < MAXIMIZED_ASYNC_RESTORE_WAIT_MS {
+    loop {
         if !target_ok() {
             return Err(Win32Error::WindowNotFound(window_id));
         }
@@ -138,8 +145,23 @@ pub(crate) fn restore_maximized_window_no_activate_with(
             );
             return Ok(());
         }
+        if waited_ms >= MAXIMIZED_ASYNC_RESTORE_WAIT_MS {
+            break;
+        }
         sleep(MAXIMIZED_ASYNC_RESTORE_POLL_MS);
         waited_ms += MAXIMIZED_ASYNC_RESTORE_POLL_MS;
+    }
+    // A restore that lands during the final interval has not been seen yet.
+    if !target_ok() {
+        return Err(Win32Error::WindowNotFound(window_id));
+    }
+    if !is_zoomed() {
+        tracing::debug!(
+            "Async fallback restored maximized window {} after {} ms",
+            window_id,
+            waited_ms
+        );
+        return Ok(());
     }
     tracing::debug!(
         "Async fallback did not restore maximized window {} within {} ms",
@@ -404,7 +426,7 @@ mod tests {
                     && self.visible.get()
                     && self.generation.get() == admitted_generation
             };
-            let mut polls = 0;
+            let mut polls = 0u32;
             restore_maximized_window_no_activate_with(
                 42,
                 is_target,
@@ -526,6 +548,43 @@ mod tests {
             MAXIMIZED_ASYNC_RESTORE_POLL_MS,
             "stops on the first poll that sees the window gone"
         );
+    }
+
+    #[test]
+    fn restore_maximized_without_activation_sees_a_restore_at_the_last_poll() {
+        let target = Target::new();
+        let last_poll = MAXIMIZED_ASYNC_RESTORE_WAIT_MS / MAXIMIZED_ASYNC_RESTORE_POLL_MS;
+        let result = target.run(
+            || {},
+            |poll| {
+                if poll == last_poll - 1 {
+                    target.restore();
+                }
+            },
+        );
+
+        result.unwrap();
+        assert_eq!(target.slept_ms.get(), MAXIMIZED_ASYNC_RESTORE_WAIT_MS);
+    }
+
+    #[test]
+    fn restore_maximized_without_activation_sees_destruction_at_the_last_poll() {
+        let target = Target::new();
+        let last_poll = MAXIMIZED_ASYNC_RESTORE_WAIT_MS / MAXIMIZED_ASYNC_RESTORE_POLL_MS;
+        let result = target.run(
+            || {},
+            |poll| {
+                if poll == last_poll - 1 {
+                    target.destroy();
+                }
+            },
+        );
+
+        assert!(
+            matches!(result, Err(Win32Error::WindowNotFound(42))),
+            "destruction in the final interval is not a timeout"
+        );
+        assert_eq!(target.slept_ms.get(), MAXIMIZED_ASYNC_RESTORE_WAIT_MS);
     }
 
     #[test]
