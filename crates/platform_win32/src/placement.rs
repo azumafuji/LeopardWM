@@ -1058,6 +1058,12 @@ fn build_defer_entries(
             let zero_size_hidden_tab = placement.rect.width == 0 && placement.rect.height == 0;
             let (x, y, w) = if zero_size_hidden_tab {
                 (placement.rect.x, placement.rect.y, 0)
+            } else if placement.visibility == Visibility::OffScreenLeft {
+                // SWP_NOSIZE retains app-owned width; anchor wider frames by their
+                // right edge because cross-process DWM cloaking cannot hide them.
+                let extra_width = crate::get_window_chrome_rect(placement.window_id)
+                    .map_or(0, |actual| (actual.width - frame_rect.width).max(0));
+                (frame_rect.x - extra_width, frame_rect.y, frame_rect.width)
             } else {
                 (frame_rect.x, frame_rect.y, frame_rect.width)
             };
@@ -4267,6 +4273,30 @@ mod tests {
             defer_origin(placement, insets, true),
             (logical.x, logical.y, logical.width, 0)
         );
+    }
+
+    #[test]
+    fn test_offscreen_left_window_wider_than_column_stays_off_screen() {
+        let window = HiddenPopup::new(120, 80, 700, 300);
+        let logical = Rect::new(-1000, 40, 600, 900);
+        let insets = (7, 1, 7, 8);
+        let converted = visible_rect_to_frame_rect(logical, insets, false);
+        let (left_x, _, _, _) = defer_origin(
+            offscreen_placement(window.id, logical, Visibility::OffScreenLeft),
+            insets,
+            false,
+        );
+        assert_eq!(
+            left_x + 700 - insets.2,
+            logical.x + logical.width,
+            "the window's visible right edge must stay at its column's right edge"
+        );
+        let (right_x, _, _, _) = defer_origin(
+            offscreen_placement(window.id, logical, Visibility::OffScreenRight),
+            insets,
+            false,
+        );
+        assert_eq!(right_x, converted.x);
     }
 
     #[test]

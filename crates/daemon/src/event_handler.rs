@@ -8,7 +8,7 @@ use crate::state::{
     RECENTLY_RESTORED_MANAGED_WINDOW_TTL, TRANSIENT_WINDOW_THRESHOLD,
 };
 use crate::ui_sync::DepartureCause;
-use leopardwm_core_layout::{Rect, Workspace};
+use leopardwm_core_layout::{Rect, Visibility, Workspace};
 #[cfg(not(test))]
 use leopardwm_platform_win32::enumerate_monitors;
 use leopardwm_platform_win32::{
@@ -3229,6 +3229,31 @@ impl AppState {
         }
     }
 
+    /// Re-check suppressed off-screen moves once placement feedback has settled.
+    pub(crate) fn recheck_deferred_offscreen_windows(&mut self) -> bool {
+        let mut checked = false;
+        let deferred = std::mem::take(&mut self.deferred_moved_or_resized);
+        for hwnd in deferred {
+            if self.find_window_workspace(hwnd).is_none()
+                || !self
+                    .current_physical_visibility(hwnd)
+                    .is_some_and(|visibility| visibility != Visibility::Visible)
+            {
+                continue;
+            }
+            if self.applying_layout
+                || self.display_change_pending
+                || self.should_suppress_moved_or_resized(hwnd)
+            {
+                self.deferred_moved_or_resized.insert(hwnd);
+                continue;
+            }
+            self.on_window_moved_or_resized(hwnd);
+            checked = true;
+        }
+        checked
+    }
+
     /// Handle a window move/resize notification.
     fn on_window_moved_or_resized(&mut self, hwnd: u64) {
         if self.pending_maximized_admission_restores.contains(&hwnd) {
@@ -3238,6 +3263,9 @@ impl AppState {
         // managed tiled window needs its timestamp and target-only visual cleanup
         // immediately so the later restore is classified correctly.
         if self.applying_layout || self.display_change_pending {
+            if self.find_window_workspace(hwnd).is_some() {
+                self.deferred_moved_or_resized.insert(hwnd);
+            }
             let managed_tiled = self
                 .find_window_workspace(hwnd)
                 .and_then(|(monitor_id, ws_idx)| {
@@ -3302,6 +3330,9 @@ impl AppState {
         if moved_or_resized_decision(lifecycle, self.should_suppress_moved_or_resized(hwnd))
             == MovedOrResizedDecision::Suppress
         {
+            if self.find_window_workspace(hwnd).is_some() {
+                self.deferred_moved_or_resized.insert(hwnd);
+            }
             return;
         }
         // During active border resize: show ghost preview of the snap target
@@ -3459,39 +3490,68 @@ impl AppState {
                         && (a.width - e.width).abs() <= eps
                         && (a.height - e.height).abs() <= eps
                 };
-                let at_expected_position = match expected {
-                    Some(expected) => {
-                        // Honest comparison — DWM bounds match
-                        // expected layout in both position and size.
-                        let dwm_ok = dwm_actual
-                            .is_some_and(|a| within_all(a, expected, POSITION_EPSILON_PX));
-                        // Swap-chain bug guard — chrome HWND
-                        // (visible-area-corrected) is at the
-                        // expected position even though DWM is
-                        // lying. Position only: the chrome rect's
-                        // size is inflated by invisible borders
-                        // and we don't trivially correct that, so
-                        // a size comparison would mask real edge
-                        // resizes.
-                        let chrome_position_ok = chrome_visible.is_some_and(|a| {
-                            (a.x - expected.x).abs() <= POSITION_EPSILON_PX
-                                && (a.y - expected.y).abs() <= POSITION_EPSILON_PX
-                        });
-                        let dwm_position_displaced = dwm_actual.is_some_and(|a| {
-                            (a.x - expected.x).abs() > POSITION_EPSILON_PX
-                                || (a.y - expected.y).abs() > POSITION_EPSILON_PX
-                        });
-                        let swap_chain_bug = chrome_position_ok && dwm_position_displaced;
-                        let result = dwm_ok || swap_chain_bug;
-                        if !result {
-                            debug!(
+                let offscreen = self
+                    .current_physical_visibility(hwnd)
+                    .is_some_and(|visibility| visibility != Visibility::Visible);
+                let at_expected_position = if offscreen {
+                    let visible = chrome_actual.map(|rect| {
+                        let (left, top, right, bottom) =
+                            leopardwm_platform_win32::get_window_invisible_insets(hwnd);
+                        Rect::new(
+                            rect.x + left,
+                            rect.y + top,
+                            rect.width - left - right,
+                            rect.height - top - bottom,
+                        )
+                    });
+                    let hidden = visible.is_some_and(|rect| {
+                        self.monitors
+                            .values()
+                            .all(|monitor| !rect.intersects(&monitor.work_area))
+                    });
+                    if !hidden {
+                        debug!(
+                            "Window {} off expected position: expected {:?} chrome_visible {:?} monitor_work_areas {:?}",
+                            hwnd, expected, visible,
+                            self.monitors.values().map(|monitor| monitor.work_area).collect::<Vec<_>>()
+                        );
+                    }
+                    hidden
+                } else {
+                    match expected {
+                        Some(expected) => {
+                            // Honest comparison — DWM bounds match
+                            // expected layout in both position and size.
+                            let dwm_ok = dwm_actual
+                                .is_some_and(|a| within_all(a, expected, POSITION_EPSILON_PX));
+                            // Swap-chain bug guard — chrome HWND
+                            // (visible-area-corrected) is at the
+                            // expected position even though DWM is
+                            // lying. Position only: the chrome rect's
+                            // size is inflated by invisible borders
+                            // and we don't trivially correct that, so
+                            // a size comparison would mask real edge
+                            // resizes.
+                            let chrome_position_ok = chrome_visible.is_some_and(|a| {
+                                (a.x - expected.x).abs() <= POSITION_EPSILON_PX
+                                    && (a.y - expected.y).abs() <= POSITION_EPSILON_PX
+                            });
+                            let dwm_position_displaced = dwm_actual.is_some_and(|a| {
+                                (a.x - expected.x).abs() > POSITION_EPSILON_PX
+                                    || (a.y - expected.y).abs() > POSITION_EPSILON_PX
+                            });
+                            let swap_chain_bug = chrome_position_ok && dwm_position_displaced;
+                            let result = dwm_ok || swap_chain_bug;
+                            if !result {
+                                debug!(
                                 "Window {} off expected position: expected {:?} dwm {:?} chrome_visible {:?}",
                                 hwnd, expected, dwm_actual, chrome_visible
                             );
+                            }
+                            result
                         }
-                        result
+                        None => false,
                     }
-                    None => false,
                 };
                 if at_expected_position {
                     debug!(
@@ -3506,6 +3566,10 @@ impl AppState {
                     // visible rect has drifted away from it. Without
                     // this the window stays where the user dragged it.
                     self.last_placed_layout_rects.remove(&hwnd);
+                    if offscreen {
+                        // Off-screen HWNDs have no last-placed layout entry to evict.
+                        self.bump_physical_invalidation();
+                    }
                     if let Err(e) = self.apply_layout() {
                         warn!("Failed to snap back layout after move/resize: {}", e);
                     }

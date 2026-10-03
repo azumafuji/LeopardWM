@@ -106,10 +106,9 @@ pub(crate) enum DaemonEvent {
     /// a per-window message, not a global hook — so polling is the
     /// pragmatic alternative.
     TabStripIconPoll,
-    /// Tick that checks whether the tracked focus window vanished without a
-    /// WinEvent. Silent close-to-tray disappearance has no hook, so this
-    /// bounds how long an ambiguous activation can be treated as automatic.
-    FocusLivenessCheck,
+    /// Tick that prunes tracked focus which vanished without a WinEvent and
+    /// re-checks off-screen moves dropped during placement suppression.
+    PeriodicCheck,
     /// User action from the overview overlay (activate a window, switch
     /// workspace, close a window, or dismiss). The overlay hit-tests its
     /// own model copy; the daemon routes the resulting intent here.

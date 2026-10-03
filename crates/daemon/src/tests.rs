@@ -11793,6 +11793,181 @@ fn test_apply_layout_timeout_late_worker_triggers_recovery_pass() {
     );
 }
 
+struct OffscreenResizeOwner {
+    hwnd: u64,
+    thread_id: u32,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl OffscreenResizeOwner {
+    fn new() -> Self {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let join = std::thread::spawn(move || unsafe {
+            use windows::core::w;
+            use windows::Win32::System::Threading::GetCurrentThreadId;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
+                WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+            };
+            let hwnd = CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                w!("STATIC"),
+                w!(""),
+                WS_POPUP,
+                -300,
+                0,
+                300,
+                560,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let mut message = MSG::default();
+            // Create the owner message queue before exposing its thread ID.
+            let _ = windows::Win32::UI::WindowsAndMessaging::PeekMessageW(
+                &mut message,
+                None,
+                0,
+                0,
+                windows::Win32::UI::WindowsAndMessaging::PM_NOREMOVE,
+            );
+            ready_tx
+                .send((hwnd.0 as usize as u64, GetCurrentThreadId()))
+                .unwrap();
+            while GetMessageW(&mut message, None, 0, 0).as_bool() {
+                DispatchMessageW(&message);
+            }
+            DestroyWindow(hwnd).unwrap();
+        });
+        let (hwnd, thread_id) = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        Self {
+            hwnd,
+            thread_id,
+            join: Some(join),
+        }
+    }
+
+    fn resize(&self, x: i32, width: i32) {
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+        unsafe {
+            SetWindowPos(
+                windows::Win32::Foundation::HWND(self.hwnd as *mut _),
+                None,
+                x,
+                0,
+                width,
+                560,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            )
+            .unwrap();
+        }
+    }
+
+    fn rect(&self) -> Rect {
+        leopardwm_platform_win32::get_window_chrome_rect(self.hwnd).unwrap()
+    }
+}
+
+impl Drop for OffscreenResizeOwner {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+        unsafe {
+            PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)).unwrap();
+        }
+        self.join.take().unwrap().join().unwrap();
+    }
+}
+
+#[test]
+fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let work_area = Rect::new(0, 0, 800, 560);
+    let mut config = test_config();
+    config.animation.layout_duration_ms = 0;
+    config.animation.scroll_duration_ms = 0;
+    let mut state = AppState::new_with_config(
+        config,
+        vec![MonitorInfo {
+            id: 1,
+            rect: Rect::new(0, 0, 800, 600),
+            work_area,
+            is_primary: true,
+            device_name: "DISPLAY1".to_string(),
+            scale_factor: 1.0,
+        }],
+    );
+    state.paused = false;
+    state.reduce_motion = true;
+    let mut workspace = Workspace::with_gaps(0, 0);
+    workspace.set_reduce_motion(true);
+    workspace.insert_window(owner.hwnd, Some(300)).unwrap();
+    workspace.set_scroll_offset(300.0);
+    state.workspaces.get_mut(&1).unwrap()[0] = workspace;
+    state.apply_layout().unwrap();
+    assert_eq!(
+        state.current_physical_visibility(owner.hwnd),
+        Some(leopardwm_core_layout::Visibility::OffScreenLeft)
+    );
+    assert!(!owner.rect().intersects(&work_area));
+
+    for applying in [false, true] {
+        owner.resize(-300, 315);
+        assert!(
+            owner.rect().intersects(&work_area),
+            "fixture must grow into the viewport"
+        );
+        state.arm_moved_or_resized_suppression([owner.hwnd]);
+        state.applying_layout = applying;
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        state.recheck_deferred_offscreen_windows();
+        assert!(
+            owner.rect().intersects(&work_area),
+            "placement feedback remains suppressed"
+        );
+        state.applying_layout = false;
+        state.moved_or_resized_suppression.insert(
+            owner.hwnd,
+            std::time::Instant::now() - Duration::from_millis(1),
+        );
+        state.recheck_deferred_offscreen_windows();
+        assert!(
+            !owner.rect().intersects(&work_area),
+            "periodic re-check must correct the missed resize, got {:?}",
+            owner.rect()
+        );
+        assert_eq!(
+            owner.rect().width,
+            315,
+            "off-screen correction must not resize the app"
+        );
+    }
+
+    owner.resize(-500, 315);
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.moved_or_resized_suppression.insert(
+        owner.hwnd,
+        std::time::Instant::now() - Duration::from_millis(1),
+    );
+    let request_seq = state.physical_request_seq;
+    state.recheck_deferred_offscreen_windows();
+    assert_eq!(
+        owner.rect().x,
+        -500,
+        "a non-intruding off-screen window must be left alone"
+    );
+    assert_eq!(
+        state.physical_request_seq, request_seq,
+        "no snap-back should be dispatched"
+    );
+}
+
 #[test]
 fn test_moved_or_resized_suppression_window_tracking() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());

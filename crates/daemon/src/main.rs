@@ -2491,28 +2491,29 @@ async fn handle_tray_event(ctx: &mut EventLoopCtx<'_>, tray_event: tray::TrayEve
     }
 }
 
-/// Silent close-to-tray disappearance fires no WinEvent. While tracking still
-/// names that window, the next Focused is indistinguishable from
-/// auto-activation, so this tick prunes a dead tracked focus on its own.
-fn spawn_focus_liveness_ticker(event_tx: &mpsc::Sender<DaemonEvent>) {
+/// Check eventless focus disappearance and off-screen drift after placement
+/// feedback suppression ends.
+fn spawn_periodic_ticker(event_tx: &mpsc::Sender<DaemonEvent>) {
     let tx = event_tx.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(500));
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            if tx.send(DaemonEvent::FocusLivenessCheck).await.is_err() {
+            if tx.send(DaemonEvent::PeriodicCheck).await.is_err() {
                 break;
             }
         }
     });
 }
 
-/// Prune a tracked focus window that vanished without a WinEvent, and start
-/// the animation worker when that prune changes the layout.
-async fn handle_focus_liveness_check(ctx: &mut EventLoopCtx<'_>) {
+/// Prune vanished tracked focus, re-check suppressed off-screen moves, and
+/// start the animation worker when either check changes the layout.
+async fn handle_periodic_check(ctx: &mut EventLoopCtx<'_>) {
     let mut state = ctx.state.lock().await;
-    if !state.check_tracked_focus_liveness() {
+    let focus_changed = state.check_tracked_focus_liveness();
+    let offscreen_checked = state.recheck_deferred_offscreen_windows();
+    if !focus_changed && !offscreen_checked {
         return;
     }
     if state.overview_open {
@@ -3752,7 +3753,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    spawn_focus_liveness_ticker(&event_tx);
+    spawn_periodic_ticker(&event_tx);
 
     // Settings window forwarding channel + handle
     let (settings_sync_tx, settings_sync_rx) = std::sync::mpsc::channel();
@@ -3879,8 +3880,8 @@ async fn main() -> Result<()> {
             DaemonEvent::TabStripIconPoll => {
                 handle_tab_strip_icon_poll(&state).await;
             }
-            DaemonEvent::FocusLivenessCheck => {
-                handle_focus_liveness_check(&mut ctx).await;
+            DaemonEvent::PeriodicCheck => {
+                handle_periodic_check(&mut ctx).await;
             }
             DaemonEvent::PersistStateNow => {
                 handle_persist_state_now(&state).await;

@@ -485,6 +485,12 @@ impl AppState {
             .then_some(presentation)
     }
 
+    pub(crate) fn current_physical_visibility(&self, window_id: u64) -> Option<Visibility> {
+        self.current_pending_physical_presentation(window_id)
+            .or_else(|| self.last_physical_presentations.get(&window_id))
+            .map(|presentation| presentation.physical.visibility)
+    }
+
     pub(crate) fn expected_physical_rect(&self, window_id: u64) -> Option<Rect> {
         self.current_pending_physical_presentation(window_id)
             .or_else(|| self.last_physical_presentations.get(&window_id))

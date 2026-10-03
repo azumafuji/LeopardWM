@@ -590,6 +590,7 @@ pub(crate) struct AppState {
     pub(crate) pending_drag_hint: Option<DragHintAction>,
     /// Per-window suppression deadline for MovedOrResized events after apply_layout().
     pub(crate) moved_or_resized_suppression: HashMap<u64, std::time::Instant>,
+    pub(crate) deferred_moved_or_resized: HashSet<u64>,
     /// Last-placed layout rect per managed window (in layout coordinates, the
     /// rect the layout engine asked for — not the OS-level window rect with
     /// invisible borders). Updated on every successful apply_layout. Used by
@@ -1161,6 +1162,7 @@ impl AppState {
             resize_animation_active: Arc::new(AtomicBool::new(false)),
             pending_drag_hint: None,
             moved_or_resized_suppression: HashMap::new(),
+            deferred_moved_or_resized: HashSet::new(),
             last_placed_layout_rects: HashMap::new(),
             last_physical_presentations: HashMap::new(),
             pending_physical_presentations: HashMap::new(),
