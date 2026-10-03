@@ -1728,7 +1728,7 @@ pub(crate) fn run_visibility_recovery_pass(managed_window_ids: &[u64], context_l
         Ok(restored) => {
             if restored > 0 {
                 info!(
-                    "Restored {} windows from MoveOffScreen sentinel positions",
+                    "Restored or queued restoration for {} off-screen windows",
                     restored
                 );
             }

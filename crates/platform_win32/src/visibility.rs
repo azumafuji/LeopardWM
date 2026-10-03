@@ -116,6 +116,18 @@ fn compute_restore_rect_from_offscreen(current_rect: &Rect, work_area: &Rect) ->
     Rect::new(work_area.x, work_area.y, width, height)
 }
 
+fn queued_target_is_offscreen(target: &Rect) -> bool {
+    if is_move_offscreen_sentinel_rect(target) {
+        return true;
+    }
+    crate::enumeration::enumerate_monitors().is_ok_and(|monitors| {
+        !monitors.is_empty()
+            && monitors
+                .iter()
+                .all(|monitor| !target.intersects(&monitor.work_area))
+    })
+}
+
 fn restore_window_if_offscreen_to_work_area(
     window_id: WindowId,
     work_area: &Rect,
@@ -142,8 +154,13 @@ fn restore_window_if_offscreen_to_work_area(
             current_rect.bottom - current_rect.top,
         );
 
-        let owner_wait = crate::placement::has_owner_wait(window_id);
-        if !owner_wait && !is_move_offscreen_sentinel_rect(&current_rect) {
+        let owner_target = crate::placement::owner_wait_target(window_id, &current_rect);
+        let owner_wait = owner_target.is_some();
+        let restore_needed = owner_target.as_ref().map_or_else(
+            || is_move_offscreen_sentinel_rect(&current_rect),
+            queued_target_is_offscreen,
+        );
+        if !restore_needed {
             return Ok(false);
         }
 
@@ -219,10 +236,7 @@ fn emergency_sentinel_pass(window_ids: &[WindowId], work_area: &Rect) {
         };
         unsafe {
             let mut rect = RECT::default();
-            let owner_wait = crate::placement::has_owner_wait(id);
-            if GetWindowRect(hwnd, &mut rect).is_err()
-                || (!owner_wait && !is_move_offscreen_sentinel_position(rect.left, rect.top))
-            {
+            if GetWindowRect(hwnd, &mut rect).is_err() {
                 continue;
             }
             let current = Rect::new(
@@ -231,6 +245,15 @@ fn emergency_sentinel_pass(window_ids: &[WindowId], work_area: &Rect) {
                 rect.right - rect.left,
                 rect.bottom - rect.top,
             );
+            let owner_target = crate::placement::owner_wait_target(id, &current);
+            let owner_wait = owner_target.is_some();
+            let restore_needed = owner_target.as_ref().map_or_else(
+                || is_move_offscreen_sentinel_rect(&current),
+                queued_target_is_offscreen,
+            );
+            if !restore_needed {
+                continue;
+            }
             let restored = compute_restore_rect_from_offscreen(&current, work_area);
             if SetWindowPos(
                 hwnd,
@@ -343,10 +366,10 @@ where
     (restored_count, failures)
 }
 
-/// Restore all windows currently parked at MoveOffScreen sentinel coordinates.
+/// Restore windows parked at MoveOffScreen sentinel coordinates or queued off-screen.
 ///
-/// Returns the number of restored windows. If any window restore fails, this
-/// returns an aggregated error after attempting all windows.
+/// Returns the number of restored windows or queued restores. If any window restore
+/// fails, this returns an aggregated error after attempting all windows.
 pub fn restore_windows_moved_offscreen(window_ids: &[WindowId]) -> Result<usize, Win32Error> {
     if window_ids.is_empty() {
         return Ok(0);

@@ -492,6 +492,62 @@ fn test_owner_wait_parked_maximized_recovery_is_classified_before_positioning() 
 }
 
 #[test]
+fn test_owner_wait_recovery_leaves_an_on_screen_target_untouched() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let monitor = leopardwm_platform_win32::get_primary_monitor().unwrap();
+    let current = Rect::new(monitor.work_area.x + 48, monitor.work_area.y + 48, 160, 120);
+    let targets = [
+        Rect::new(current.x, current.y, 320, 240),
+        Rect::new(monitor.work_area.x - 240, current.y, 320, 240),
+    ];
+    for rect in targets {
+        let blocked = PlacementOwner::spawn_at(current);
+        let state = placement_state(&[]);
+        let mut placement = fixture_placement(blocked.window_id, Visibility::Visible);
+        placement.rect = rect;
+        let (_, deferred) = leopardwm_platform_win32::apply_display_change_placements(
+            std::slice::from_ref(&placement),
+            &state.platform_config,
+            false,
+        )
+        .unwrap();
+        assert!(deferred.contains(&blocked.window_id));
+        let window_id = blocked.window_id;
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            done_tx
+                .send(leopardwm_platform_win32::restore_windows_moved_offscreen(
+                    &[window_id],
+                ))
+                .unwrap();
+        });
+        let fast = done_rx.recv_timeout(Duration::from_millis(400));
+        let returned_while_blocked = fast.is_ok();
+        blocked.resume();
+        let restored = fast
+            .unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .unwrap();
+        worker.join().unwrap();
+        assert!(
+            returned_while_blocked,
+            "recovery synchronously positioned an on-screen waiting owner"
+        );
+        assert_eq!(
+            restored, 0,
+            "recovery queued a move for an on-screen target"
+        );
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            leopardwm_platform_win32::get_window_visible_rect(window_id),
+            Some(rect),
+            "recovery dragged an on-screen deferred window to the work-area origin"
+        );
+    }
+}
+
+#[test]
 fn test_owner_wait_recovery_follows_a_park_that_has_not_landed() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()

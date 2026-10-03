@@ -935,6 +935,7 @@ fn skip_visible_tiled_maximized(
                     placement.window_id,
                     placement.rect.x,
                     placement.rect.y,
+                    None,
                     false,
                 );
             }
@@ -1349,18 +1350,26 @@ fn observed_async_position(hwnd: HWND) -> Option<(i32, i32)> {
 }
 
 fn record_async_position(entry: &DeferEntry) {
-    record_async_coordinates(entry.window_id, entry.x, entry.y, false);
+    let size = (!entry.flags.contains(SWP_NOSIZE)).then_some((entry.w, entry.h));
+    record_async_coordinates(entry.window_id, entry.x, entry.y, size, false);
 }
 
 pub(crate) fn record_queued_owner_position(window_id: WindowId, x: i32, y: i32) {
-    record_async_coordinates(window_id, x, y, true);
+    record_async_coordinates(window_id, x, y, None, true);
 }
 
-fn record_async_coordinates(window_id: WindowId, x: i32, y: i32, wait_for_owner: bool) {
+fn record_async_coordinates(
+    window_id: WindowId,
+    x: i32,
+    y: i32,
+    size: Option<(i32, i32)>,
+    wait_for_owner: bool,
+) {
     let now = std::time::Instant::now();
     let mut guard = lock_async_positions();
     let submissions = guard.get_or_insert_with(HashMap::new);
     let mut next = async_position_submission(submissions.get(&window_id).copied(), (x, y), now);
+    next.size = size.or(next.size);
     next.wait_for_owner |= wait_for_owner;
     submissions.insert(window_id, next);
 }
@@ -1375,12 +1384,14 @@ fn async_position_submission(
             x: position.0,
             y: position.1,
             first_submitted: previous.first_submitted,
+            size: previous.size,
             wait_for_owner: previous.wait_for_owner,
         },
         None => AsyncPositionSubmission {
             x: position.0,
             y: position.1,
             first_submitted: now,
+            size: None,
             wait_for_owner: false,
         },
     }
@@ -1433,11 +1444,16 @@ fn pending_async_position(window_id: WindowId) -> bool {
     }
 }
 
-pub(crate) fn has_owner_wait(window_id: WindowId) -> bool {
-    lock_async_positions()
+pub(crate) fn owner_wait_target(window_id: WindowId, current: &Rect) -> Option<Rect> {
+    let submission = lock_async_positions()
         .as_ref()
         .and_then(|submissions| submissions.get(&window_id))
-        .is_some_and(|submission| submission.wait_for_owner)
+        .copied()?;
+    if !submission.wait_for_owner {
+        return None;
+    }
+    let (width, height) = submission.size.unwrap_or((current.width, current.height));
+    Some(Rect::new(submission.x, submission.y, width, height))
 }
 
 fn clear_async_position(window_id: WindowId) {
@@ -1548,6 +1564,7 @@ type SuspectedSizes = (Option<i32>, Option<i32>);
 struct AsyncPositionSubmission {
     x: i32,
     y: i32,
+    size: Option<(i32, i32)>,
     first_submitted: std::time::Instant,
     // Display-change deferrals must not expire into a synchronous call while the owner is hung.
     wait_for_owner: bool,
@@ -1572,6 +1589,7 @@ fn record_queued_recovery(window_id: WindowId, x: i32, y: i32) {
         x,
         y,
         first_submitted: std::time::Instant::now(),
+        size: None,
         wait_for_owner: false,
     };
     lock_queued_recoveries()
@@ -2387,6 +2405,7 @@ mod tests {
             x: position.0,
             y: position.1,
             first_submitted: submitted,
+            size: None,
             wait_for_owner: false,
         };
         assert_eq!(
@@ -2416,6 +2435,7 @@ mod tests {
                 x: position.0,
                 y: position.1,
                 first_submitted: submitted,
+                size: None,
                 wait_for_owner: false,
             }),
             updated_position,
@@ -2452,6 +2472,7 @@ mod tests {
                 x: destination.0,
                 y: destination.1,
                 first_submitted: submission_time,
+                size: None,
                 wait_for_owner: false,
             },
         )]);
@@ -2499,6 +2520,7 @@ mod tests {
                 x: destination.0,
                 y: destination.1,
                 first_submitted: expired_submission_time,
+                size: None,
                 wait_for_owner: false,
             },
         );
