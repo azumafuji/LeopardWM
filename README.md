@@ -254,6 +254,10 @@ as modifiers cannot be represented by PowerToys and are skipped with a warning;
 F13-F24 used as ordinary trigger keys can be exported. Warnings go to stderr so
 stdout remains usable YAML.
 
+### Layout options
+
+Enable **Settings → Layout → Center single column**, or set `center_single_column = true` under `[layout]`, to center the only active tiled column when it fits within the viewport’s outer gaps. It is off by default and applies with every `centering_mode` (`center`, `just_in_view`, or `on_overflow`), independently of `center_past_edges`. Minimized-only columns and floating windows do not count; wider columns keep the normal scrolling behavior.
+
 ### Layout commands
 
 Most users drive the layout via hotkeys, but every hotkey has a CLI equivalent — useful for scripting or AutoHotkey integration.

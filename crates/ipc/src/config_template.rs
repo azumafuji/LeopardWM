@@ -56,6 +56,9 @@ height_presets = [0.333, 0.5, 0.667]
 # - on_overflow: Center only when the column is wider than the viewport
 centering_mode = "{centering_mode}"
 
+# Center the only active tiled column when it fits, regardless of centering mode.
+center_single_column = false
+
 [appearance]
 
 [behavior]

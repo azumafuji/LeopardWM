@@ -3,6 +3,21 @@ use crate::*;
 use crate::workspace::Workspace;
 
 impl Workspace {
+    /// Screen-space viewport offset for a centered single column, without changing scroll state.
+    pub fn single_column_viewport_left(&self, viewport_width: i32) -> Option<i32> {
+        if !self.center_single_column || self.fullscreen_window.is_some() {
+            return None;
+        }
+        let mut active = self.columns.iter().filter(|c| self.is_column_active(c));
+        let column = active.next()?;
+        if active.next().is_some() {
+            return None;
+        }
+        let width = self.effective_column_width(column);
+        let visible_width = self.visible_width(viewport_width);
+        (width <= visible_width).then(|| -(visible_width - width) / 2)
+    }
+
     /// Compute placements for all windows given a viewport.
     ///
     /// Returns a list of WindowPlacement structs indicating where each window
@@ -11,7 +26,9 @@ impl Workspace {
     /// Note: Negative gaps are treated as zero for calculation purposes.
     pub fn compute_placements(&self, viewport: Rect) -> Vec<WindowPlacement> {
         // Use rounding instead of truncation to prevent sub-pixel jitter
-        let viewport_left = self.scroll_offset.round() as i32;
+        let viewport_left = self
+            .single_column_viewport_left(viewport.width)
+            .unwrap_or_else(|| self.scroll_offset.round() as i32);
 
         // Fullscreen mode: one window covers the entire viewport, others are off-screen
         if let Some(fs_wid) = self.fullscreen_window {
@@ -284,7 +301,9 @@ impl Workspace {
     /// to support smooth scrolling animations.
     pub fn compute_placements_animated(&self, viewport: Rect) -> Vec<WindowPlacement> {
         // Use animated scroll offset
-        let viewport_left = self.effective_scroll_offset().round() as i32;
+        let viewport_left = self
+            .single_column_viewport_left(viewport.width)
+            .unwrap_or_else(|| self.effective_scroll_offset().round() as i32);
 
         // Fullscreen mode: one window covers the entire viewport, others are off-screen
         if let Some(fs_wid) = self.fullscreen_window {

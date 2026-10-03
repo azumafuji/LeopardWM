@@ -4,6 +4,10 @@ All notable changes to LeopardWM will be documented in this file.
 
 ## 0.3.0
 
+### Features
+
+- **The only active tiled column can now stay centered when it fits in the viewport.** Enable `center_single_column = true` under `[layout]` or Settings → Layout → Center single column; it is off by default. (#86)
+
 ### Fixes
 
 - **Windows in columns scrolled off the left edge no longer show a sliver on screen when the app resizes itself.** Wider windows stay anchored outside the viewport, and off-screen resizes missed during placement are checked again once placement settles.

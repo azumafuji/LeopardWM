@@ -975,6 +975,10 @@ input[type="range"]::-webkit-slider-thumb {
             </div>
           </div>
           <div class="field">
+            <div class="field-info"><div class="field-label">Center single column</div><div class="field-desc">Center the only active tiled column when it fits in the viewport</div></div>
+            <label class="toggle"><input type="checkbox" id="layout-center_single_column"><span class="track"></span><span class="thumb"></span></label>
+          </div>
+          <div class="field">
             <div class="field-info"><div class="field-label">Center past edges</div><div class="field-desc">Allow centering to scroll past content boundaries</div></div>
             <label class="toggle"><input type="checkbox" id="layout-center_past_edges"><span class="track"></span><span class="thumb"></span></label>
           </div>
@@ -1549,6 +1553,7 @@ function init(cfg) {
   document.getElementById('height-presets-body').innerHTML = '';
   (cfg.layout.height_presets || [0.333,0.5,0.667]).forEach(function(v) { addPresetRow('height', v); });
   setCb('cb-layout-centering_mode', cfg.layout.centering_mode);
+  setChecked('layout-center_single_column', cfg.layout.center_single_column);
   setChecked('layout-center_past_edges', cfg.layout.center_past_edges);
 
   setChecked('appearance-active_border', cfg.appearance.active_border);
@@ -2198,6 +2203,7 @@ function readConfig() {
       height_presets: readPresets('height'),
       default_width_preset: defaultWidthPreset,
       centering_mode: cbVal('cb-layout-centering_mode'),
+      center_single_column: checked('layout-center_single_column'),
       center_past_edges: checked('layout-center_past_edges')
     },
     appearance: {
@@ -2390,6 +2396,17 @@ document.querySelectorAll('input[type="text"], input[type="number"]').forEach(fu
 #[cfg(test)]
 mod tests {
     use super::SETTINGS_HTML;
+
+    #[test]
+    fn center_single_column_is_wired_into_settings_config() {
+        assert!(SETTINGS_HTML.contains("id=\"layout-center_single_column\""));
+        assert!(SETTINGS_HTML.contains(
+            "setChecked('layout-center_single_column', cfg.layout.center_single_column);"
+        ));
+        assert!(
+            SETTINGS_HTML.contains("center_single_column: checked('layout-center_single_column')")
+        );
+    }
 
     #[test]
     fn reduce_motion_on_battery_is_wired_into_settings_config() {

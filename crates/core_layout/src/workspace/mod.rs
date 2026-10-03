@@ -133,6 +133,8 @@ pub struct Workspace {
     /// Whether center-column can scroll past content edges.
     #[serde(skip)]
     pub(crate) center_past_edges: bool,
+    #[serde(skip)]
+    pub(crate) center_single_column: bool,
     /// State for maximized column toggle (fills viewport width).
     #[serde(skip)]
     pub(crate) maximized_column: Option<MaximizedColumnState>,
@@ -182,6 +184,7 @@ impl Default for Workspace {
             scroll_duration_ms: DEFAULT_ANIMATION_DURATION_MS,
             scroll_easing: Easing::default(),
             center_past_edges: false,
+            center_single_column: false,
             maximized_column: None,
             tab_strip_reserve_px: 0,
         }
@@ -466,6 +469,11 @@ impl Workspace {
     pub fn set_scroll_animation(&mut self, duration_ms: u64, easing: Easing) {
         self.scroll_duration_ms = duration_ms;
         self.scroll_easing = easing;
+    }
+
+    /// Center the only active tiled column when it fits inside the viewport.
+    pub fn set_center_single_column(&mut self, center: bool) {
+        self.center_single_column = center;
     }
 
     /// Set whether center-column can scroll past content edges.

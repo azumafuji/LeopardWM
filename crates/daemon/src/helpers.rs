@@ -224,6 +224,7 @@ impl AppState {
                 params.apply_to(workspace);
                 workspace.set_centering_mode(self.config.layout.centering_mode.into());
                 workspace.set_center_past_edges(self.config.layout.center_past_edges);
+                workspace.set_center_single_column(self.config.layout.center_single_column);
 
                 // Rescale column widths to preserve fractions under new gap values
                 workspace.rescale_column_widths(

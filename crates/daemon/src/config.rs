@@ -134,6 +134,10 @@ pub struct LayoutConfig {
     #[serde(default)]
     pub centering_mode: CenteringModeConfig,
 
+    /// Center the only active tiled column when it fits inside the viewport.
+    #[serde(default)]
+    pub center_single_column: bool,
+
     /// Whether center-column can scroll past content edges.
     /// When true, the first/last column will be truly centered with empty space.
     /// When false (default), scroll is clamped to content boundaries.
@@ -191,6 +195,7 @@ impl Default for LayoutConfig {
             outer_gap_bottom: default_outer_gap(),
             centering_mode: CenteringModeConfig::default(),
             center_past_edges: false,
+            center_single_column: false,
             width_presets: default_width_presets(),
             default_width_preset: default_width_preset(),
             height_presets: default_height_presets(),
@@ -2806,6 +2811,17 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.behavior.focus_new_windows);
+    }
+
+    #[test]
+    fn test_center_single_column_defaults_false_and_roundtrips() {
+        let absent: Config = toml::from_str("[layout]\n").unwrap();
+        assert!(!absent.layout.center_single_column);
+        assert!(!Config::default().layout.center_single_column);
+        let enabled: Config = toml::from_str("[layout]\ncenter_single_column = true\n").unwrap();
+        assert!(enabled.layout.center_single_column);
+        let parsed: Config = toml::from_str(&toml::to_string_pretty(&enabled).unwrap()).unwrap();
+        assert!(parsed.layout.center_single_column);
     }
 
     #[test]
