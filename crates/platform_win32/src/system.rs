@@ -101,9 +101,36 @@ pub fn set_dpi_awareness() -> bool {
     }
 }
 
+// Run the test binary with the daemon's process DPI awareness, set before any test thread or
+// window exists, so placements and DWM frame measurements agree on scaled displays.
+#[cfg(test)]
+#[used]
+#[link_section = ".CRT$XCU"]
+static TEST_PROCESS_DPI_AWARENESS: extern "C" fn() = {
+    extern "C" fn set_test_process_dpi_awareness() {
+        set_dpi_awareness();
+    }
+    set_test_process_dpi_awareness
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_threads_inherit_per_monitor_dpi_awareness() {
+        use windows::Win32::UI::HiDpi::{
+            AreDpiAwarenessContextsEqual, GetThreadDpiAwarenessContext,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        };
+        assert!(unsafe {
+            AreDpiAwarenessContextsEqual(
+                GetThreadDpiAwarenessContext(),
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            )
+            .as_bool()
+        });
+    }
 
     #[test]
     fn test_scale_px_identity_at_100_percent() {
