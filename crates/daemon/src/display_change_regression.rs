@@ -723,14 +723,19 @@ fn test_owner_wait_omitted_window_is_probed_after_resume() {
 }
 
 #[test]
-fn test_owner_probe_budget_does_not_report_unprobed_windows() {
+fn test_owner_probe_budget_keeps_unprobed_windows_deferred_without_reporting_them() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let owners: Vec<_> = (0..16).map(|_| PlacementOwner::spawn()).collect();
     let placements: Vec<_> = owners
         .iter()
-        .map(|owner| fixture_placement(owner.window_id, Visibility::Visible))
+        .map(|owner| {
+            let mut placement = fixture_placement(owner.window_id, Visibility::Visible);
+            placement.rect.x = 48;
+            placement.rect.y = 48;
+            placement
+        })
         .collect();
     let state = placement_state(&[]);
     let started = Instant::now();
@@ -754,26 +759,58 @@ fn test_owner_probe_budget_does_not_report_unprobed_windows() {
         .iter()
         .find(|owner| !unresponsive.contains(&owner.window_id))
         .unwrap();
+    let window_id = unprobed.window_id;
+    let config = state.platform_config.clone();
+    let mut placement = fixture_placement(window_id, Visibility::Visible);
+    placement.rect = Rect::new(48, 48, 360, 240);
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker_placement = placement.clone();
+    let worker = thread::spawn(move || {
+        let mut cache = leopardwm_platform_win32::PlacementCache::new();
+        leopardwm_platform_win32::apply_placements(
+            std::slice::from_ref(&worker_placement),
+            &config,
+            Some(&mut cache),
+            false,
+        )
+        .unwrap();
+        let result =
+            leopardwm_platform_win32::apply_placements(&[worker_placement], &config, None, false)
+                .unwrap();
+        done_tx
+            .send(result.landings[0].measurement_deferred)
+            .unwrap();
+    });
+    let fast = done_rx.recv_timeout(Duration::from_millis(1600));
+    let returned_while_blocked = fast.is_ok();
     unprobed.resume();
-    let placement = fixture_placement(unprobed.window_id, Visibility::Visible);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while leopardwm_platform_win32::get_window_visible_rect(unprobed.window_id)
-        != Some(placement.rect)
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(10));
-    }
-    let result = leopardwm_platform_win32::apply_placements(
-        &[placement],
-        &state.platform_config,
-        None,
-        false,
-    )
-    .unwrap();
+    let deferred = fast.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    worker.join().unwrap();
     assert!(
-        !result.landings[0].measurement_deferred,
-        "an unprobed owner received a persistent owner-wait marker"
+        returned_while_blocked,
+        "an unprobed owner became synchronous after a same-origin resize"
     );
+    assert!(
+        deferred,
+        "a same-origin resize drained an unprobed owner's deferral"
+    );
+    for _ in 0..3 {
+        let result = leopardwm_platform_win32::apply_placements(
+            std::slice::from_ref(&placement),
+            &state.platform_config,
+            None,
+            false,
+        )
+        .unwrap();
+        if !result.landings[0].measurement_deferred {
+            assert_eq!(
+                leopardwm_platform_win32::get_window_visible_rect(window_id),
+                Some(placement.rect)
+            );
+            return;
+        }
+    }
+    panic!("unprobed owner did not drain after responding");
 }
 
 #[test]

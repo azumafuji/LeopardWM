@@ -613,7 +613,7 @@ fn apply_placements_inner(
     failed_window_ids.extend(failed_recovery_window_ids.iter().copied());
     let mut guard = lock_async_positions();
     if let Some(submissions) = guard.as_mut() {
-        for window_id in &owner_deferrals.unresponsive {
+        for window_id in &owner_deferrals.wait_for_owner {
             if !failed_window_ids.contains(window_id) {
                 if let Some(submission) = submissions.get_mut(window_id) {
                     submission.wait_for_owner = true;
@@ -1111,6 +1111,7 @@ fn uncloak_becoming_visible(entries: &[DeferEntry]) {
 #[derive(Default)]
 struct OwnerDeferrals {
     pending: HashSet<WindowId>,
+    wait_for_owner: HashSet<WindowId>,
     unresponsive: HashSet<WindowId>,
 }
 
@@ -1199,6 +1200,7 @@ fn probe_placement_owners(
             }
         } else {
             deferrals.pending.insert(window_id);
+            deferrals.wait_for_owner.insert(window_id);
             if answered == Some(false) {
                 deferrals.unresponsive.insert(window_id);
             }
