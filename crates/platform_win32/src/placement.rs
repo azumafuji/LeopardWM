@@ -1132,8 +1132,19 @@ fn probe_placement_owners(
     let mut deferrals = OwnerDeferrals::default();
     let mut owner_answers = HashMap::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    for placement in placements {
-        let window_id = placement.window_id;
+    let placed: HashSet<_> = placements
+        .iter()
+        .map(|placement| placement.window_id)
+        .collect();
+    let omitted = marked
+        .iter()
+        .copied()
+        .filter(|window_id| probe_marked && !placed.contains(window_id));
+    for window_id in placements
+        .iter()
+        .map(|placement| placement.window_id)
+        .chain(omitted)
+    {
         let was_marked = marked.contains(&window_id);
         if !display_change && !was_marked {
             continue;
@@ -1147,28 +1158,35 @@ fn probe_placement_owners(
         let Ok(hwnd) = window_id_to_hwnd(window_id) else {
             continue;
         };
-        if unsafe { !IsWindow(Some(hwnd)).as_bool() || IsIconic(hwnd).as_bool() } {
+        if unsafe { !IsWindow(Some(hwnd)).as_bool() } {
+            clear_async_position(window_id);
+            deferrals.pending.remove(&window_id);
+            continue;
+        }
+        if unsafe { IsIconic(hwnd).as_bool() } {
             continue;
         }
         let owner_thread = unsafe { GetWindowThreadProcessId(hwnd, None) };
         let answered = *owner_answers.entry(owner_thread).or_insert_with(|| {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             let timeout_ms = remaining.as_millis().min(100) as u32;
-            timeout_ms > 0
-                && unsafe {
-                    SendMessageTimeoutW(
-                        hwnd,
-                        WM_NULL,
-                        WPARAM(0),
-                        LPARAM(0),
-                        SMTO_ABORTIFHUNG | SMTO_BLOCK,
-                        timeout_ms,
-                        None,
-                    )
-                    .0 != 0
-                }
+            if timeout_ms == 0 {
+                return None;
+            }
+            Some(unsafe {
+                SendMessageTimeoutW(
+                    hwnd,
+                    WM_NULL,
+                    WPARAM(0),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                    timeout_ms,
+                    None,
+                )
+                .0 != 0
+            })
         });
-        if answered {
+        if answered == Some(true) {
             if was_marked {
                 if let Some(submission) = lock_async_positions()
                     .as_mut()
@@ -1180,7 +1198,9 @@ fn probe_placement_owners(
             }
         } else {
             deferrals.pending.insert(window_id);
-            deferrals.unresponsive.insert(window_id);
+            if answered == Some(false) {
+                deferrals.unresponsive.insert(window_id);
+            }
         }
     }
     deferrals
@@ -1411,6 +1431,13 @@ fn pending_async_position(window_id: WindowId) -> bool {
         AsyncPositionState::Pending => true,
         AsyncPositionState::Expired => false,
     }
+}
+
+pub(crate) fn has_owner_wait(window_id: WindowId) -> bool {
+    lock_async_positions()
+        .as_ref()
+        .and_then(|submissions| submissions.get(&window_id))
+        .is_some_and(|submission| submission.wait_for_owner)
 }
 
 fn clear_async_position(window_id: WindowId) {

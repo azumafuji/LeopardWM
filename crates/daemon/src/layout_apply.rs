@@ -1200,7 +1200,7 @@ impl AppState {
                                 ))
                                 .collect();
                             warn!(
-                                "Display-change placement queued asynchronously for unresponsive or unprobed windows: {}",
+                                "Display-change placement queued asynchronously for unresponsive windows: {}",
                                 windows.join("; ")
                             );
                         }

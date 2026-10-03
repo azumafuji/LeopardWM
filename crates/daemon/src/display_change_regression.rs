@@ -492,6 +492,161 @@ fn test_owner_wait_parked_maximized_recovery_is_classified_before_positioning() 
 }
 
 #[test]
+fn test_owner_wait_recovery_follows_a_park_that_has_not_landed() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for display_apply in [false, true] {
+        let blocked = PlacementOwner::spawn();
+        let state = placement_state(&[]);
+        if display_apply {
+            let placement = fixture_placement(blocked.window_id, Visibility::OffScreenLeft);
+            leopardwm_platform_win32::apply_display_change_placements(
+                &[placement],
+                &state.platform_config,
+                false,
+            )
+            .unwrap();
+        } else {
+            leopardwm_platform_win32::queue_window_offscreen(blocked.window_id).unwrap();
+        }
+        assert!(!leopardwm_platform_win32::is_move_offscreen_sentinel_rect(
+            &leopardwm_platform_win32::get_window_chrome_rect(blocked.window_id).unwrap()
+        ));
+        let window_id = blocked.window_id;
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            done_tx
+                .send(leopardwm_platform_win32::restore_windows_moved_offscreen(
+                    &[window_id],
+                ))
+                .unwrap();
+        });
+        let fast = done_rx.recv_timeout(Duration::from_millis(400));
+        let returned_while_blocked = fast.is_ok();
+        blocked.resume();
+        let restored = fast
+            .unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .unwrap();
+        worker.join().unwrap();
+        assert!(
+            returned_while_blocked,
+            "recovery synchronously positioned a waiting owner"
+        );
+        assert_eq!(
+            restored, 1,
+            "recovery skipped a queued park before it landed"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            let rect = leopardwm_platform_win32::get_window_chrome_rect(window_id).unwrap();
+            if rect.x >= 0 && rect.y >= 0 {
+                // Allow the queued park and recovery to both run before checking final geometry.
+                thread::sleep(Duration::from_millis(100));
+                let final_rect =
+                    leopardwm_platform_win32::get_window_chrome_rect(window_id).unwrap();
+                assert!(final_rect.x >= 0 && final_rect.y >= 0);
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let final_rect = leopardwm_platform_win32::get_window_chrome_rect(window_id).unwrap();
+        assert!(
+            final_rect.x >= 0 && final_rect.y >= 0,
+            "queued park overtook recovery"
+        );
+    }
+}
+
+#[test]
+fn test_owner_wait_omitted_window_is_probed_after_resume() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let blocked = PlacementOwner::spawn();
+    leopardwm_platform_win32::queue_window_offscreen(blocked.window_id).unwrap();
+    blocked.resume();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !leopardwm_platform_win32::is_move_offscreen_sentinel_rect(
+        &leopardwm_platform_win32::get_window_chrome_rect(blocked.window_id).unwrap(),
+    ) && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(leopardwm_platform_win32::is_move_offscreen_sentinel_rect(
+        &leopardwm_platform_win32::get_window_chrome_rect(blocked.window_id).unwrap()
+    ));
+    let state = placement_state(&[]);
+    leopardwm_platform_win32::apply_placements(&[], &state.platform_config, None, false).unwrap();
+    let placement = fixture_placement(blocked.window_id, Visibility::OffScreenLeft);
+    let result = leopardwm_platform_win32::apply_placements(
+        &[placement],
+        &state.platform_config,
+        None,
+        false,
+    )
+    .unwrap();
+    assert!(
+        !result.landings[0].measurement_deferred,
+        "an omitted responding owner retained its owner-wait marker"
+    );
+}
+
+#[test]
+fn test_owner_probe_budget_does_not_report_unprobed_windows() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owners: Vec<_> = (0..16).map(|_| PlacementOwner::spawn()).collect();
+    let placements: Vec<_> = owners
+        .iter()
+        .map(|owner| fixture_placement(owner.window_id, Visibility::Visible))
+        .collect();
+    let state = placement_state(&[]);
+    let started = Instant::now();
+    let (result, unresponsive) = leopardwm_platform_win32::apply_display_change_placements(
+        &placements,
+        &state.platform_config,
+        false,
+    )
+    .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(result
+        .landings
+        .iter()
+        .all(|landing| landing.measurement_deferred));
+    assert!(!unresponsive.is_empty());
+    assert!(
+        unresponsive.len() < owners.len(),
+        "budget-exhausted owners were reported as unresponsive without being probed"
+    );
+    let unprobed = owners
+        .iter()
+        .find(|owner| !unresponsive.contains(&owner.window_id))
+        .unwrap();
+    unprobed.resume();
+    let placement = fixture_placement(unprobed.window_id, Visibility::Visible);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while leopardwm_platform_win32::get_window_visible_rect(unprobed.window_id)
+        != Some(placement.rect)
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let result = leopardwm_platform_win32::apply_placements(
+        &[placement],
+        &state.platform_config,
+        None,
+        false,
+    )
+    .unwrap();
+    assert!(
+        !result.landings[0].measurement_deferred,
+        "an unprobed owner received a persistent owner-wait marker"
+    );
+}
+
+#[test]
 fn test_owner_wait_inactive_workspace_parking_does_not_block_display_change() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()

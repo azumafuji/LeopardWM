@@ -142,11 +142,17 @@ fn restore_window_if_offscreen_to_work_area(
             current_rect.bottom - current_rect.top,
         );
 
-        if !is_move_offscreen_sentinel_rect(&current_rect) {
+        let owner_wait = crate::placement::has_owner_wait(window_id);
+        if !owner_wait && !is_move_offscreen_sentinel_rect(&current_rect) {
             return Ok(false);
         }
 
         let restore_rect = compute_restore_rect_from_offscreen(&current_rect, work_area);
+        let async_flag = if owner_wait {
+            SWP_ASYNCWINDOWPOS
+        } else {
+            SET_WINDOW_POS_FLAGS(0)
+        };
 
         if let Err(e) = SetWindowPos(
             hwnd,
@@ -155,7 +161,7 @@ fn restore_window_if_offscreen_to_work_area(
             restore_rect.y,
             restore_rect.width,
             restore_rect.height,
-            SWP_NOZORDER | SWP_NOACTIVATE,
+            SWP_NOZORDER | SWP_NOACTIVATE | async_flag,
         ) {
             if !IsWindow(Some(hwnd)).as_bool() {
                 return Err(Win32Error::WindowNotFound(window_id));
@@ -164,6 +170,13 @@ fn restore_window_if_offscreen_to_work_area(
                 "Failed to restore off-screen window {}: {}",
                 window_id, e
             )));
+        }
+        if owner_wait {
+            crate::placement::record_queued_owner_position(
+                window_id,
+                restore_rect.x,
+                restore_rect.y,
+            );
         }
     }
 
@@ -206,8 +219,9 @@ fn emergency_sentinel_pass(window_ids: &[WindowId], work_area: &Rect) {
         };
         unsafe {
             let mut rect = RECT::default();
+            let owner_wait = crate::placement::has_owner_wait(id);
             if GetWindowRect(hwnd, &mut rect).is_err()
-                || !is_move_offscreen_sentinel_position(rect.left, rect.top)
+                || (!owner_wait && !is_move_offscreen_sentinel_position(rect.left, rect.top))
             {
                 continue;
             }
@@ -218,17 +232,20 @@ fn emergency_sentinel_pass(window_ids: &[WindowId], work_area: &Rect) {
                 rect.bottom - rect.top,
             );
             let restored = compute_restore_rect_from_offscreen(&current, work_area);
-            let _ = SetWindowPos(
+            if SetWindowPos(
                 hwnd,
                 None,
                 restored.x,
                 restored.y,
                 restored.width,
                 restored.height,
-                SWP_NOZORDER
-                    | SWP_NOACTIVATE
-                    | windows::Win32::UI::WindowsAndMessaging::SWP_ASYNCWINDOWPOS,
-            );
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+            )
+            .is_ok()
+                && owner_wait
+            {
+                crate::placement::record_queued_owner_position(id, restored.x, restored.y);
+            }
         }
     }
 }
