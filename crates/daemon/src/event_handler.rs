@@ -1350,6 +1350,7 @@ impl AppState {
         self.last_placed_layout_rects.remove(&hwnd);
         self.deferred_moved_or_resized.remove(&hwnd);
         self.offscreen_recheck_attempts.remove(&hwnd);
+        leopardwm_platform_win32::forget_offscreen_placement(hwnd);
         self.clear_physical_window_state(hwnd);
         self.application_fullscreen.remove(&hwnd);
 
@@ -3252,8 +3253,9 @@ impl AppState {
                 self.deferred_moved_or_resized.insert(hwnd);
                 continue;
             }
+            let before = self.physical_request_seq;
             self.on_window_moved_or_resized(hwnd, true);
-            checked = true;
+            checked |= self.physical_request_seq != before;
         }
         checked
     }
@@ -3483,7 +3485,10 @@ impl AppState {
                 // 21..(20+inset_l*2) px band were misclassified as
                 // swap-chain artifacts and the snap-back was skipped.
                 let chrome_actual = leopardwm_platform_win32::get_window_chrome_rect(hwnd);
-                let chrome_visible = chrome_actual.map(|c| {
+                let offscreen = self
+                    .current_physical_visibility(hwnd)
+                    .is_some_and(|visibility| visibility != Visibility::Visible);
+                let chrome_visible = chrome_actual.filter(|_| !offscreen).map(|c| {
                     let (il, it, _, _) =
                         leopardwm_platform_win32::get_window_invisible_insets(hwnd);
                     Rect::new(c.x + il, c.y + it, c.width, c.height)
@@ -3494,47 +3499,10 @@ impl AppState {
                         && (a.width - e.width).abs() <= eps
                         && (a.height - e.height).abs() <= eps
                 };
-                let offscreen = self
-                    .current_physical_visibility(hwnd)
-                    .is_some_and(|visibility| visibility != Visibility::Visible);
-                let offscreen_origin = if offscreen {
-                    expected.zip(chrome_actual).map(|(rect, actual)| {
-                        let placement = leopardwm_core_layout::WindowPlacement {
-                            window_id: hwnd,
-                            rect,
-                            visibility: self.current_physical_visibility(hwnd).unwrap(),
-                            column_index: 0,
-                        };
-                        let frame_rect = leopardwm_platform_win32::visible_rect_to_frame_rect(
-                            rect,
-                            leopardwm_platform_win32::get_window_invisible_insets(hwnd),
-                            self.high_contrast,
-                        );
-                        let monitors: Vec<_> =
-                            self.monitors.values().map(|monitor| monitor.rect).collect();
-                        leopardwm_platform_win32::offscreen_frame_origin(
-                            &placement,
-                            frame_rect,
-                            (actual.width, actual.height),
-                            &monitors,
-                        )
-                    })
-                } else {
-                    None
-                };
+                let offscreen_target = expected.zip(self.current_physical_visibility(hwnd));
                 let at_expected_position = if offscreen {
-                    // Position-only origins are sent verbatim; even 1px of drift can expose a sliver.
-                    let at_origin = chrome_actual
-                        .zip(offscreen_origin)
-                        .is_some_and(|(actual, origin)| (actual.x, actual.y) == origin);
-                    if !at_origin {
-                        debug!(
-                            "Window {} off expected position: expected {:?} frame_origin {:?} chrome {:?} monitor_rects {:?}",
-                            hwnd, expected, offscreen_origin, chrome_actual,
-                            self.monitors.values().map(|monitor| monitor.rect).collect::<Vec<_>>()
-                        );
-                    }
-                    at_origin
+                    // Compare the exact position and retained size resolved by placement, not fresh insets.
+                    leopardwm_platform_win32::offscreen_placement_matches(hwnd) == Some(true)
                 } else {
                     match expected {
                         Some(expected) => {
@@ -3578,16 +3546,14 @@ impl AppState {
                         hwnd
                     );
                 } else {
-                    if let Some(origin) = offscreen_origin {
+                    if let Some(target) = offscreen_target.filter(|_| offscreen) {
                         if periodic_recheck
-                            && self.offscreen_recheck_attempts.get(&hwnd) == Some(&origin)
+                            && self.offscreen_recheck_attempts.get(&hwnd) == Some(&target)
                         {
                             return;
                         }
                         if periodic_recheck {
-                            self.offscreen_recheck_attempts.insert(hwnd, origin);
-                        } else if self.offscreen_recheck_attempts.get(&hwnd) != Some(&origin) {
-                            self.offscreen_recheck_attempts.remove(&hwnd);
+                            self.offscreen_recheck_attempts.insert(hwnd, target);
                         }
                     } else if offscreen && periodic_recheck {
                         return;
@@ -3606,12 +3572,10 @@ impl AppState {
                     if let Err(e) = self.apply_layout() {
                         warn!("Failed to snap back layout after move/resize: {}", e);
                     }
-                    if let Some(origin) = offscreen_origin {
-                        if leopardwm_platform_win32::get_window_chrome_rect(hwnd)
-                            .is_some_and(|actual| origin == (actual.x, actual.y))
-                        {
-                            self.offscreen_recheck_attempts.remove(&hwnd);
-                        }
+                    if offscreen
+                        && leopardwm_platform_win32::offscreen_placement_matches(hwnd) == Some(true)
+                    {
+                        self.offscreen_recheck_attempts.remove(&hwnd);
                     }
                 }
             }

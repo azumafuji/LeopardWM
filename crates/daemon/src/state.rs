@@ -2,7 +2,7 @@
 
 use crate::config::{self, Config};
 use crate::physical_placement::PhysicalPresentation;
-use leopardwm_core_layout::{Rect, Workspace};
+use leopardwm_core_layout::{Rect, Visibility, Workspace};
 use leopardwm_ipc::NativeSwipeStatus;
 use leopardwm_platform_win32::{MonitorId, MonitorInfo, PlatformConfig};
 use serde::{Deserialize, Serialize};
@@ -591,7 +591,7 @@ pub(crate) struct AppState {
     /// Per-window suppression deadline for MovedOrResized events after apply_layout().
     pub(crate) moved_or_resized_suppression: HashMap<u64, std::time::Instant>,
     pub(crate) deferred_moved_or_resized: HashSet<u64>,
-    pub(crate) offscreen_recheck_attempts: HashMap<u64, (i32, i32)>,
+    pub(crate) offscreen_recheck_attempts: HashMap<u64, (Rect, Visibility)>,
     /// Last-placed layout rect per managed window (in layout coordinates, the
     /// rect the layout engine asked for — not the OS-level window rect with
     /// invisible borders). Updated on every successful apply_layout. Used by
@@ -1034,6 +1034,12 @@ pub(crate) struct StateSnapshot {
 }
 
 impl AppState {
+    pub(crate) fn placement_platform_config(&self) -> PlatformConfig {
+        let mut config = self.platform_config.clone();
+        config.monitor_rects = self.monitors.values().map(|monitor| monitor.rect).collect();
+        config
+    }
+
     /// Create new state with config and monitors.
     pub(crate) fn new_with_config(config: Config, monitors: Vec<MonitorInfo>) -> Self {
         use crate::helpers::ScaledLayoutParams;

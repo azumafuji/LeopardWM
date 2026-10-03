@@ -11801,21 +11801,30 @@ struct OffscreenResizeOwner {
 
 impl OffscreenResizeOwner {
     fn new() -> Self {
+        Self::create(false)
+    }
+
+    fn create(framed: bool) -> Self {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let join = std::thread::spawn(move || unsafe {
             use windows::core::w;
             use windows::Win32::System::Threading::GetCurrentThreadId;
             use windows::Win32::UI::WindowsAndMessaging::{
-                CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
-                WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+                CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, ShowWindow, MSG,
+                SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
+                WS_POPUP,
             };
             let hwnd = CreateWindowExW(
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 w!("STATIC"),
                 w!(""),
-                WS_POPUP,
-                -300,
-                0,
+                if framed {
+                    WS_OVERLAPPEDWINDOW
+                } else {
+                    WS_POPUP
+                },
+                if framed { -30000 } else { -300 },
+                if framed { -1000 } else { 0 },
                 300,
                 560,
                 None,
@@ -11824,6 +11833,9 @@ impl OffscreenResizeOwner {
                 None,
             )
             .unwrap();
+            if framed {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
             let mut message = MSG::default();
             // Create the owner message queue before exposing its thread ID.
             let _ = windows::Win32::UI::WindowsAndMessaging::PeekMessageW(
@@ -11925,7 +11937,7 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
         state.arm_moved_or_resized_suppression([owner.hwnd]);
         state.applying_layout = applying;
         state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
-        state.recheck_deferred_offscreen_windows();
+        assert!(!state.recheck_deferred_offscreen_windows());
         assert!(
             owner.rect().intersects(&work_area),
             "placement feedback remains suppressed"
@@ -11956,7 +11968,7 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
         std::time::Instant::now() - Duration::from_millis(1),
     );
     let request_seq = state.physical_request_seq;
-    state.recheck_deferred_offscreen_windows();
+    assert!(!state.recheck_deferred_offscreen_windows());
     assert_eq!(
         owner.rect().x,
         -315,
@@ -11965,6 +11977,16 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
     assert_eq!(
         state.physical_request_seq, request_seq,
         "no snap-back should be dispatched"
+    );
+    leopardwm_platform_win32::forget_offscreen_placement(owner.hwnd);
+    state.deferred_moved_or_resized.insert(owner.hwnd);
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    assert!(state.recheck_deferred_offscreen_windows());
+    assert_eq!(state.physical_request_seq, request_seq + 1);
+    assert_eq!(
+        leopardwm_platform_win32::offscreen_placement_matches(owner.hwnd),
+        Some(true),
+        "a missing platform record must trigger a corrective placement"
     );
 }
 
@@ -12020,6 +12042,98 @@ fn test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor() {
 }
 
 #[test]
+fn test_offscreen_recheck_converges_with_cached_insets_after_frame_change() {
+    if leopardwm_platform_win32::is_high_contrast_enabled() {
+        return;
+    }
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::create(true);
+    let insets = leopardwm_platform_win32::get_window_invisible_insets(owner.hwnd);
+    assert_ne!(
+        insets,
+        (0, 0, 0, 0),
+        "framed fixture must have genuine DWM insets"
+    );
+    let config = leopardwm_platform_win32::PlatformConfig::default();
+    leopardwm_platform_win32::apply_placements(
+        &[leopardwm_core_layout::WindowPlacement {
+            window_id: owner.hwnd,
+            rect: Rect::new(-30000, -1000, 300, 560),
+            visibility: leopardwm_core_layout::Visibility::Visible,
+            column_index: 0,
+        }],
+        &config,
+        None,
+        false,
+    )
+    .unwrap();
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_POPUP, WS_VISIBLE,
+        };
+        let hwnd = windows::Win32::Foundation::HWND(owner.hwnd as *mut _);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, (WS_POPUP | WS_VISIBLE).0 as isize);
+        SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .unwrap();
+        windows::Win32::Graphics::Dwm::DwmFlush().unwrap();
+    }
+    assert_eq!(
+        leopardwm_platform_win32::get_window_invisible_insets(owner.hwnd),
+        (0, 0, 0, 0)
+    );
+    let mut monitors = test_monitors();
+    monitors[0].rect = Rect::new(0, 0, 800, 600);
+    monitors[0].work_area = Rect::new(0, 0, 800, 560);
+    let mut state = AppState::new_with_config(test_config(), monitors);
+    state.paused = false;
+    state.reduce_motion = true;
+    let mut workspace = Workspace::with_gaps(0, 0);
+    workspace.set_reduce_motion(true);
+    workspace.insert_window(owner.hwnd, Some(300)).unwrap();
+    workspace.set_scroll_offset(300.0);
+    state.workspaces.get_mut(&1).unwrap()[0] = workspace;
+    state.apply_layout().unwrap();
+    owner.resize(-280, 315);
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    let before = state.physical_request_seq;
+    assert!(state.recheck_deferred_offscreen_windows());
+    let landed = owner.rect();
+    assert_ne!(
+        (landed.x, landed.y),
+        (-315, 0),
+        "placement must still use its cached frame insets"
+    );
+    assert_eq!(
+        leopardwm_platform_win32::offscreen_placement_matches(owner.hwnd),
+        Some(true)
+    );
+    for _ in 0..4 {
+        state.deferred_moved_or_resized.insert(owner.hwnd);
+        state.moved_or_resized_suppression.remove(&owner.hwnd);
+        assert!(!state.recheck_deferred_offscreen_windows());
+        assert_eq!(
+            state.physical_request_seq,
+            before + 1,
+            "one correction must converge without repeated applies"
+        );
+        assert_eq!(owner.rect(), landed);
+    }
+}
+
+#[test]
 fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
@@ -12040,14 +12154,14 @@ fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
     state.injected_apply_placements_behavior =
         Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
     owner.resize(-300, 315);
-    for _ in 0..4 {
+    for tick in 0..4 {
         state.arm_moved_or_resized_suppression([owner.hwnd]);
         state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
         state.moved_or_resized_suppression.insert(
             owner.hwnd,
             std::time::Instant::now() - Duration::from_millis(1),
         );
-        state.recheck_deferred_offscreen_windows();
+        assert_eq!(state.recheck_deferred_offscreen_windows(), tick == 0);
         assert_eq!(
             owner.rect().x,
             -300,
@@ -12063,18 +12177,37 @@ fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
     }
     owner.resize(-300, 330);
     state.moved_or_resized_suppression.remove(&owner.hwnd);
-    state.recheck_deferred_offscreen_windows();
+    assert!(!state.recheck_deferred_offscreen_windows());
     assert_eq!(
         state
             .injected_apply_placements_call_count
             .load(Ordering::SeqCst),
-        2,
+        1,
+        "app-owned size drift alone must not reset the target bound"
+    );
+    state.workspaces.get_mut(&1).unwrap()[0].set_scroll_offset(330.0);
+    state.apply_layout().unwrap();
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    assert!(state.recheck_deferred_offscreen_windows());
+    assert_eq!(
+        state
+            .injected_apply_placements_call_count
+            .load(Ordering::SeqCst),
+        3,
         "a changed target permits another attempt"
     );
-    owner.resize(-330, 330);
+    state.injected_apply_placements_behavior = None;
+    state.bump_physical_invalidation();
+    state.apply_layout().unwrap();
     state.moved_or_resized_suppression.remove(&owner.hwnd);
-    state.recheck_deferred_offscreen_windows();
-    owner.resize(-300, 330);
+    assert!(!state.recheck_deferred_offscreen_windows());
+    assert_eq!(
+        leopardwm_platform_win32::offscreen_placement_matches(owner.hwnd),
+        Some(true)
+    );
+    state.injected_apply_placements_behavior =
+        Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
+    owner.resize(-300, 315);
     state.arm_moved_or_resized_suppression([owner.hwnd]);
     state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
     state.moved_or_resized_suppression.remove(&owner.hwnd);
@@ -12083,7 +12216,7 @@ fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
         state
             .injected_apply_placements_call_count
             .load(Ordering::SeqCst),
-        3,
+        4,
         "landing clears the prior attempt bound"
     );
 }

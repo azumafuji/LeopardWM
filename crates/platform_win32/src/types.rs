@@ -81,7 +81,9 @@ impl MonitorInfo {
 
 /// Configuration for the Win32 platform layer.
 #[derive(Debug, Clone, Default)]
-pub struct PlatformConfig {}
+pub struct PlatformConfig {
+    pub monitor_rects: Vec<Rect>,
+}
 
 #[cfg(test)]
 mod tests {

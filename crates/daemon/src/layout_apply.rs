@@ -364,7 +364,7 @@ impl AppState {
         animation_worker::FrameRequest {
             placements: live_placements,
             ghost_updates,
-            platform_config: self.platform_config.clone(),
+            platform_config: self.placement_platform_config(),
             physical_request_id,
             physical_invalidation_id,
             physical_dispatch_request_id: self.physical_dispatch_request_id.clone(),
@@ -1019,7 +1019,7 @@ impl AppState {
         std::thread::JoinHandle<()>,
         std::sync::Arc<std::sync::atomic::AtomicBool>,
     )> {
-        let platform_config = self.platform_config.clone();
+        let platform_config = self.placement_platform_config();
         let display_change_apply = self.display_change_apply_in_progress;
         let apply_worker_cancelled = self.apply_worker_cancelled.clone();
         let apply_epoch_ref = self.apply_epoch.clone();
