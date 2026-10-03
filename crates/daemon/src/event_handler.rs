@@ -512,14 +512,13 @@ impl AppState {
         is_maximized: &mut impl FnMut(u64) -> bool,
     ) {
         match queue(hwnd) {
-            Ok(true) => {
-                self.pending_maximized_admission_restores.insert(hwnd);
-                self.window_last_maximized_at.insert(hwnd, now);
-            }
-            Ok(false) => {
-                if is_maximized(hwnd) {
-                    self.window_last_maximized_at.insert(hwnd, now);
+            Ok(will_report) => {
+                if will_report {
+                    self.pending_maximized_admission_restores.insert(hwnd);
                 }
+                // Keep the zoom sampled at admission: the worker may already be
+                // restoring the window, so a fresh read would race it.
+                self.window_last_maximized_at.insert(hwnd, now);
             }
             Err(error) => {
                 debug!(

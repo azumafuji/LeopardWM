@@ -82,6 +82,31 @@ fn test_maximized_admission_queue_failure_uses_current_native_state() {
 }
 
 #[test]
+fn test_maximized_admission_without_report_keeps_grace_when_worker_restores_first() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state
+        .injected_window_info
+        .insert(100, make_test_window_info(100));
+    let queued = std::cell::Cell::new(false);
+    assert_eq!(
+        state.try_admit_window_at_with_native_ops(
+            100,
+            AdmissionKind::Automatic,
+            None,
+            |_| !queued.get(),
+            |_| {
+                queued.set(true);
+                Ok(false)
+            },
+        ),
+        AdmitOutcome::Admitted
+    );
+    assert!(queued.get());
+    assert!(state.window_last_maximized_at.contains_key(&100));
+    assert!(!state.pending_maximized_admission_restores.contains(&100));
+}
+
+#[test]
 fn test_unfocused_maximized_admission_keeps_per_app_column_width() {
     let mut config = test_config();
     config.behavior.focus_new_windows = false;
