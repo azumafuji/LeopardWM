@@ -37,6 +37,7 @@ workspace switching. `ReleaseAllWindows` (`{"type":"release_all_windows"}`) is
 an additive v4 command that pauses tiling and cascades every managed window while
 retaining workspace membership. It has no prompt; a failed recovery or live
 placement outcome returns an error and leaves tiling paused.
+`CycleWidth` (`cycle_width`) and `CycleHeight` (`cycle_height`) are additive v4 commands that cycle to the next larger preset, wrapping to the smallest at the end.
 See [the hotkey query contract](shortcut-guide.md#ipc-contract) for ordering,
 collision resolution, and the distinction between configuration and runtime
 registration health.

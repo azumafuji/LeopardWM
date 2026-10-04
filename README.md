@@ -264,6 +264,8 @@ Most users drive the layout via hotkeys, but every hotkey has a CLI equivalent â
 
 ```bash
 lwm focus left | right | up | down
+lwm cycle-width                       # next width preset, wrapping at the end
+lwm cycle-height                      # next height preset, wrapping at the end
 lwm move left | right                  # move focused column
 lwm move-window up | down              # reorder within a column
 lwm workspace 3                        # switch to workspace 3
@@ -274,6 +276,8 @@ lwm scratchpad-toggle                  # summon / hide the scratchpad
 lwm toggle-sticky                      # pin / unpin focused window on every workspace
 lwm toggle-ignore                      # session-only ignore for the OS foreground window
 ```
+
+`cycle_width` and `cycle_height` are unbound by default; assign each a shortcut in Settings or `[hotkeys]`. Height cycling applies only to vertically stacked multi-window columns.
 
 `lwm toggle-ignore` targets the actual OS foreground window, not LeopardWM's cached
 focus. Toggling out unmanages that window for this daemon session only; toggling

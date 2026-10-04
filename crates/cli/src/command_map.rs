@@ -79,6 +79,8 @@ pub(crate) fn to_ipc_command(cmd: &Commands) -> IpcCommand {
         Commands::CenterColumn => IpcCommand::CenterColumn,
         Commands::MaximizeColumn => IpcCommand::MaximizeColumn,
         Commands::EqualizeWidths => IpcCommand::EqualizeColumnWidths,
+        Commands::CycleWidth => IpcCommand::CycleWidth,
+        Commands::CycleHeight => IpcCommand::CycleHeight,
         Commands::CycleWidthUp => IpcCommand::CycleWidthUp,
         Commands::CycleWidthDown => IpcCommand::CycleWidthDown,
         Commands::CycleHeightUp => IpcCommand::CycleHeightUp,

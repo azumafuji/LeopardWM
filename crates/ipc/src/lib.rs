@@ -537,10 +537,14 @@ pub enum IpcCommand {
     MaximizeColumn,
     /// Equalize all column widths.
     EqualizeColumnWidths,
+    /// Cycle focused column width through presets, wrapping at the end.
+    CycleWidth,
     /// Cycle focused column width up through presets.
     CycleWidthUp,
     /// Cycle focused column width down through presets.
     CycleWidthDown,
+    /// Cycle focused window height through presets, wrapping at the end.
+    CycleHeight,
     /// Cycle focused window height up through presets.
     CycleHeightUp,
     /// Cycle focused window height down through presets.
@@ -1047,6 +1051,8 @@ mod tests {
             IpcCommand::SetColumnWidth { fraction: 0.5 },
             IpcCommand::SetColumnWidth { fraction: 0.333 },
             IpcCommand::EqualizeColumnWidths,
+            IpcCommand::CycleWidth,
+            IpcCommand::CycleHeight,
             IpcCommand::CycleWidthUp,
             IpcCommand::CycleWidthDown,
             IpcCommand::CycleHeightUp,

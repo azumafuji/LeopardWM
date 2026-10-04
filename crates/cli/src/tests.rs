@@ -21,6 +21,17 @@ use std::time::Duration;
 // =========================================================================
 
 #[test]
+fn test_wrap_cycle_verbs_map_to_ipc() {
+    for (verb, expected) in [
+        ("cycle-width", IpcCommand::CycleWidth),
+        ("cycle-height", IpcCommand::CycleHeight),
+    ] {
+        let cli = Cli::try_parse_from(["lwm", verb]).unwrap();
+        assert_eq!(to_ipc_command(&cli.command), expected);
+    }
+}
+
+#[test]
 fn test_to_ipc_command_focus_left() {
     let cmd = Commands::Focus {
         direction: FocusDirection::Left,

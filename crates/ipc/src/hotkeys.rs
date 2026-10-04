@@ -140,6 +140,7 @@ pub fn hotkey_catalog() -> Vec<HotkeyAction> {
             "Cycle width up",
             "Column width",
         ),
+        action("cycle_width", None, "Cycle width", "Column width"),
         action(
             "equalize_widths",
             Some("Ctrl+Alt+0"),
@@ -158,6 +159,7 @@ pub fn hotkey_catalog() -> Vec<HotkeyAction> {
             "Cycle height up",
             "Window height",
         ),
+        action("cycle_height", None, "Cycle height", "Window height"),
         action(
             "equalize_heights",
             Some("Ctrl+Alt+Shift+0"),
@@ -397,8 +399,10 @@ pub fn command_for_action(id: &str) -> Option<crate::IpcCommand> {
         "move_to_monitor_right" => IpcCommand::MoveWindowToMonitorRight,
         "move_to_monitor_up" => IpcCommand::MoveWindowToMonitorUp,
         "move_to_monitor_down" => IpcCommand::MoveWindowToMonitorDown,
+        "cycle_width" => IpcCommand::CycleWidth,
         "cycle_width_up" | "resize_grow" => IpcCommand::CycleWidthUp,
         "cycle_width_down" | "resize_shrink" => IpcCommand::CycleWidthDown,
+        "cycle_height" => IpcCommand::CycleHeight,
         "cycle_height_up" => IpcCommand::CycleHeightUp,
         "cycle_height_down" => IpcCommand::CycleHeightDown,
         "equalize_heights" => IpcCommand::EqualizeColumnHeights,
@@ -461,6 +465,24 @@ pub fn render_template_block() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::IpcCommand;
+
+    #[test]
+    fn test_wrap_cycle_actions_are_unbound_and_parse() {
+        let catalog = hotkey_catalog();
+        for (id, expected) in [
+            ("cycle_width", IpcCommand::CycleWidth),
+            ("cycle_height", IpcCommand::CycleHeight),
+        ] {
+            let action = catalog.iter().find(|action| action.id == id).expect(id);
+            assert_eq!(action.default_key, None, "{id} must be opt-in");
+            assert_eq!(command_for_action(id), Some(expected.clone()));
+            let wire = format!(r#"{{"type":"{id}"}}"#);
+            let command: IpcCommand = serde_json::from_str(&wire).unwrap();
+            assert_eq!(command, expected);
+            assert_eq!(serde_json::to_string(&command).unwrap(), wire);
+        }
+    }
 
     #[test]
     fn test_catalog_has_no_duplicate_ids_or_keys() {

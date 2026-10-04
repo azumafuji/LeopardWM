@@ -86,6 +86,8 @@ fn fullscreen_policy(cmd: &IpcCommand) -> FullscreenPolicy {
         Resize { .. }
         | Scroll { .. }
         | SetColumnWidth { .. }
+        | CycleWidth
+        | CycleHeight
         | CycleWidthUp
         | CycleWidthDown
         | CycleHeightUp
@@ -493,6 +495,21 @@ impl AppState {
                     ws.equalize_column_widths(vw);
                     ws.ensure_focused_visible_animated(vw);
                     info!("Equalized column widths");
+                })
+            }
+            IpcCommand::CycleWidth => {
+                let presets = self.config.layout.width_presets.clone();
+                self.execute_workspace_command(true, false, |ws, vw| {
+                    ws.cycle_width(&presets, vw);
+                    ws.ensure_focused_visible_animated(vw);
+                    info!("Cycled column width");
+                })
+            }
+            IpcCommand::CycleHeight => {
+                let presets = self.config.layout.height_presets.clone();
+                self.execute_workspace_command(true, false, |ws, _vw| {
+                    ws.cycle_height(&presets);
+                    info!("Cycled window height");
                 })
             }
             IpcCommand::CycleWidthUp => {
@@ -2008,3 +2025,67 @@ mod set_active_tab_tests {
 #[cfg(test)]
 #[path = "workspace_switch_tests.rs"]
 mod workspace_switch_tests;
+
+#[cfg(test)]
+mod wrap_cycle_tests {
+    use super::*;
+    use crate::config::Config;
+    use leopardwm_core_layout::Rect;
+    use leopardwm_platform_win32::MonitorInfo;
+
+    #[test]
+    fn test_wrap_cycle_dispatch_uses_configured_presets() {
+        let mut config = Config::default();
+        config.layout.gap = 0;
+        config.layout.outer_gap_left = 0;
+        config.layout.outer_gap_right = 0;
+        config.layout.outer_gap_top = 0;
+        config.layout.outer_gap_bottom = 0;
+        config.layout.width_presets = vec![0.8, 0.3, 0.6];
+        config.layout.height_presets = vec![0.8, 0.3, 0.6];
+        let mut state = AppState::new_with_config(
+            config,
+            vec![MonitorInfo {
+                id: 1,
+                rect: Rect::new(0, 0, 1000, 1000),
+                work_area: Rect::new(0, 0, 1000, 1000),
+                is_primary: true,
+                device_name: "DISPLAY1".to_string(),
+                scale_factor: 1.0,
+            }],
+        );
+        assert!(state.paused);
+        let ws = state.focused_workspace_mut().unwrap();
+        ws.insert_window(100, Some(800)).unwrap();
+        ws.insert_window_in_column(200, 0).unwrap();
+        ws.set_focus(0, 0).unwrap();
+        ws.cycle_height_up(&[0.8]);
+        assert_eq!(
+            state.handle_command(IpcCommand::CycleWidth),
+            IpcResponse::Ok
+        );
+        assert_eq!(state.focused_workspace().unwrap().columns()[0].width(), 300);
+        assert_eq!(
+            state.handle_command(IpcCommand::CycleHeight),
+            IpcResponse::Ok
+        );
+        assert!(
+            (state.focused_workspace().unwrap().columns()[0].height_weights()[0] - 0.3).abs()
+                < 1e-9
+        );
+        let ws = state.focused_workspace_mut().unwrap();
+        ws.toggle_fullscreen();
+        assert_eq!(
+            state.handle_command(IpcCommand::CycleWidth),
+            IpcResponse::Ok
+        );
+        assert_eq!(
+            state.handle_command(IpcCommand::CycleHeight),
+            IpcResponse::Ok
+        );
+        let ws = state.focused_workspace().unwrap();
+        assert_eq!(ws.columns()[0].width(), 300);
+        assert!((ws.columns()[0].height_weights()[0] - 0.3).abs() < 1e-9);
+        assert!(ws.is_fullscreen());
+    }
+}

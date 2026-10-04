@@ -169,10 +169,14 @@ pub(crate) enum Commands {
     MaximizeColumn,
     /// Equalize all column widths
     EqualizeWidths,
+    /// Cycle focused column width through presets, wrapping at the end.
+    CycleWidth,
     /// Cycle focused column width up through presets
     CycleWidthUp,
     /// Cycle focused column width down through presets
     CycleWidthDown,
+    /// Cycle focused window height through presets, wrapping at the end.
+    CycleHeight,
     /// Cycle focused window height up through presets
     CycleHeightUp,
     /// Cycle focused window height down through presets

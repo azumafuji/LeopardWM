@@ -1677,6 +1677,19 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_wrap_cycle_commands() {
+        use leopardwm_ipc::IpcCommand;
+        for (name, expected) in [
+            ("cycle_width", IpcCommand::CycleWidth),
+            ("CYCLE-WIDTH", IpcCommand::CycleWidth),
+            ("cycle_height", IpcCommand::CycleHeight),
+            ("CYCLE-HEIGHT", IpcCommand::CycleHeight),
+        ] {
+            assert_eq!(parse_command(name), Some(expected), "{name}");
+        }
+    }
+
+    #[test]
     fn test_parse_command() {
         use leopardwm_ipc::IpcCommand;
 

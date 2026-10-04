@@ -4394,6 +4394,78 @@ mod tests {
     }
 
     #[test]
+    fn test_cycle_width_wrap_presets() {
+        for (current, expected) in [
+            (750, 250),
+            (900, 250),
+            (400, 500),
+            (494, 500),
+            (495, 750),
+            (496, 750),
+            (746, 250),
+        ] {
+            let mut ws = Workspace::with_gaps(0, 0);
+            ws.insert_window(1, Some(current)).unwrap();
+            ws.cycle_width(&[0.75, 0.25, 0.5], 1000);
+            assert_eq!(ws.columns()[0].width(), expected, "current={current}");
+        }
+    }
+
+    #[test]
+    fn test_cycle_width_wrap_uses_effective_width_and_resets_maximize() {
+        let mut ws = Workspace::with_gaps(0, 0);
+        ws.insert_window(1, Some(250)).unwrap();
+        ws.set_window_min_width(1, 600);
+        ws.cycle_width(&[0.25, 0.5, 0.75], 1000);
+        assert_eq!(ws.columns()[0].width(), 750);
+        ws.cycle_width(&[0.25, 0.5, 0.75], 1000);
+        assert_eq!(ws.columns()[0].width(), 250);
+        assert_eq!(ws.effective_column_width(&ws.columns()[0]), 600);
+        assert!(ws.toggle_maximize_column(1000));
+        ws.cycle_width(&[0.25, 0.5, 0.75], 1000);
+        assert_eq!(ws.columns()[0].width(), 250);
+        assert!(ws.toggle_maximize_column(1000));
+    }
+
+    #[test]
+    fn test_cycle_height_wrap_presets() {
+        for (current, expected) in [
+            (0.75, 0.25),
+            (0.9, 0.25),
+            (0.4, 0.5),
+            (0.494, 0.5),
+            (0.495, 0.75),
+            (0.496, 0.75),
+            (0.746, 0.25),
+        ] {
+            let mut ws = Workspace::with_gaps(0, 0);
+            ws.insert_window(1, Some(800)).unwrap();
+            ws.insert_window_in_column(2, 0).unwrap();
+            ws.set_focus(0, 0).unwrap();
+            ws.columns[0].set_height_weight(0, current);
+            ws.cycle_height(&[0.75, 0.25, 0.5]);
+            let weights = ws.columns()[0].height_weights();
+            assert!((weights[0] - expected).abs() < 1e-9, "current={current}");
+            assert!((weights[1] - (1.0 - expected)).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_cycle_height_wrap_noop_cases() {
+        let mut ws = Workspace::with_gaps(0, 0);
+        ws.insert_window(1, Some(800)).unwrap();
+        ws.cycle_height(&[0.25, 0.5, 0.75]);
+        assert_eq!(ws.columns()[0].height_weights(), &[1.0]);
+        ws.insert_window_in_column(2, 0).unwrap();
+        ws.set_focus(0, 0).unwrap();
+        ws.columns[0].set_height_weight(0, 0.75);
+        ws.toggle_focused_column_tabbed_mode();
+        let before = ws.columns()[0].height_weights().to_vec();
+        ws.cycle_height(&[0.25, 0.5, 0.75]);
+        assert_eq!(ws.columns()[0].height_weights(), before);
+    }
+
+    #[test]
     fn test_cycle_width_up() {
         let mut ws = Workspace::with_gaps(0, 0);
         ws.insert_window(1, Some(640)).unwrap(); // 640/1920 ≈ 0.333
