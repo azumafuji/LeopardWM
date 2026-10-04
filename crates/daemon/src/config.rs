@@ -1159,7 +1159,7 @@ impl Config {
     /// Validate configuration values, clamping out-of-range fields and returning warnings.
     pub fn validate(&mut self) -> Vec<ConfigWarning> {
         let mut warnings = Vec::new();
-        if !crate::locale::SUPPORTED_LANGUAGES.contains(&self.appearance.language.as_str()) {
+        if !crate::locale::is_supported(&self.appearance.language) {
             warnings.push(ConfigWarning {
                 field: "appearance.language".to_string(),
                 message: format!(
@@ -1652,12 +1652,21 @@ mod tests {
         assert_eq!(config.appearance.language, "en");
         let legacy: Config = toml::from_str("[appearance]\nactive_border = false").unwrap();
         assert_eq!(legacy.appearance.language, "en");
-        config.appearance.language = "zh-CN".into();
-        let serialized = toml::to_string(&config).unwrap();
-        let mut loaded: Config = toml::from_str(&serialized).unwrap();
-        assert_eq!(loaded.appearance.language, "zh-CN");
-        assert!(loaded.validate().is_empty());
-        for unsupported in ["auto", "zh-cn", "fr", ""] {
+        let languages: serde_json::Value =
+            serde_json::from_str(&crate::locale::languages_json()).unwrap();
+        for language in languages.as_array().unwrap() {
+            let identifier = language["identifier"].as_str().unwrap();
+            config.appearance.language = identifier.into();
+            let serialized = toml::to_string(&config).unwrap();
+            let mut loaded: Config = toml::from_str(&serialized).unwrap();
+            assert_eq!(loaded.appearance.language, identifier);
+            assert!(
+                loaded.validate().is_empty(),
+                "{identifier}.toml: config rejected bundled identifier"
+            );
+        }
+        let mut loaded = Config::default();
+        for unsupported in ["__unsupported__", "en ", ""] {
             loaded.appearance.language = unsupported.into();
             let warnings = loaded.validate();
             assert_eq!(loaded.appearance.language, "en");

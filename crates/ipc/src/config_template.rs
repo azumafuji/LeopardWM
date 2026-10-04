@@ -60,7 +60,7 @@ centering_mode = "{centering_mode}"
 center_single_column = false
 
 [appearance]
-# Settings, tray, and daemon notification language: "en" or "zh-CN"
+# Settings, tray, and daemon notification language: bundled locale filename stem (default "en")
 language = "en"
 
 [behavior]

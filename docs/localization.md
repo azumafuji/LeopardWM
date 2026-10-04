@@ -1,7 +1,8 @@
 # Localization
 
-Settings, tray menus/tooltips, and daemon-owned toast and dialog text support `en`
-and `zh-CN`. Select **Settings → Appearance → Language**, or set
+Settings, tray menus/tooltips, and daemon-owned toast and dialog text support all
+bundled catalogs (currently `en` and `zh-CN`). Select
+**Settings → Appearance → Language**, or set
 `[appearance] language = "zh-CN"` in `config.toml` and reload. English is the default;
 unsupported values become `en` with one config-validation warning. No OS-language
 detection or `auto` setting is provided. The open Settings window and tray menu
@@ -16,8 +17,9 @@ human review.
 
 - `crates/daemon/locales/en.toml`: English source of truth.
 - `crates/daemon/locales/zh-CN.toml`: Simplified Chinese machine draft.
-- `crates/daemon/src/locale.rs`: parsing, supported identifiers, bundled registration,
-  English fallback, and named-placeholder substitution.
+- `crates/daemon/build.rs`: discovers and embeds every `locales/*.toml` file.
+- `crates/daemon/src/locale.rs`: parsing, bundled identifiers/autonyms, English
+  fallback, and named-placeholder substitution.
 - `crates/daemon/src/settings/html.rs`: page consumers; the host injects the resolved
   table. Static text uses `data-i18n` and attribute-specific key bindings; generated
   HTML escapes translations with `escHtml`/`escAttr`.
@@ -37,7 +39,8 @@ Do not put English fallbacks into Rust or JavaScript: add the English entry here
 Values are plain text, not HTML. Formatting markup belongs to the page, never to a
 translation. Brand names, author names, URLs, license identifiers, numeric examples,
 and command/key tokens retain their literal identity. The language selector uses
-autonyms: `English` and `简体中文`.
+each catalog's `"language.name"` autonym, such as
+`English` and `简体中文`; this name does not change with the selected language.
 
 Named placeholders use `{name}` (ASCII letters/underscores followed by letters,
 underscores, or digits). Preserve each key's placeholder names exactly. Substitution
@@ -53,39 +56,50 @@ broken bundled non-English catalog falls back to English with a warning. Bundled
 catalog tests still reject missing translations and orphan keys, so runtime fallback
 is not a substitute for completing a translation.
 
-All catalogs use `include_str!`: **editing a locale file requires rebuilding the
-daemon**. Locale files are not loaded from the installed filesystem; installer/WiX
+The build script generates an `include_str!` table for every catalog: **editing a
+locale file requires rebuilding the daemon**. Locale files are not loaded from the installed filesystem; installer/WiX
 changes are unnecessary.
 
 ## Adding or editing a language
 
-1. Edit the existing UTF-8 catalog, or copy `en.toml` to a new locale filename and
-   translate every value. Preserve the flat structure and stable keys.
-2. For a new language, register its exact identifier in `SUPPORTED_LANGUAGES` and
-   its embedded file/lookup in `locale.rs`. Add its autonym and identifier to the
-   Settings Language combobox. Do not add OS detection or normalize identifiers.
-3. Extend the bundled-catalog key/placeholder tests to cover the new registration.
-   Update the config-template supported-value comment and user documentation.
-4. Run from the repository root:
+1. Edit an existing UTF-8 catalog, or copy `crates/daemon/locales/en.toml` to
+   `crates/daemon/locales/<identifier>.toml` and translate every value. **Only that
+   catalog file is needed to add a language**; no Rust, HTML, tests, or config-template
+   registration is needed. The build discovers every `.toml` file in this directory.
+2. Use the filename stem as the exact, case-sensitive identifier, for example `fr`,
+   `pt-BR`, or `zh-CN`. Identifiers contain 2–8 ASCII letters followed by optional
+   hyphen-separated groups of 1–8 ASCII letters or digits. Do not rename `en.toml`.
+   Set `"language.name"` to the language's own display name. Preserve all quoted
+   keys and `{placeholders}`; translate plain-text values only.
+3. Run from the repository root:
 
    ```powershell
    cargo test -p leopardwm-daemon locale::tests
-   cargo test -p leopardwm-daemon settings::html::tests
    cargo fmt --all -- --check
    git diff --check
    pwsh -NoProfile -File tools/check.ps1
    ```
 
-   **Node.js on `PATH` is a prerequisite for workspace tests** (`cargo test
-   --workspace`) and `tools/check.ps1`, because the Settings JavaScript rendering
-   test fails explicitly when Node.js is missing; it never silently skips. It
-   executes the embedded page script without a browser or WebView and exercises
-   literal text/attribute insertion, escaped generated markup, generated locale
-   keys, and language relabeling while a preset save is pending.
-   Config tests cover the default, legacy configs, round-trip, and warning path.
-5. Rebuild the daemon. Arrange separately authorized native UI acceptance for long
-   labels, text scaling, high contrast, and non-ASCII WebView/tray rendering. Unit
-   tests do not prove native visual or physical-input behavior.
+   Catalog tests automatically check every file: valid flat string TOML, valid
+   identifier, nonempty display name, every English key, no orphan keys, and
+   placeholder-name/count parity. Failures identify the file and affected key.
+   Config tests cover every bundled identifier, default/legacy configs, round-trip,
+   and normalization with one warning. These standard checks do not require Node.js.
+4. Optionally, with Node.js on `PATH`, run exactly this extra Settings check:
+
+   ```powershell
+   cargo test -p leopardwm-daemon translations_render_literally_in_settings_and_switch_live -- --ignored
+   ```
+
+   It executes the embedded page script without a browser or WebView and checks
+   literal text/attribute insertion, escaped generated markup and language options,
+   generated locale keys, and relabeling while a preset save is pending. Do not run
+   all ignored tests: other ignored tests require explicit desktop-test authorization.
+5. Include the language identifier, test results, and review status in your PR.
+   Native-speaker review is welcome; label machine drafts honestly. Rebuild the
+   daemon to try changes. Arrange separately authorized native UI acceptance for
+   long labels, text scaling, high contrast, and non-ASCII WebView/tray rendering.
+   Unit tests do not prove native visual or physical-input behavior.
 
 ## Deliberately untranslated surfaces
 

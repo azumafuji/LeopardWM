@@ -1,16 +1,26 @@
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { page, english, chinese } = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const { page, english, chinese, languages: bundledLanguages } = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 const script = page.split('<script>')[1].split('</script>')[0];
+const languagePopup = {};
+const initialLanguageCombo = { querySelector: () => languagePopup };
 const document = {
   documentElement: { lang: 'en' },
   querySelectorAll: () => [],
-  getElementById: () => null,
+  getElementById: id => id === 'cb-appearance-language' ? initialLanguageCombo : null,
   addEventListener: () => {}
 };
-const context = vm.createContext({ document, window: { _localeStrings: english, _language: 'en' } });
+const context = vm.createContext({ document, window: { _localeStrings: english, _language: 'en', _languages: bundledLanguages } });
 vm.runInContext(script, context);
 const readPresetEntries = context.readPresetEntries;
+const languageMarkup = languagePopup.innerHTML;
+assert.equal((languageMarkup.match(/class="combobox-option"/g) || []).length, bundledLanguages.length);
+for (const language of bundledLanguages) {
+  assert.ok(languageMarkup.includes(`data-value="${context.escAttr(language.identifier)}">${context.escHtml(language.name)}</div>`), language.identifier);
+}
+const hostileLanguage = { identifier: 'x-"<&', name: '<b>&"Native</b>' };
+assert.equal(context.languageOptionsMarkup([hostileLanguage]),
+  '<div class="combobox-option" data-value="x-&quot;&lt;&amp;">&lt;b&gt;&amp;&quot;Native&lt;/b&gt;</div>');
 
 const hostile = '<b>&"中文</b>';
 context.localeStrings = {

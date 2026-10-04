@@ -1,5 +1,7 @@
-# Simplified Chinese machine draft awaiting review by a native speaker.
-# Not reviewed. Preserve keys and {name} placeholders when editing.
+# Simplified Chinese machine draft awaiting native-speaker review.
+# Translate values only; preserve quoted keys and {placeholders}.
+# Test from the repository root: cargo test -p leopardwm-daemon locale::tests
+"language.name" = "简体中文"
 "settings.text.leopardwm_settings" = "LeopardWM 设置"
 "settings.text.settings" = "设置"
 "settings.text.layout" = "布局"

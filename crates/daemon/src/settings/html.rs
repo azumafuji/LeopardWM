@@ -1020,8 +1020,8 @@ input[type="range"]::-webkit-slider-thumb {
             <div class="field-info"><div class="field-label" data-i18n="settings.appearance.language.label"></div><div class="field-desc" data-i18n="settings.appearance.language.description"></div></div>
             <!-- Language autonyms are intentionally not translated. -->
             <div class="combobox" id="cb-appearance-language">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">English</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2 4l4 4 4-4"/></svg></button>
-              <div class="combobox-popup"><div class="combobox-option selected" data-value="en">English</div><div class="combobox-option" data-value="zh-CN">简体中文</div></div>
+              <button class="combobox-trigger" type="button"><span class="combobox-text"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2 4l4 4 4-4"/></svg></button>
+              <div class="combobox-popup"></div>
             </div>
           </div>
           <div class="info-bar" id="hc-info-bar" hidden>
@@ -1391,6 +1391,15 @@ function applyLocale(strings, language) {
       el.setAttribute(attribute, t(el.getAttribute('data-i18n-' + attribute)));
     });
   });
+}
+function languageOptionsMarkup(languages) {
+  return languages.map(function(language) {
+    return '<div class="combobox-option" data-value="' + escAttr(language.identifier) + '">' + escHtml(language.name) + '</div>';
+  }).join('');
+}
+var languageCombo = document.getElementById('cb-appearance-language');
+if (languageCombo) {
+  languageCombo.querySelector('.combobox-popup').innerHTML = languageOptionsMarkup(window._languages || []);
 }
 applyLocale(localeStrings, window._language || 'en');
 function refreshLocale(strings, language) {
@@ -2491,12 +2500,14 @@ mod tests {
     use super::SETTINGS_HTML;
 
     #[test]
+    #[ignore = "Needs Node.js on PATH for the optional Settings JavaScript check"]
     fn translations_render_literally_in_settings_and_switch_live() {
         use std::io::Write;
         use std::process::{Command, Stdio};
 
         let payload = serde_json::json!({
             "page": SETTINGS_HTML,
+            "languages": serde_json::from_str::<serde_json::Value>(&crate::locale::languages_json()).unwrap(),
             "english": serde_json::from_str::<serde_json::Value>(&crate::locale::page_json("en")).unwrap(),
             "chinese": serde_json::from_str::<serde_json::Value>(&crate::locale::page_json("zh-CN")).unwrap(),
         });

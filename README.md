@@ -114,9 +114,7 @@ Current releases are not code-signed, so Windows SmartScreen may show a warning 
 ## Quick Start (from source)
 
 Prerequisites: [Rust](https://rustup.rs) with the MSVC toolchain (`stable-x86_64-pc-windows-msvc`).
-Running workspace tests (`cargo test --workspace`) also requires [Node.js](https://nodejs.org/)
-on `PATH` for the Settings JavaScript test; missing Node.js fails the test rather than skipping it.
-See [Contributing](CONTRIBUTING.md#development-setup) for development checks.
+See [Contributing](CONTRIBUTING.md#development-setup) for development checks and the optional Node.js Settings check.
 
 ```bash
 git clone https://github.com/jcardama/LeopardWM.git
@@ -276,6 +274,7 @@ selection. Simplified Chinese is a **machine draft pending native-speaker review
 Locale files are embedded in the daemon, so editing a translation requires a rebuild.
 See the [localization contributor guide](docs/localization.md) for file locations,
 placeholders, validation, and the surfaces that remain English.
+To edit or add a catalog, see [Translating LeopardWM](CONTRIBUTING.md#translating-leopardwm).
 
 ### Layout options
 

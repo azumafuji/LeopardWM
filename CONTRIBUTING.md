@@ -51,10 +51,9 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 ## Development Setup
 
 Building requires Rust with the MSVC toolchain (`stable-x86_64-pc-windows-msvc`).
-Running workspace tests also requires [Node.js](https://nodejs.org/) on `PATH`:
-the Settings JavaScript test fails explicitly if Node.js is missing; it is never
-silently skipped. The final `pwsh -NoProfile -File tools/check.ps1` check also
-requires PowerShell 7 and Python for the tools tests.
+The final `pwsh -NoProfile -File tools/check.ps1` check requires PowerShell 7
+and Python for the tools tests. Node.js is optional, for the extra Settings
+JavaScript check described below.
 
 ```bash
 # Install Rust (if not already installed)
@@ -74,6 +73,40 @@ cargo fmt --all -- --check
 # Run linter
 cargo clippy --all -- -D warnings
 ```
+
+## Translating LeopardWM
+
+Edit an existing UTF-8 catalog in `crates/daemon/locales/`, or copy `en.toml` to
+`<identifier>.toml` to add a language. Adding that one file is enough: the build
+embeds it, config accepts its filename stem, and Settings lists its `language.name`
+autonym. Use a language identifier such as `fr` or `pt-BR`: 2–8 ASCII letters,
+optionally followed by hyphen-separated groups of 1–8 ASCII letters or digits.
+Identifiers are case-sensitive; `en.toml` remains the English source of truth.
+
+Translate values only, including `language.name` into the language's own name.
+Preserve every quoted key and `{placeholder}`, and keep values plain text rather
+than HTML. From the repository root, run:
+
+```powershell
+cargo test -p leopardwm-daemon locale::tests
+```
+
+Tests discover every catalog and check flat string TOML, identifiers, a nonempty
+autonym, complete English keys, no orphan keys, and matching placeholder names and
+counts. A translation PR should include the catalog, language identifier, test
+result, and whether a native speaker reviewed it. Do not claim human review for
+machine drafts; native-speaker review of the existing `zh-CN` draft is welcome.
+Rebuild to try translations. See [Localization](docs/localization.md) for details
+and the limits of automated checks.
+
+With Node.js on `PATH`, this optional extra check exercises Settings rendering,
+escaping, and live language changes without a browser:
+
+```powershell
+cargo test -p leopardwm-daemon translations_render_literally_in_settings_and_switch_live -- --ignored
+```
+
+Run only that named ignored test; other ignored tests can drive the desktop.
 
 ## Architecture Notes
 

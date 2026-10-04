@@ -1,4 +1,7 @@
-# English source of truth. Quote dotted keys to keep this table flat.
+# English source of truth.
+# Translate values only; preserve quoted keys and {placeholders}.
+# Test from the repository root: cargo test -p leopardwm-daemon locale::tests
+"language.name" = "English"
 "settings.text.leopardwm_settings" = "LeopardWM Settings"
 "settings.text.settings" = "Settings"
 "settings.text.layout" = "Layout"

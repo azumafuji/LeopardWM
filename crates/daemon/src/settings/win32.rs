@@ -330,8 +330,8 @@ pub fn run_settings_window(
         let webview = wry::WebViewBuilder::new_with_web_context(&mut web_context)
             .with_html(settings_html)
             .with_initialization_script(format!(
-                "window._initConfig = {}; window._hotkeyCatalog = {}; window._failedHotkeys = {}; window._localeStrings = {}; window._language = {}; window._version = {};",
-                config_json, catalog_json, failed_binds_json, crate::locale::page_json(&config.appearance.language), serde_json::to_string(&config.appearance.language)?, serde_json::to_string(env!("CARGO_PKG_VERSION"))?
+                "window._initConfig = {}; window._hotkeyCatalog = {}; window._failedHotkeys = {}; window._localeStrings = {}; window._language = {}; window._version = {}; window._languages = {};",
+                config_json, catalog_json, failed_binds_json, crate::locale::page_json(&config.appearance.language), serde_json::to_string(&config.appearance.language)?, serde_json::to_string(env!("CARGO_PKG_VERSION"))?, crate::locale::languages_json()
             ))
             .with_ipc_handler(move |req| {
                 handle_ipc(req.body(), &event_tx, hwnd);
