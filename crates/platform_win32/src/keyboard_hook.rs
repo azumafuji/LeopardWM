@@ -276,15 +276,10 @@ fn retain_overview_press(
 }
 
 pub(crate) fn clear_overview_press_ownership() {
-    let mut owned = HOOK_OVERVIEW_HELD
+    HOOK_OVERVIEW_HELD
         .lock()
-        .unwrap_or_else(recover_poisoned_mutex);
-    if owned.is_empty() {
-        return;
-    }
-    let mut held = HOOK_HELD.lock().unwrap_or_else(recover_poisoned_mutex);
-    held.retain(|key| !owned.contains(&(*key as u32)));
-    owned.clear();
+        .unwrap_or_else(recover_poisoned_mutex)
+        .clear();
 }
 
 fn route_overview_action(
@@ -719,8 +714,8 @@ unsafe fn apply_action(action: Action, ncode: i32, wparam: WPARAM, lparam: LPARA
             input,
             start_menu_mask,
         } => {
-            if let Some(hwnd) = target {
-                crate::overview::post_input(hwnd, input);
+            if let Some(target) = target {
+                crate::overview::post_input(target, input);
             }
             if start_menu_mask {
                 send_start_menu_mask();
@@ -819,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn missed_key_up_does_not_own_a_later_closed_overview_press() {
+    fn overview_release_preserves_held_key_until_key_up() {
         let mut owned = vec![0x48];
         assert_eq!(
             retain_overview_press(KeyMsg::Down, 0x48, Action::Pass, false, &mut owned),
@@ -831,8 +826,61 @@ mod tests {
         HOOK_HELD.lock().unwrap().extend([0x48, 0x49]);
         HOOK_OVERVIEW_HELD.lock().unwrap().push(0x48);
         clear_overview_press_ownership();
-        assert_eq!(*HOOK_HELD.lock().unwrap(), [0x49]);
+        assert_eq!(*HOOK_HELD.lock().unwrap(), [0x48, 0x49]);
         assert!(HOOK_OVERVIEW_HELD.lock().unwrap().is_empty());
+
+        let modifiers = win_ctrl();
+        let binds = [bind(modifiers, 0x48)];
+        for expected_emit in [false, true] {
+            let is_new_press = !HOOK_HELD.lock().unwrap().contains(&0x48);
+            let action = decide(
+                KeyMsg::Down,
+                0x48,
+                modifiers,
+                false,
+                &binds,
+                0,
+                0,
+                0,
+                is_new_press,
+                false,
+                None,
+            );
+            let routed = route_overview_action(
+                true,
+                0x48,
+                action,
+                false,
+                Some(crate::overview::OverviewAction::Navigate(
+                    crate::overview::OverviewDirection::Right,
+                )),
+            );
+            assert_eq!(
+                retain_overview_press(
+                    KeyMsg::Down,
+                    0x48,
+                    routed,
+                    false,
+                    &mut HOOK_OVERVIEW_HELD.lock().unwrap(),
+                ),
+                Action::SwallowHotkey {
+                    event: HotkeyEvent { id: binds[0].id },
+                    emit: expected_emit,
+                    start_menu_mask: false,
+                }
+            );
+            assert_eq!(
+                retain_overview_press(
+                    KeyMsg::Up,
+                    0x48,
+                    Action::Pass,
+                    false,
+                    &mut HOOK_OVERVIEW_HELD.lock().unwrap(),
+                ),
+                Action::Pass
+            );
+            HOOK_HELD.lock().unwrap().retain(|&key| key != 0x48);
+        }
         HOOK_HELD.lock().unwrap().clear();
     }
 

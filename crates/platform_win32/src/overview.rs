@@ -25,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::{mpsc, LazyLock, Mutex, MutexGuard};
 
 use leopardwm_core_layout::{Easing, Rect};
@@ -96,12 +96,55 @@ impl OverviewInput {
     }
 }
 
-static INPUT_HWND: AtomicIsize = AtomicIsize::new(0);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OverviewInputTarget {
+    hwnd: isize,
+    generation: u32,
+}
+
+struct OverviewInputSession {
+    hwnd: AtomicIsize,
+    generation: AtomicU32,
+}
+
+impl OverviewInputSession {
+    const fn new() -> Self {
+        Self {
+            hwnd: AtomicIsize::new(0),
+            generation: AtomicU32::new(0),
+        }
+    }
+
+    fn acquire(&self, hwnd: isize) {
+        self.hwnd.store(0, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.hwnd.store(hwnd, Ordering::SeqCst);
+    }
+
+    fn release(&self) {
+        self.hwnd.store(0, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn target(&self) -> Option<OverviewInputTarget> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        let hwnd = self.hwnd.load(Ordering::SeqCst);
+        (hwnd != 0 && generation == self.generation.load(Ordering::SeqCst))
+            .then_some(OverviewInputTarget { hwnd, generation })
+    }
+
+    fn posted_key(&self, visible: bool, target: OverviewInputTarget, key: u16) -> Option<u16> {
+        (visible && self.target() == Some(target)).then_some(key)
+    }
+}
+
+static INPUT_SESSION: OverviewInputSession = OverviewInputSession::new();
 
 /// O(1), lock-free: the keyboard hook must never wait for overview rendering.
-pub(crate) fn input_target() -> Option<isize> {
-    let hwnd = INPUT_HWND.load(Ordering::SeqCst);
-    foreground_input_target(hwnd, unsafe { GetForegroundWindow().0 as isize })
+pub(crate) fn input_target() -> Option<OverviewInputTarget> {
+    let target = INPUT_SESSION.target()?;
+    foreground_input_target(target.hwnd, unsafe { GetForegroundWindow().0 as isize })?;
+    Some(target)
 }
 
 pub(crate) fn foreground_input_target(hwnd: isize, foreground: isize) -> Option<isize> {
@@ -109,17 +152,17 @@ pub(crate) fn foreground_input_target(hwnd: isize, foreground: isize) -> Option<
 }
 
 fn release_input() {
-    INPUT_HWND.store(0, Ordering::SeqCst);
+    INPUT_SESSION.release();
     crate::keyboard_hook::clear_overview_press_ownership();
 }
 
-pub(crate) fn post_input(hwnd: isize, input: OverviewInput) {
+pub(crate) fn post_input(target: OverviewInputTarget, input: OverviewInput) {
     unsafe {
         if let Err(error) = PostMessageW(
-            Some(HWND(hwnd as *mut c_void)),
+            Some(HWND(target.hwnd as *mut c_void)),
             WM_OVERVIEW_NAVIGATE,
             WPARAM(usize::from(input.key())),
-            LPARAM(0),
+            LPARAM(target.generation as isize),
         ) {
             tracing::warn!("Failed to post overview input: {error}");
         }
@@ -1295,7 +1338,7 @@ impl OverviewOverlay {
             s.window_rect = monitor_rect;
             s.hovered = None;
             s.visible = true;
-            INPUT_HWND.store(self.hwnd.0 as isize, Ordering::SeqCst);
+            INPUT_SESSION.acquire(self.hwnd.0 as isize);
             s.anim.is_some()
         };
         // Register thumbnails BEFORE the window shows so the very first
@@ -2189,8 +2232,13 @@ unsafe extern "system" fn overview_wnd_proc(
             LRESULT(0)
         }
         WM_OVERVIEW_NAVIGATE => {
-            if state().visible {
-                handle_key_down(hwnd, wparam.0 as u16);
+            let target = OverviewInputTarget {
+                hwnd: hwnd.0 as isize,
+                generation: lparam.0 as u32,
+            };
+            let visible = state().visible;
+            if let Some(key) = INPUT_SESSION.posted_key(visible, target, wparam.0 as u16) {
+                handle_key_down(hwnd, key);
             }
             LRESULT(0)
         }
@@ -3900,6 +3948,38 @@ unsafe fn draw_card_compact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queued_overview_controls_expire_on_release_and_reopen() {
+        let session = OverviewInputSession::new();
+        let mut s = overlay_state(glide_model(0));
+        session.acquire(42);
+        let queued_target = session.target().unwrap();
+        for key in [VK_RETURN.0, 0x31] {
+            assert_eq!(session.posted_key(s.visible, queued_target, key), Some(key));
+        }
+
+        session.release();
+        assert!(matches!(
+            start_close(&mut s, None, true),
+            CloseStart::NotAnimatable
+        ));
+        assert!(s.visible);
+        for key in [VK_RETURN.0, 0x31] {
+            assert_eq!(session.posted_key(s.visible, queued_target, key), None);
+        }
+
+        session.acquire(42);
+        let reopened_target = session.target().unwrap();
+        for key in [VK_RETURN.0, 0x31] {
+            assert_eq!(session.posted_key(s.visible, queued_target, key), None);
+            assert_eq!(
+                session.posted_key(s.visible, reopened_target, key),
+                Some(key)
+            );
+            assert_eq!(session.posted_key(false, reopened_target, key), None);
+        }
+    }
 
     #[test]
     fn directional_navigation_uses_arrow_selection_rules() {
