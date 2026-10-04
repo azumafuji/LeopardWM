@@ -762,10 +762,31 @@ impl AppState {
         const COUNT: usize = 9;
         let monitor = self.focused_monitor;
         let current = self.active_workspace_idx(monitor);
-        let (target, forward) = match cmd {
-            IpcCommand::WorkspacePrev => ((current + COUNT - 1) % COUNT, false),
-            IpcCommand::WorkspaceNext => ((current + 1) % COUNT, true),
+        let forward = match cmd {
+            IpcCommand::WorkspacePrev => false,
+            IpcCommand::WorkspaceNext => true,
             _ => unreachable!(),
+        };
+        let target = (1..COUNT).find_map(|distance| {
+            let idx = if forward {
+                (current + distance) % COUNT
+            } else {
+                (current + COUNT - distance) % COUNT
+            };
+            let occupied = || {
+                self.workspaces
+                    .get(&monitor)
+                    .and_then(|workspaces| workspaces.get(idx))
+                    .is_some_and(|ws| {
+                        ws.all_window_ids()
+                            .iter()
+                            .any(|hwnd| !self.sticky_windows.contains(hwnd))
+                    })
+            };
+            (!self.config.behavior.skip_empty_workspaces || occupied()).then_some(idx)
+        });
+        let Some(target) = target else {
+            return IpcResponse::Ok;
         };
         self.handle_switch_workspace_with_direction((target + 1) as u8, Some(forward))
     }

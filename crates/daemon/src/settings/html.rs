@@ -1107,6 +1107,10 @@ input[type="range"]::-webkit-slider-thumb {
             <label class="toggle"><input type="checkbox" id="behavior-workspace_edge_wrap"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
+            <div class="field-info"><div class="field-label">Skip empty workspaces</div><div class="field-desc">Previous/next workspace and edge-wrap focus skip workspaces without tiled or floating windows (sticky windows do not count)</div></div>
+            <label class="toggle"><input type="checkbox" id="behavior-skip_empty_workspaces"><span class="track"></span><span class="thumb"></span></label>
+          </div>
+          <div class="field">
             <div class="field-info"><div class="field-label">Fullscreen follows focus</div><div class="field-desc">Carry fullscreen to the next focused window (monocle) instead of dropping to the tiled layout. Turn off so fullscreen affects only the one window</div></div>
             <label class="toggle"><input type="checkbox" id="behavior-fullscreen_follows_focus"><span class="track"></span><span class="thumb"></span></label>
           </div>
@@ -1583,6 +1587,7 @@ function init(cfg) {
   setVal('behavior-focus_follows_mouse_delay_ms', cfg.behavior.focus_follows_mouse_delay_ms);
   setChecked('behavior-mouse_follows_focus', cfg.behavior.mouse_follows_focus === true);
   setChecked('behavior-workspace_edge_wrap', cfg.behavior.workspace_edge_wrap === true);
+  setChecked('behavior-skip_empty_workspaces', cfg.behavior.skip_empty_workspaces === true);
   setChecked('behavior-fullscreen_follows_focus', cfg.behavior.fullscreen_follows_focus !== false);
   setChecked('behavior-disable_snap_layouts', cfg.behavior.disable_snap_layouts !== false);
   setChecked('behavior-swap_chain_ghost_animation', cfg.behavior.swap_chain_ghost_animation === true);
@@ -2230,6 +2235,7 @@ function readConfig() {
       focus_follows_mouse_delay_ms: num('behavior-focus_follows_mouse_delay_ms'),
       mouse_follows_focus: checked('behavior-mouse_follows_focus'),
       workspace_edge_wrap: checked('behavior-workspace_edge_wrap'),
+      skip_empty_workspaces: checked('behavior-skip_empty_workspaces'),
       fullscreen_follows_focus: checked('behavior-fullscreen_follows_focus'),
       disable_snap_layouts: checked('behavior-disable_snap_layouts'),
       swap_chain_ghost_animation: checked('behavior-swap_chain_ghost_animation'),

@@ -75,6 +75,7 @@ A few deliberate **non-features**, so you know what you're getting:
 - Safe mode for troubleshooting (`--safe-mode`)
 - Built-in diagnostics (`lwm doctor`)
 - Workspace persistence and session recovery
+- Optional empty-workspace skipping for relative navigation
 - Autostart via Registry, configurable from CLI / Settings / tray
 - In-app update notifier — daily check against GitHub Releases, opt-out
 - Windows 11 Snap Layouts disabled for managed tiled windows
@@ -276,6 +277,10 @@ lwm scratchpad-toggle                  # summon / hide the scratchpad
 lwm toggle-sticky                      # pin / unpin focused window on every workspace
 lwm toggle-ignore                      # session-only ignore for the OS foreground window
 ```
+
+Set `skip_empty_workspaces = true` under `[behavior]` or enable **Settings → Behavior → Skip empty workspaces** (off by default) to skip empty slots on the same monitor. This applies to `workspace_next` / `workspace_prev` and to `focus_down` / `focus_up` when `workspace_edge_wrap` switches workspaces, wrapping 1 ↔ 9. If no other occupied workspace exists, they do nothing.
+
+Tiled, floating, and minimized managed windows count as occupancy; sticky windows do not. Explicit numbered selection, all move-to-workspace commands (including edge-wrap moves), overview, and horizontal focus are unchanged. Closing or moving away the last window does not automatically switch workspaces.
 
 `cycle_width` and `cycle_height` are unbound by default; assign each a shortcut in Settings or `[hotkeys]`. Height cycling applies only to vertically stacked multi-window columns.
 

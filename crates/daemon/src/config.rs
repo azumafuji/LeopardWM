@@ -451,6 +451,9 @@ pub struct BehaviorConfig {
     /// the one window it was toggled on.
     #[serde(default = "default_true")]
     pub fullscreen_follows_focus: bool,
+
+    #[serde(default = "default_false")]
+    pub skip_empty_workspaces: bool,
 }
 
 /// Placement for newly opened tiled windows.
@@ -482,6 +485,7 @@ impl Default for BehaviorConfig {
             workspace_edge_wrap: false,
             mouse_follows_focus: false,
             fullscreen_follows_focus: true,
+            skip_empty_workspaces: false,
         }
     }
 }

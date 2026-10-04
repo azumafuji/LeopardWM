@@ -104,6 +104,11 @@ focus_follows_mouse = false
 # move_window_up/move_window_down at the edge move the window there. Default false.
 # workspace_edge_wrap = false
 
+# Skip empty workspaces for prev/next and edge-wrap focus on this monitor.
+# Tiled, floating and minimized windows count; sticky windows do not.
+# No other occupied workspace means no change. Window moves are unaffected.
+# skip_empty_workspaces = false
+
 # Warp the mouse cursor onto the focused window after a focus-navigation command
 # (the inverse of focus_follows_mouse). Default false.
 # mouse_follows_focus = false

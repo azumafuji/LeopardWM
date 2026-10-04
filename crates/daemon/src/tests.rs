@@ -13766,6 +13766,316 @@ fn test_move_to_workspace_relative_wraps_around() {
 }
 
 #[test]
+fn test_skip_empty_workspace_config_round_trip() {
+    assert!(!Config::default().behavior.skip_empty_workspaces);
+    let omitted: Config = toml::from_str("[behavior]\nworkspace_edge_wrap = true").unwrap();
+    assert!(!omitted.behavior.skip_empty_workspaces);
+    for enabled in [false, true] {
+        let json = serde_json::json!({"behavior": {"skip_empty_workspaces": enabled}});
+        let from_settings: Config = serde_json::from_value(json).unwrap();
+        let saved = toml::to_string_pretty(&from_settings).unwrap();
+        let reloaded: Config = toml::from_str(&saved).unwrap();
+        assert_eq!(reloaded.behavior.skip_empty_workspaces, enabled);
+        assert_eq!(
+            serde_json::to_value(reloaded).unwrap()["behavior"]["skip_empty_workspaces"],
+            enabled
+        );
+    }
+}
+
+#[test]
+fn test_skip_empty_workspace_navigation_table() {
+    struct Case {
+        name: &'static str,
+        current: usize,
+        tiled: &'static [usize],
+        floating: &'static [usize],
+        sticky: &'static [usize],
+        minimized: bool,
+        next: usize,
+        prev: usize,
+    }
+    let cases = [
+        Case {
+            name: "empty current",
+            current: 0,
+            tiled: &[3, 6],
+            floating: &[],
+            sticky: &[],
+            minimized: false,
+            next: 3,
+            prev: 6,
+        },
+        Case {
+            name: "populated current",
+            current: 3,
+            tiled: &[0, 3, 7],
+            floating: &[],
+            sticky: &[],
+            minimized: false,
+            next: 7,
+            prev: 0,
+        },
+        Case {
+            name: "wrap from first",
+            current: 0,
+            tiled: &[0, 7],
+            floating: &[],
+            sticky: &[],
+            minimized: false,
+            next: 7,
+            prev: 7,
+        },
+        Case {
+            name: "wrap from last",
+            current: 8,
+            tiled: &[2, 8],
+            floating: &[],
+            sticky: &[],
+            minimized: false,
+            next: 2,
+            prev: 2,
+        },
+        Case {
+            name: "all empty",
+            current: 4,
+            tiled: &[],
+            floating: &[],
+            sticky: &[],
+            minimized: false,
+            next: 4,
+            prev: 4,
+        },
+        Case {
+            name: "only current populated",
+            current: 4,
+            tiled: &[4],
+            floating: &[],
+            sticky: &[],
+            minimized: false,
+            next: 4,
+            prev: 4,
+        },
+        Case {
+            name: "only another populated",
+            current: 4,
+            tiled: &[6],
+            floating: &[],
+            sticky: &[],
+            minimized: false,
+            next: 6,
+            prev: 6,
+        },
+        Case {
+            name: "floating counts",
+            current: 0,
+            tiled: &[5],
+            floating: &[2, 7],
+            sticky: &[],
+            minimized: false,
+            next: 2,
+            prev: 7,
+        },
+        Case {
+            name: "minimized counts",
+            current: 0,
+            tiled: &[2, 7],
+            floating: &[],
+            sticky: &[],
+            minimized: true,
+            next: 2,
+            prev: 7,
+        },
+        Case {
+            name: "sticky tiled and floating excluded",
+            current: 0,
+            tiled: &[1, 3, 8],
+            floating: &[2, 7],
+            sticky: &[1, 2, 7, 8],
+            minimized: false,
+            next: 3,
+            prev: 3,
+        },
+        Case {
+            name: "only sticky windows",
+            current: 0,
+            tiled: &[1],
+            floating: &[8],
+            sticky: &[1, 8],
+            minimized: false,
+            next: 0,
+            prev: 0,
+        },
+    ];
+    for skip in [false, true] {
+        for case in &cases {
+            for (command, forward) in [
+                (IpcCommand::WorkspaceNext, true),
+                (IpcCommand::WorkspacePrev, false),
+                (IpcCommand::FocusDown, true),
+                (IpcCommand::FocusUp, false),
+            ] {
+                for mon in [1, 2] {
+                    let config: Config = toml::from_str(&format!(
+                        "[behavior]\nskip_empty_workspaces = {skip}\nworkspace_edge_wrap = true"
+                    ))
+                    .unwrap();
+                    let mut state = AppState::new_with_config(config, two_monitors());
+                    state.focused_monitor = mon;
+                    let other = if mon == 1 { 2 } else { 1 };
+                    state.ensure_workspace_exists(mon, 8).unwrap();
+                    for &idx in case.tiled {
+                        let hwnd = 100 + idx as u64;
+                        let ws = &mut state.workspaces.get_mut(&mon).unwrap()[idx];
+                        ws.insert_window(hwnd, None).unwrap();
+                        if case.minimized {
+                            ws.mark_minimized(hwnd);
+                        }
+                    }
+                    for &idx in case.floating {
+                        state.workspaces.get_mut(&mon).unwrap()[idx]
+                            .add_floating(100 + idx as u64, Rect::new(100, 100, 400, 300))
+                            .unwrap();
+                    }
+                    for &idx in case.sticky {
+                        state.sticky_windows.insert(100 + idx as u64);
+                    }
+                    state.active_workspace.insert(mon, case.current);
+                    for idx in 0..9 {
+                        state
+                            .ensure_workspace_exists(other, idx)
+                            .unwrap()
+                            .insert_window(200 + idx as u64, None)
+                            .unwrap();
+                    }
+                    let expected = if skip {
+                        if forward {
+                            case.next
+                        } else {
+                            case.prev
+                        }
+                    } else if forward {
+                        (case.current + 1) % 9
+                    } else {
+                        (case.current + 8) % 9
+                    };
+                    assert!(matches!(
+                        state.handle_command(command.clone()),
+                        IpcResponse::Ok
+                    ));
+                    assert_eq!(
+                        state.active_workspace_idx(mon),
+                        expected,
+                        "{}: skip={skip}, {command:?}",
+                        case.name
+                    );
+                    assert_eq!(state.focused_monitor, mon);
+                    assert_eq!(state.active_workspace_idx(other), 0);
+                    if expected == case.current {
+                        assert!(
+                            state.layout_transition.is_none(),
+                            "no-op must not start a switch"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_skip_empty_workspace_unchanged_commands_table() {
+    for skip in [false, true] {
+        for command in [
+            IpcCommand::MoveToWorkspaceNext,
+            IpcCommand::MoveToWorkspacePrev,
+            IpcCommand::MoveToWorkspace { index: 5 },
+            IpcCommand::MoveWindowDown,
+            IpcCommand::MoveWindowUp,
+        ] {
+            let mut state = AppState::new_with_config(test_config(), test_monitors());
+            state.config.behavior.skip_empty_workspaces = skip;
+            state.config.behavior.workspace_edge_wrap = true;
+            let mon = state.focused_monitor;
+            state
+                .focused_workspace_mut()
+                .unwrap()
+                .insert_window(100, None)
+                .unwrap();
+            let target = match command {
+                IpcCommand::MoveToWorkspacePrev | IpcCommand::MoveWindowUp => 8,
+                IpcCommand::MoveToWorkspace { .. } => 4,
+                _ => 1,
+            };
+            assert!(matches!(
+                state.handle_command(command.clone()),
+                IpcResponse::Ok
+            ));
+            assert_eq!(state.active_workspace_idx(mon), 0, "{command:?}");
+            assert!(state.workspaces[&mon][target].contains_window(100));
+            assert!(state.selected_workspace_is_genuinely_empty());
+            for horizontal in [IpcCommand::FocusLeft, IpcCommand::FocusRight] {
+                assert!(matches!(state.handle_command(horizontal), IpcResponse::Ok));
+                assert_eq!(state.active_workspace_idx(mon), 0);
+            }
+            state.handle_command(IpcCommand::WorkspaceNext);
+            assert_eq!(
+                state.active_workspace_idx(mon),
+                if skip { target } else { 1 },
+                "navigation after last window transferred: {command:?}"
+            );
+        }
+        for command in [
+            IpcCommand::SwitchWorkspace { index: 9 },
+            IpcCommand::SwitchWorkspaceOnMonitor {
+                monitor_device_name: "DISPLAY2".into(),
+                index: 9,
+            },
+        ] {
+            let mut state = AppState::new_with_config(test_config(), two_monitors());
+            state.config.behavior.skip_empty_workspaces = skip;
+            assert!(matches!(state.handle_command(command), IpcResponse::Ok));
+            assert_eq!(state.active_workspace_idx(state.focused_monitor), 8);
+        }
+        let mut state = AppState::new_with_config(test_config(), test_monitors());
+        state.config.behavior.skip_empty_workspaces = skip;
+        state.config.behavior.workspace_edge_wrap = true;
+        let ws = state.focused_workspace_mut().unwrap();
+        ws.insert_window(100, None).unwrap();
+        ws.insert_window_in_column(200, 0).unwrap();
+        ws.focus_up();
+        state
+            .ensure_workspace_exists(1, 2)
+            .unwrap()
+            .insert_window(300, None)
+            .unwrap();
+        state.handle_command(IpcCommand::FocusDown);
+        assert_eq!(state.active_workspace_idx(1), 0);
+        assert_eq!(
+            state.focused_workspace().unwrap().focused_window(),
+            Some(200)
+        );
+        state.handle_command(IpcCommand::FocusUp);
+        assert_eq!(state.active_workspace_idx(1), 0);
+        assert_eq!(
+            state.focused_workspace().unwrap().focused_window(),
+            Some(100)
+        );
+        for command in [IpcCommand::FocusUp, IpcCommand::FocusDown] {
+            let mut state = AppState::new_with_config(test_config(), test_monitors());
+            state.config.behavior.skip_empty_workspaces = skip;
+            state
+                .ensure_workspace_exists(1, 2)
+                .unwrap()
+                .insert_window(100, None)
+                .unwrap();
+            state.handle_command(command);
+            assert_eq!(state.active_workspace_idx(1), 0, "edge-wrap disabled");
+        }
+    }
+}
+
+#[test]
 fn test_edge_wrap_focus_switches_workspace_only_when_enabled() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     let mon = state.focused_monitor;

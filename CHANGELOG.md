@@ -6,6 +6,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Features
 
+- **Relative workspace navigation can now skip empty workspaces on the same monitor.** Enable `skip_empty_workspaces = true` under `[behavior]` or Settings → Behavior → Skip empty workspaces; it is off by default. Previous/next workspace and edge-wrap vertical focus skip empty slots, counting floating and minimized windows but not sticky windows. Explicit workspace selection and window moves are unchanged. (#70)
 - **A documented Yasb configuration shows all nine workspaces on a selected monitor and switches them on click.** The built-in Custom widget polls the existing CLI for active/occupied indicators and workspace-name tooltips; no plugin is required. (#127)
 - **One binding each can now cycle through all width or height presets, wrapping at the end.** `cycle_width` and `cycle_height` are unbound by default, with CLI commands `lwm cycle-width` and `lwm cycle-height`. (#70)
 - **The only active tiled column can now stay centered when it fits in the viewport.** Enable `center_single_column = true` under `[layout]` or Settings → Layout → Center single column; it is off by default. (#86)
