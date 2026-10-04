@@ -13,7 +13,7 @@ fn embed_locales() {
                     .is_some_and(|extension| extension == "toml")
         })
         .collect::<Vec<_>>();
-    catalogs.sort();
+    catalogs.sort_by(|a, b| a.file_stem().cmp(&b.file_stem()));
     let mut table = String::from("const BUNDLED_CATALOGS: &[(&str, &str)] = &[\n");
     for path in catalogs {
         let identifier = path
