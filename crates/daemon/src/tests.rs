@@ -11042,8 +11042,8 @@ fn test_restore_state_on_empty_workspace_safe() {
     let ws = &state.workspaces.get(&1).unwrap()[0];
     assert_eq!(
         ws.scroll_offset(),
-        300.0,
-        "Scroll offset should be set directly even on empty workspace"
+        0.0,
+        "Scroll offset outside empty workspace bounds should be normalized"
     );
 }
 
@@ -16592,6 +16592,11 @@ fn test_restore_center_single_column_runtime_setting() {
         for restore_path in 0..3 {
             let mut state = structure_restore_state();
             state.config.layout.center_single_column = enabled;
+            state.monitors.get_mut(&2).unwrap().work_area.width = 1000;
+            state.injected_apply_placements_behavior = Some(
+                TestApplyPlacementsBehavior::SleepAndSucceed(std::time::Duration::ZERO),
+            );
+            state.paused = false;
             let initial_len = state.workspaces[&2].len();
             let workspace_index = if restore_path == 2 {
                 0
@@ -16620,22 +16625,25 @@ fn test_restore_center_single_column_runtime_setting() {
             if restore_path == 0 {
                 state.restore_workspace_structure_with(&snapshot, |_| true);
             } else {
+                if restore_path == 2 {
+                    state.workspaces.get_mut(&2).unwrap()[0]
+                        .insert_window(100, Some(400))
+                        .unwrap();
+                }
                 state.restore_state(&snapshot);
             }
-            assert_eq!(
-                state.workspaces[&2][workspace_index].scroll_offset(),
-                saved_offset
-            );
             let first = if restore_path == 2 { 0 } else { initial_len };
             for idx in first..=workspace_index {
                 let ws = &mut state.workspaces.get_mut(&2).unwrap()[idx];
                 if ws.is_empty() {
                     ws.insert_window(1000 + idx as u64, Some(400)).unwrap();
                 }
-                ws.reconcile_scroll_bounds(1000);
+                let window_id = ws.all_window_ids()[0];
+                state.active_workspace.insert(2, idx);
+                state.apply_layout().unwrap();
                 assert_eq!(
-                    ws.compute_placements(Rect::new(0, 0, 1000, 600))[0].rect.x,
-                    if enabled { 300 } else { 10 },
+                    state.last_placed_layout_rects[&window_id].x,
+                    1920 + if enabled { 300 } else { 10 },
                     "enabled={enabled}, restore path {restore_path}, slot {idx}"
                 );
             }
@@ -16644,8 +16652,79 @@ fn test_restore_center_single_column_runtime_setting() {
 }
 
 #[test]
+fn test_center_single_column_toggle_off_repairs_first_placement() {
+    let mut config = test_config();
+    config.layout.center_single_column = true;
+    config.layout.outer_gap_left = 20;
+    config.layout.outer_gap_right = 20;
+    let mut monitors = test_monitors();
+    monitors[0].work_area.width = 1000;
+    let mut state = AppState::new_with_config(config.clone(), monitors);
+    let ws = &mut state.workspaces.get_mut(&1).unwrap()[0];
+    ws.insert_window(100, Some(400)).unwrap();
+    ws.set_reduce_motion(false);
+    ws.ensure_focused_visible(1000);
+    assert_eq!(ws.scroll_offset(), -280.0);
+    config.layout.center_single_column = false;
+    state.apply_config(config);
+    state.paused = false;
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        std::time::Duration::ZERO,
+    ));
+    state.apply_layout().unwrap();
+    assert_eq!(state.last_placed_layout_rects[&100].x, 20);
+    assert_eq!(state.workspaces[&1][0].effective_scroll_offset(), 0.0);
+}
+
+#[test]
+fn test_center_single_column_restore_preserves_valid_offsets() {
+    for (past_edges, offset, expected_x) in [(false, 137.0, -117), (true, -280.0, 300)] {
+        for structure_restore in [false, true] {
+            let mut config = test_config();
+            config.layout.center_past_edges = past_edges;
+            config.layout.outer_gap_left = 20;
+            config.layout.outer_gap_right = 20;
+            let mut monitors = test_monitors();
+            monitors[0].work_area.width = 1000;
+            let mut state = AppState::new_with_config(config, monitors);
+            let mut saved = Workspace::with_gaps(10, 20);
+            saved.insert_window(100, Some(400)).unwrap();
+            saved.insert_window(200, Some(800)).unwrap();
+            saved.set_scroll_offset(offset);
+            let snapshot = StateSnapshot {
+                saved_at: "0".to_string(),
+                workspaces: vec![WorkspaceSnapshot {
+                    monitor_device_name: "DISPLAY1".to_string(),
+                    workspace_index: 0,
+                    workspace: saved,
+                }],
+                focused_monitor_name: "DISPLAY1".to_string(),
+                active_workspace: HashMap::new(),
+                tab_title_overrides: HashMap::new(),
+            };
+            if structure_restore {
+                state.restore_workspace_structure_with(&snapshot, |_| true);
+            } else {
+                let ws = &mut state.workspaces.get_mut(&1).unwrap()[0];
+                ws.insert_window(100, Some(400)).unwrap();
+                ws.insert_window(200, Some(800)).unwrap();
+                state.restore_state(&snapshot);
+            }
+            state.paused = false;
+            state.injected_apply_placements_behavior = Some(
+                TestApplyPlacementsBehavior::SleepAndSucceed(std::time::Duration::ZERO),
+            );
+            state.apply_layout().unwrap();
+            assert_eq!(state.workspaces[&1][0].scroll_offset(), offset);
+            assert_eq!(state.last_placed_layout_rects[&100].x, expected_x);
+        }
+    }
+}
+
+#[test]
 fn test_restore_structure_preserves_columns_widths_grouping_scroll() {
     let mut state = structure_restore_state();
+    state.monitors.get_mut(&2).unwrap().work_area.width = 800;
     let snapshot = crate::state::StateSnapshot {
         saved_at: "0".to_string(),
         workspaces: vec![crate::state::WorkspaceSnapshot {
