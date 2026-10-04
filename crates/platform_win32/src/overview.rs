@@ -394,7 +394,7 @@ const WM_QUIT_OVERVIEW_THREAD: u32 = WM_USER + 5;
 const WM_OVERVIEW_START_ANIM: u32 = WM_USER + 6;
 
 const WM_OVERVIEW_NAVIGATE: u32 = WM_USER + 7;
-const WM_OVERVIEW_COMPLETE_MOVE: u32 = WM_USER + 8;
+const WM_OVERVIEW_REPLAY_INPUT: u32 = WM_USER + 8;
 
 /// WM_TIMER id for the zoom-animation driver.
 const ANIM_TIMER_ID: usize = 1;
@@ -592,7 +592,6 @@ struct OverviewState {
     input_generation: Option<u32>,
     pending_move: bool,
     deferred_keys: VecDeque<u16>,
-    move_completion: Option<(u32, OverviewModel, u64)>,
     /// Whether `TrackMouseEvent` is armed for WM_MOUSELEAVE.
     mouse_tracking_armed: bool,
     backdrop: BackdropMode,
@@ -711,7 +710,6 @@ static STATE: LazyLock<Mutex<OverviewState>> = LazyLock::new(|| {
         input_generation: None,
         pending_move: false,
         deferred_keys: VecDeque::new(),
-        move_completion: None,
         mouse_tracking_armed: false,
         backdrop: BackdropMode::AlphaDim,
         event_tx: None,
@@ -1475,21 +1473,20 @@ impl OverviewOverlay {
         if !is_input_session_current(generation) {
             return;
         }
-        {
-            let mut s = state();
-            if s.input_generation != Some(generation) || is_closing_state(&s) {
-                return;
-            }
-            s.move_completion = Some((generation, model, wid));
+        if !state().complete_window_move(model, wid, generation) {
+            return;
         }
+        sync_thumbnails(self.hwnd);
+        render_overlay(self.hwnd);
+        sync_mask();
         unsafe {
             if let Err(error) = PostMessageW(
                 Some(self.hwnd),
-                WM_OVERVIEW_COMPLETE_MOVE,
+                WM_OVERVIEW_REPLAY_INPUT,
                 WPARAM(0),
                 LPARAM(generation as isize),
             ) {
-                tracing::warn!("Failed to post overview move completion: {error}");
+                tracing::warn!("Failed to post overview input replay: {error}");
             }
         }
     }
@@ -2082,7 +2079,6 @@ impl OverviewState {
         self.input_generation = None;
         self.pending_move = false;
         self.deferred_keys.clear();
-        self.move_completion = None;
     }
 
     fn move_window_event(&mut self, forward: bool) -> Option<OverviewEvent> {
@@ -2150,6 +2146,14 @@ impl OverviewState {
             };
         };
         event.map_or(OverviewInputResult::Consumed, OverviewInputResult::Event)
+    }
+
+    fn next_input(&mut self, input: &mut Option<u16>) -> Option<OverviewInputResult> {
+        if *input == Some(VK_ESCAPE.0) {
+            return input.take().map(|key| self.handle_input(key));
+        }
+        self.next_deferred_input()
+            .or_else(|| input.take().map(|key| self.handle_input(key)))
     }
 
     fn next_deferred_input(&mut self) -> Option<OverviewInputResult> {
@@ -2249,8 +2253,19 @@ fn next_selection(model: &OverviewModel, ri: usize, ci: usize, key: u16) -> Opti
 
 /// Handle WM_KEYDOWN. Returns true when the key was consumed.
 fn handle_key_down(hwnd: HWND, vk: u16) -> bool {
-    let result = state().handle_input(vk);
-    dispatch_input_result(hwnd, result)
+    dispatch_pending_input(hwnd, Some(vk))
+}
+
+fn dispatch_pending_input(hwnd: HWND, mut input: Option<u16>) -> bool {
+    let mut consumed = true;
+    loop {
+        let result = state().next_input(&mut input);
+        let Some(result) = result else {
+            break;
+        };
+        consumed = dispatch_input_result(hwnd, result);
+    }
+    consumed
 }
 
 fn dispatch_input_result(hwnd: HWND, result: OverviewInputResult) -> bool {
@@ -2381,32 +2396,12 @@ unsafe extern "system" fn overview_wnd_proc(
             paint_frame(hwnd);
             LRESULT(0)
         }
-        WM_OVERVIEW_COMPLETE_MOVE => {
+        WM_OVERVIEW_REPLAY_INPUT => {
             let generation = lparam.0 as u32;
             if !is_input_session_current(generation) {
                 return LRESULT(0);
             }
-            let applied = {
-                let mut s = state();
-                match s.move_completion.take() {
-                    Some((stamp, model, wid)) if stamp == generation => {
-                        s.complete_window_move(model, wid, stamp)
-                    }
-                    _ => false,
-                }
-            };
-            if applied {
-                sync_thumbnails(hwnd);
-                render_overlay(hwnd);
-                sync_mask();
-                loop {
-                    let result = state().next_deferred_input();
-                    let Some(result) = result else {
-                        break;
-                    };
-                    dispatch_input_result(hwnd, result);
-                }
-            }
+            dispatch_pending_input(hwnd, None);
             LRESULT(0)
         }
         WM_OVERVIEW_NAVIGATE => {
@@ -4288,7 +4283,8 @@ mod tests {
             other.window_id = 8;
             model.rows[0].cards.insert(0, other);
             if cancel {
-                assert_eq!(s.handle_input(VK_ESCAPE.0), OverviewInputResult::Close);
+                let mut escape = Some(VK_ESCAPE.0);
+                assert_eq!(s.next_input(&mut escape), Some(OverviewInputResult::Close));
             }
             assert_eq!(s.complete_window_move(model, 7, 1), !cancel);
             assert_eq!(
@@ -4301,6 +4297,120 @@ mod tests {
             );
             assert_eq!(s.next_deferred_input(), None);
             assert!(!s.complete_window_move(s.model.clone(), 7, 1));
+        }
+    }
+
+    fn three_card_state() -> OverviewState {
+        let mut model = glide_model(0);
+        for (wid, offset) in [(8, 200), (9, 400)] {
+            let mut card = model.rows[0].cards[0].clone();
+            card.window_id = wid;
+            card.rect.x += offset;
+            card.selected = false;
+            model.rows[0].cards.push(card);
+        }
+        let mut s = overlay_state(model);
+        s.selected = Some((0, 0));
+        s
+    }
+
+    #[test]
+    fn completion_replay_uses_newer_model_membership() {
+        let mut s = three_card_state();
+        assert!(matches!(
+            s.handle_input(OVERVIEW_MOVE_DOWN),
+            OverviewInputResult::Event(_)
+        ));
+        assert_eq!(s.handle_input(VK_RIGHT.0), OverviewInputResult::Consumed);
+        assert_eq!(s.handle_input(VK_RETURN.0), OverviewInputResult::Consumed);
+        let mut completion = s.model.clone();
+        completion.rows[0].workspace_index = 1;
+        assert!(s.complete_window_move(completion.clone(), 7, 1));
+        let mut newer = completion;
+        newer.rows[0].cards.remove(1);
+        assert!(apply_model_update(&mut s, newer));
+        let mut input = None;
+        let mut replayed = Vec::new();
+        while let Some(result) = s.next_input(&mut input) {
+            replayed.push(result);
+        }
+        assert_eq!(
+            s.model.rows[0]
+                .cards
+                .iter()
+                .map(|card| card.window_id)
+                .collect::<Vec<_>>(),
+            [7, 9]
+        );
+        assert_eq!(
+            replayed,
+            [
+                OverviewInputResult::Repaint,
+                OverviewInputResult::Event(OverviewEvent::ActivateWindow(9))
+            ]
+        );
+        assert_eq!(s.selection_window_id(), Some(9));
+    }
+
+    #[test]
+    fn next_key_drains_deferred_input_when_replay_wakeup_is_undelivered() {
+        for further_move in [false, true] {
+            let mut s = three_card_state();
+            assert!(matches!(
+                s.handle_input(OVERVIEW_MOVE_UP),
+                OverviewInputResult::Event(_)
+            ));
+            assert_eq!(s.handle_input(VK_RIGHT.0), OverviewInputResult::Consumed);
+            if further_move {
+                assert_eq!(
+                    s.handle_input(OVERVIEW_MOVE_DOWN),
+                    OverviewInputResult::Consumed
+                );
+            }
+            assert_eq!(s.handle_input(VK_RETURN.0), OverviewInputResult::Consumed);
+            assert!(s.complete_window_move(s.model.clone(), 7, 1));
+            let mut input = Some(VK_LEFT.0);
+            let mut replayed = Vec::new();
+            while let Some(result) = s.next_input(&mut input) {
+                replayed.push(result);
+            }
+            if further_move {
+                assert_eq!(
+                    replayed,
+                    [
+                        OverviewInputResult::Repaint,
+                        OverviewInputResult::Event(OverviewEvent::MoveWindow {
+                            window_id: 8,
+                            forward: true,
+                            generation: 1
+                        }),
+                        OverviewInputResult::Consumed
+                    ]
+                );
+                assert!(s.complete_window_move(s.model.clone(), 8, 1));
+                while let Some(result) = s.next_input(&mut input) {
+                    replayed.push(result);
+                }
+                assert_eq!(
+                    &replayed[3..],
+                    [
+                        OverviewInputResult::Event(OverviewEvent::ActivateWindow(8)),
+                        OverviewInputResult::Repaint
+                    ]
+                );
+            } else {
+                assert_eq!(
+                    replayed,
+                    [
+                        OverviewInputResult::Repaint,
+                        OverviewInputResult::Event(OverviewEvent::ActivateWindow(8)),
+                        OverviewInputResult::Repaint
+                    ]
+                );
+            }
+            assert_eq!(s.selection_window_id(), Some(7));
+            assert!(!s.pending_move);
+            assert_eq!(s.next_input(&mut input), None);
         }
     }
 
@@ -4533,7 +4643,6 @@ mod tests {
             input_generation: Some(1),
             pending_move: false,
             deferred_keys: VecDeque::new(),
-            move_completion: None,
             mouse_tracking_armed: false,
             backdrop: BackdropMode::Acrylic,
             event_tx: None,
