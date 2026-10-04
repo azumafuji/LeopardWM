@@ -72,13 +72,20 @@ pub(crate) fn resolve_hotkeys(config: &HotkeyConfig) -> ResolvedHotkeys {
             });
             continue;
         }
+        let overview_action = crate::overview::overview_direction(&command)
+            .map(leopardwm_platform_win32::overview::OverviewAction::Navigate);
         indexes.insert(id, bindings.len());
         bindings.push(ResolvedHotkey {
             binding: binding.clone(),
             configured_action: configured_action.clone(),
             action_id: config::canonical_action_id(configured_action),
             command,
-            hook_binding: HotkeyBind { modifiers, vk, id },
+            hook_binding: HotkeyBind {
+                modifiers,
+                vk,
+                id,
+                overview_action,
+            },
             executable: true,
         });
     }

@@ -149,7 +149,7 @@ fn inset_card(r: &Rect) -> Rect {
     Rect::new(r.x + ix, r.y + iy, r.width - 2 * ix, r.height - 2 * iy)
 }
 
-fn overview_direction(command: &leopardwm_ipc::IpcCommand) -> Option<OverviewDirection> {
+pub(crate) fn overview_direction(command: &leopardwm_ipc::IpcCommand) -> Option<OverviewDirection> {
     use leopardwm_ipc::IpcCommand;
 
     match command {
@@ -162,23 +162,6 @@ fn overview_direction(command: &leopardwm_ipc::IpcCommand) -> Option<OverviewDir
 }
 
 impl AppState {
-    pub(crate) fn handle_hotkey_command(
-        &mut self,
-        command: leopardwm_ipc::IpcCommand,
-    ) -> leopardwm_ipc::IpcResponse {
-        use leopardwm_ipc::IpcResponse;
-
-        if self.overview_open {
-            if let Some(direction) = overview_direction(&command) {
-                if let Some(overlay) = &self.overview_overlay {
-                    overlay.navigate(direction);
-                }
-                return IpcResponse::Ok;
-            }
-        }
-        self.handle_command(command)
-    }
-
     /// Build the overview display model for the focused monitor.
     ///
     /// Returns the overlay window rect (the monitor's work area) plus the
@@ -658,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn directional_hotkeys_route_exclusively_only_while_overview_is_open() {
+    fn directional_hotkeys_carry_overview_actions_and_keep_normal_commands() {
         for (binding, action, direction, start, destination) in [
             (
                 "Ctrl+Alt+A",
@@ -688,27 +671,19 @@ mod tests {
             let command = resolved.bindings[0].command.clone();
             assert_eq!(overview_direction(&command), Some(direction));
 
+            assert_eq!(
+                resolved.bindings[0].hook_binding.overview_action,
+                Some(leopardwm_platform_win32::overview::OverviewAction::Navigate(direction))
+            );
             state.overview_open = true;
             assert!(matches!(
-                state.handle_hotkey_command(command.clone()),
-                leopardwm_ipc::IpcResponse::Ok
-            ));
-            assert_eq!(
-                state.workspaces[&1][0].focused_window(),
-                Some(start),
-                "{binding} must not also focus the real workspace"
-            );
-            assert!(state.overview_open);
-
-            state.overview_open = false;
-            assert!(matches!(
-                state.handle_hotkey_command(command),
+                state.handle_command(command),
                 leopardwm_ipc::IpcResponse::Ok
             ));
             assert_eq!(
                 state.workspaces[&1][0].focused_window(),
                 Some(destination),
-                "{binding} keeps its normal action when closed"
+                "{binding} keeps its normal command even if daemon overview state is stale"
             );
         }
     }
@@ -721,9 +696,9 @@ mod tests {
             .focus_window(101)
             .unwrap();
         state.overview_open = true;
-        state.handle_hotkey_command(leopardwm_ipc::IpcCommand::FocusNext);
+        state.handle_command(leopardwm_ipc::IpcCommand::FocusNext);
         assert_eq!(state.workspaces[&1][0].focused_window(), Some(102));
-        state.handle_hotkey_command(leopardwm_ipc::IpcCommand::ToggleOverview);
+        state.handle_command(leopardwm_ipc::IpcCommand::ToggleOverview);
         assert!(!state.overview_open);
     }
 

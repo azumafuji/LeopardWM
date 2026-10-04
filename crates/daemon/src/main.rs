@@ -505,7 +505,9 @@ fn setup_hotkeys(config: &Config, event_tx: mpsc::Sender<DaemonEvent>) -> Hotkey
     // Include blocked F-key triggers to preserve the hook's modifier mask.
     // Resolution already deduplicated physical IDs, including across aliases.
     for entry in resolved.bindings {
-        let HotkeyBind { modifiers, vk, id } = entry.hook_binding;
+        let HotkeyBind {
+            modifiers, vk, id, ..
+        } = entry.hook_binding;
         debug!(
             "Configured hotkey {}: {} -> {:?}",
             id, entry.binding, entry.command
@@ -1993,7 +1995,7 @@ async fn handle_hotkey_event(
             } else {
                 let is_resize = matches!(cmd, IpcCommand::Resize { .. });
                 let mut state = ctx.state.lock().await;
-                let response = state.handle_hotkey_command(cmd);
+                let response = state.handle_command(cmd);
                 if let IpcResponse::Error { message } = response {
                     warn!("Hotkey command failed: {}", message);
                 }

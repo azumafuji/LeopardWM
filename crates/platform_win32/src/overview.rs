@@ -25,6 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{mpsc, LazyLock, Mutex, MutexGuard};
 
 use leopardwm_core_layout::{Easing, Rect};
@@ -75,8 +76,54 @@ impl OverviewDirection {
     }
 }
 
-pub(crate) fn is_visible() -> bool {
-    state().visible
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverviewAction {
+    Navigate(OverviewDirection),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverviewInput {
+    Action(OverviewAction),
+    Key(u16),
+}
+
+impl OverviewInput {
+    pub(crate) fn key(self) -> u16 {
+        match self {
+            Self::Action(OverviewAction::Navigate(direction)) => direction.key(),
+            Self::Key(key) => key,
+        }
+    }
+}
+
+static INPUT_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// O(1), lock-free: the keyboard hook must never wait for overview rendering.
+pub(crate) fn input_target() -> Option<isize> {
+    let hwnd = INPUT_HWND.load(Ordering::SeqCst);
+    foreground_input_target(hwnd, unsafe { GetForegroundWindow().0 as isize })
+}
+
+pub(crate) fn foreground_input_target(hwnd: isize, foreground: isize) -> Option<isize> {
+    (hwnd != 0 && foreground == hwnd).then_some(hwnd)
+}
+
+fn release_input() {
+    INPUT_HWND.store(0, Ordering::SeqCst);
+    crate::keyboard_hook::clear_overview_press_ownership();
+}
+
+pub(crate) fn post_input(hwnd: isize, input: OverviewInput) {
+    unsafe {
+        if let Err(error) = PostMessageW(
+            Some(HWND(hwnd as *mut c_void)),
+            WM_OVERVIEW_NAVIGATE,
+            WPARAM(usize::from(input.key())),
+            LPARAM(0),
+        ) {
+            tracing::warn!("Failed to post overview input: {error}");
+        }
+    }
 }
 
 /// One placeholder window card. Rects are overlay client coordinates.
@@ -1248,6 +1295,7 @@ impl OverviewOverlay {
             s.window_rect = monitor_rect;
             s.hovered = None;
             s.visible = true;
+            INPUT_HWND.store(self.hwnd.0 as isize, Ordering::SeqCst);
             s.anim.is_some()
         };
         // Register thumbnails BEFORE the window shows so the very first
@@ -1309,17 +1357,6 @@ impl OverviewOverlay {
         sync_mask();
     }
 
-    pub fn navigate(&self, direction: OverviewDirection) {
-        unsafe {
-            let _ = PostMessageW(
-                Some(self.hwnd),
-                WM_OVERVIEW_NAVIGATE,
-                WPARAM(usize::from(direction.key())),
-                LPARAM(0),
-            );
-        }
-    }
-
     /// Replace the displayed model in place (overlay stays visible).
     /// Strict no-op while the window is hidden or a close animation is
     /// in flight (see [`apply_model_update`]).
@@ -1348,6 +1385,7 @@ impl OverviewOverlay {
     /// chrome (the close-flash). Also frees the pre-rendered chrome-fade
     /// step DIBs (~28MB each at 5120x1440).
     pub fn hide(&self) {
+        release_input();
         {
             let mut s = state();
             s.visible = false;
@@ -1381,6 +1419,7 @@ impl OverviewOverlay {
     /// there is nothing to animate (`anim_ms == 0` or no live
     /// thumbnails); no-op when a close is already in flight.
     pub fn hide_animated(&self, target_workspace: Option<usize>) {
+        release_input();
         let start = {
             let mut s = state();
             if !s.visible {
@@ -1569,6 +1608,7 @@ fn start_close(s: &mut OverviewState, target_workspace: Option<usize>, notify: b
 /// does its bookkeeping. Sends `Dismissed` immediately when there is
 /// nothing to animate (the daemon then hides instantly, as before).
 fn user_close(hwnd: HWND) {
+    release_input();
     let start = {
         let mut s = state();
         if !s.visible {
@@ -1601,6 +1641,7 @@ fn drop_all_thumbnails() {
 
 impl Drop for OverviewOverlay {
     fn drop(&mut self) {
+        release_input();
         // Unregister thumbnails BEFORE destroying their destination window
         // so DwmUnregisterThumbnail releases valid handles.
         drop_all_thumbnails();
@@ -1881,6 +1922,7 @@ fn on_anim_tick(hwnd: HWND) {
                 s.anim = None;
                 s.visible = false;
             }
+            release_input();
             // Hide FIRST, then unregister: tearing the thumbnails down on
             // the still-visible window made DWM recomposite the bare map
             // chrome for a few ms — the "map reappears then hides" flash.
@@ -1903,6 +1945,11 @@ fn on_anim_tick(hwnd: HWND) {
 }
 
 impl OverviewState {
+    fn activation_event(&self) -> Option<OverviewEvent> {
+        self.selection_window_id()
+            .map(OverviewEvent::ActivateWindow)
+    }
+
     fn selection_window_id(&self) -> Option<u64> {
         let (ri, ci) = self.selected?;
         self.model
@@ -2004,9 +2051,9 @@ fn handle_key_down(hwnd: HWND, vk: u16) -> bool {
         return true;
     }
     if vk == VK_RETURN.0 {
-        let wid = state().selection_window_id();
-        if let Some(wid) = wid {
-            send_event(OverviewEvent::ActivateWindow(wid));
+        let event = state().activation_event();
+        if let Some(event) = event {
+            send_event(event);
         }
         return true;
     }
@@ -2114,6 +2161,7 @@ unsafe extern "system" fn overview_wnd_proc(
             LRESULT(0)
         }
         WM_KILLFOCUS => {
+            release_input();
             // Click-away: overlay-owned animated close, but only while
             // logically visible — hide() clears the flag first so
             // daemon-driven hides don't echo a second Dismissed. During a
@@ -3880,6 +3928,10 @@ mod tests {
             ] {
                 assert!(s.move_selection(if translated { direction.key() } else { arrow }));
                 assert_eq!(s.selection_window_id(), Some(expected));
+                assert_eq!(
+                    s.activation_event(),
+                    Some(OverviewEvent::ActivateWindow(expected))
+                );
                 assert!(s.visible);
             }
             assert!(!s.move_selection(VK_LEFT.0));
