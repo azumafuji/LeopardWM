@@ -123,13 +123,8 @@ impl AppState {
         }
     }
 
-    pub(crate) fn preferred_new_window_monitor(
-        &self,
-        rule_workspace: Option<usize>,
-        sticky: bool,
-    ) -> Option<MonitorId> {
+    pub(crate) fn preferred_new_window_monitor(&self, sticky: bool) -> Option<MonitorId> {
         if self.config.behavior.new_window_monitor == config::NewWindowMonitor::Focused
-            && rule_workspace.is_none()
             && !sticky
             && self.monitors.contains_key(&self.focused_monitor)
         {
@@ -157,6 +152,8 @@ impl AppState {
             let monitor = &self.monitors[&monitor_id];
             if !monitor.contains_rect_center(&rect) {
                 let area = monitor.work_area;
+                rect.width = rect.width.min(area.width.max(1));
+                rect.height = rect.height.min(area.height.max(1));
                 rect.x = area.x + (area.width - rect.width) / 2;
                 rect.y = area.y + (area.height - rect.height) / 2;
             }
@@ -191,11 +188,11 @@ impl AppState {
             }
             let executable = get_process_executable(win_info.process_id).unwrap_or_default();
 
-            let action =
-                self.evaluate_window_rules(&win_info.class_name, &win_info.title, &executable);
             let matched = self.matched_rule(&win_info.class_name, &win_info.title, &executable);
+            let action = matched
+                .map(|rule| rule.action)
+                .unwrap_or(config::WindowAction::Tile);
             let rule_matched = matched.is_some();
-            let rule_workspace = matched.and_then(|rule| rule.open_on_workspace);
             let sticky = matched.is_some_and(|rule| rule.sticky);
 
             if action == config::WindowAction::Ignore {
@@ -212,7 +209,7 @@ impl AppState {
             let opening_monitor = find_monitor_for_rect(&monitors, &win_info.rect)
                 .map(|m| m.id)
                 .unwrap_or(self.focused_monitor);
-            let preferred_monitor = self.preferred_new_window_monitor(rule_workspace, sticky);
+            let preferred_monitor = self.preferred_new_window_monitor(sticky);
             let monitor_id = preferred_monitor.unwrap_or(opening_monitor);
 
             // Get floating rect before borrowing workspace mutably (to avoid borrow conflict)

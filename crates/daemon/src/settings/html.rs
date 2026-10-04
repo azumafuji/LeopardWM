@@ -1144,7 +1144,7 @@ input[type="range"]::-webkit-slider-thumb {
             </div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">New window monitor</div><div class="field-desc">Open new windows where Windows placed them or on the focused monitor. Workspace rules and sticky windows keep their existing placement</div></div>
+            <div class="field-info"><div class="field-label">New window monitor</div><div class="field-desc">Open new windows where Windows placed them or on the focused monitor. Workspace rules select the workspace index on that monitor. Sticky windows keep their existing placement</div></div>
             <div class="combobox" id="cb-behavior-new_window_monitor">
               <button class="combobox-trigger" type="button"><span class="combobox-text">Opening monitor</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">

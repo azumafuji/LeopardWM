@@ -947,7 +947,7 @@ impl AppState {
                 .map(|monitor| monitor.id)
                 .unwrap_or(self.focused_monitor);
             let preferred_monitor = self
-                .preferred_new_window_monitor(rule_workspace, rule_sticky)
+                .preferred_new_window_monitor(rule_sticky)
                 .filter(|_| kind == AdmissionKind::Automatic);
             let monitor_id = recreated_slot
                 .as_ref()

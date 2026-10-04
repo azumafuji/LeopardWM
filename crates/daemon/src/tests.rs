@@ -12725,8 +12725,8 @@ fn test_new_window_monitor_workspace_rule_precedence() {
     info.rect = Rect::new(2200, 100, 800, 600);
     state.injected_window_info.insert(100, info);
     state.handle_window_event(WindowEvent::Created(100, 0));
-    assert_eq!(state.find_window_workspace(100), Some((2, 2)));
-    assert_eq!(state.active_workspace_idx(2), 0);
+    assert_eq!(state.find_window_workspace(100), Some((1, 2)));
+    assert_eq!(state.active_workspace_idx(1), 0);
     assert_eq!(state.focused_monitor, 1);
 }
 
@@ -12771,6 +12771,7 @@ fn test_new_window_monitor_floating_placement() {
     for rect in [
         Rect::new(2200, 100, 800, 600),
         Rect::new(5000, 4000, 800, 600),
+        Rect::new(2200, 100, 2400, 1800),
     ] {
         let mut config = test_config();
 
@@ -12787,14 +12788,17 @@ fn test_new_window_monitor_floating_placement() {
         state.injected_window_info.insert(100, info);
         state.handle_window_event(WindowEvent::Created(100, 0));
         assert_eq!(state.find_window_workspace(100), Some((1, 0)));
-        assert_eq!(
-            state.workspaces[&1][0].floating_windows()[0].rect,
-            Rect::new(560, 220, 800, 600)
+        let area = state.monitors[&1].work_area;
+        let width = rect.width.min(area.width);
+        let height = rect.height.min(area.height);
+        let expected = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
         );
-        assert_eq!(
-            state.last_placed_layout_rects[&100],
-            Rect::new(560, 220, 800, 600)
-        );
+        assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, expected);
+        assert_eq!(state.last_placed_layout_rects[&100], expected);
     }
 }
 

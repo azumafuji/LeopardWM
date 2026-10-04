@@ -66,7 +66,8 @@ center_single_column = false
 focus_new_windows = true
 
 # New windows use the "opening" monitor (default), or the "focused" monitor.
-# Workspace-routing rules and sticky windows keep their existing placement.
+# Workspace rules select the workspace index on that monitor.
+# Sticky windows keep their existing placement.
 new_window_monitor = "opening"
 
 # Track focus changes from Windows (sync with Alt-Tab, etc.)
