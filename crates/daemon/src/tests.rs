@@ -10020,9 +10020,24 @@ fn display_change_focus_state() -> AppState {
     state.focused_monitor = 2;
     state.previous_focused_hwnd = Some(100);
     state.injected_foreground_hwnd = Some(Some(100));
-    state.injected_foreground_is_valid = Some(true);
     state.injected_display_monitors = Some(test_monitors());
+    state.paused = false;
+    state.injected_apply_placements_behavior =
+        Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
     state
+}
+
+fn display_change_focus_events(
+    events: &mut tokio::sync::broadcast::Receiver<leopardwm_ipc::IpcEvent>,
+) -> Vec<(i64, Option<u64>)> {
+    std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            leopardwm_ipc::IpcEvent::FocusedWindowChanged { monitor, hwnd, .. } => {
+                Some((monitor, hwnd))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -10031,8 +10046,14 @@ fn test_display_change_focus_follows_foreground_on_monitor_removal_without_scrol
     reconciled.reconcile_monitors(test_monitors());
     let reconciled_scroll = reconciled.workspaces[&1][0].scroll_offset();
     let mut state = display_change_focus_state();
+    let mut events = state.event_broadcaster.subscribe();
 
     state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert_eq!(
+        display_change_focus_events(&mut events),
+        vec![(1, Some(100))]
+    );
 
     assert_eq!(state.focused_monitor, 1);
     assert_eq!(
@@ -10053,9 +10074,14 @@ fn test_display_change_focus_follows_unchanged_foreground_on_monitor_return() {
     let mut returned = two_monitors();
     returned[1].id = 99;
     state.injected_display_monitors = Some(returned);
+    let mut events = state.event_broadcaster.subscribe();
 
     state.handle_window_event(WindowEvent::DisplayChange);
 
+    assert_eq!(
+        display_change_focus_events(&mut events),
+        vec![(99, Some(100))]
+    );
     assert_eq!(state.focused_monitor, 99);
     assert_eq!(
         state.focused_workspace().unwrap().focused_window(),
@@ -10068,6 +10094,7 @@ fn test_display_change_focus_follows_unchanged_foreground_on_monitor_return() {
 #[test]
 fn test_display_change_focus_follows_foreground_to_restored_inactive_workspace() {
     let mut state = display_change_focus_state();
+    state.reduce_motion = false;
     let foreground_workspace = state.workspaces[&2][0].clone();
     state.workspaces.get_mut(&2).unwrap()[0] =
         AppState::new_with_config(test_config(), test_monitors()).workspaces[&1][0].clone();
@@ -10089,6 +10116,33 @@ fn test_display_change_focus_follows_foreground_to_restored_inactive_workspace()
         state.focused_workspace().unwrap().focused_window(),
         Some(100)
     );
+    let transition = state.layout_transition.as_ref().unwrap();
+    assert!(transition.suppress_landing_focus_resync);
+    let duration = transition.duration_ms;
+    assert!(state.tick_animations(duration));
+    assert!(state.layout_transition.is_none());
+    assert!(state.pending_suppress_landing_focus_resync);
+    let captured_suppress = state.pending_suppress_landing_focus_resync;
+    state.apply_layout().unwrap();
+    assert!(state
+        .injected_apply_placements_batches
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .contains(&100));
+    let border_shows = state.border_show_count.load(Ordering::Relaxed);
+    state.finish_animation_landing_focus_resync(captured_suppress);
+    assert!(!state.pending_suppress_landing_focus_resync);
+    assert_eq!(
+        state.border_show_count.load(Ordering::Relaxed),
+        border_shows
+    );
+    assert_eq!(state.previous_focused_hwnd, Some(100));
+    assert!(state.workspaces[&99][1]
+        .compute_placements(state.monitors[&99].work_area)
+        .iter()
+        .any(|placement| placement.window_id == 100));
 }
 
 #[test]
@@ -10122,11 +10176,84 @@ fn test_display_change_focus_tracks_floating_foreground_without_changing_tiled_f
 }
 
 #[test]
+fn test_display_change_focus_unchanged_while_paused() {
+    let mut state = display_change_focus_state();
+    let mut inactive = state.workspaces[&2][0].clone();
+    inactive.remove_window(200).unwrap();
+    state.workspaces.get_mut(&2).unwrap().push(inactive);
+    state.workspaces.get_mut(&2).unwrap()[0]
+        .remove_window(100)
+        .unwrap();
+    state.focused_monitor = 1;
+    state.previous_focused_hwnd = Some(12);
+    state.injected_display_monitors = Some(two_monitors());
+    state.paused = true;
+    let mut events = state.event_broadcaster.subscribe();
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert_eq!(state.focused_monitor, 1);
+    assert_eq!(state.active_workspace_idx(2), 0);
+    assert_eq!(state.workspaces[&1][0].focused_window(), Some(12));
+    assert_eq!(state.workspaces[&2][0].focused_window(), Some(200));
+    assert_eq!(state.previous_focused_hwnd, Some(12));
+    assert!(state.layout_transition.is_none());
+    assert!(display_change_focus_events(&mut events).is_empty());
+}
+
+#[test]
+fn test_display_change_focus_preserves_restored_fullscreen_against_other_foreground() {
+    let mut state = display_change_focus_state();
+    assert!(state.workspaces.get_mut(&2).unwrap()[0].toggle_fullscreen());
+    state.injected_foreground_hwnd = Some(None);
+    state.handle_window_event(WindowEvent::DisplayChange);
+    let mut returned = two_monitors();
+    returned[1].id = 99;
+    state.injected_display_monitors = Some(returned);
+    state.injected_foreground_hwnd = Some(Some(200));
+    let mut events = state.event_broadcaster.subscribe();
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    let restored = &state.workspaces[&99][0];
+    assert_eq!(restored.fullscreen_window_id(), Some(100));
+    assert_eq!(restored.focused_window(), Some(100));
+    assert_eq!(state.previous_focused_hwnd, Some(100));
+    assert_eq!(state.focused_monitor, 1);
+    assert!(state.layout_transition.is_none());
+    assert!(restored
+        .compute_placements(state.monitors[&99].work_area)
+        .iter()
+        .any(|placement| placement.window_id == 100));
+    assert!(display_change_focus_events(&mut events).is_empty());
+}
+
+#[test]
+fn test_display_change_focus_does_not_adopt_minimized_foreground() {
+    let mut state = display_change_focus_state();
+    state.workspaces.get_mut(&2).unwrap()[0].mark_minimized(100);
+    state.focused_monitor = 1;
+    state.previous_focused_hwnd = Some(12);
+    state.injected_display_monitors = Some(two_monitors());
+    let mut events = state.event_broadcaster.subscribe();
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert!(state.workspaces[&2][0].is_minimized(100));
+    assert_eq!(state.focused_monitor, 1);
+    assert_eq!(state.previous_focused_hwnd, Some(12));
+    assert_eq!(
+        state.focused_workspace().unwrap().focused_window(),
+        Some(12)
+    );
+    assert!(display_change_focus_events(&mut events).is_empty());
+}
+
+#[test]
 fn test_display_change_focus_unchanged_for_unmanaged_or_absent_foreground() {
     for foreground in [Some(999), None] {
         let mut state = display_change_focus_state();
         state.injected_foreground_hwnd = Some(foreground);
-        state.injected_foreground_is_valid = Some(foreground.is_some());
         state.previous_focused_hwnd = Some(999);
         state.handle_window_event(WindowEvent::DisplayChange);
 
