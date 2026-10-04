@@ -12511,53 +12511,263 @@ fn test_created_event_with_injected_window_info() {
     assert_eq!(ws.window_count(), 1);
 }
 
-#[test]
-fn test_created_event_uses_opening_monitor() {
-    let mut state = AppState::new_with_config(test_config(), two_monitors());
-    state.focused_monitor = 1;
-
-    let mut info = make_test_window_info(100);
-    info.rect = Rect::new(2200, 100, 800, 600);
-    state.injected_window_info.insert(100, info);
-
-    state.handle_window_event(WindowEvent::Created(100, 0));
-
-    let opening_monitor = 2;
-    let opening_workspace = state.active_workspace_idx(opening_monitor);
-    assert!(
-        state.workspaces[&opening_monitor][opening_workspace].contains_window(100),
-        "window belongs to the active workspace on the monitor where it opened"
-    );
-    assert!(
-        !state.workspaces[&1][state.active_workspace_idx(1)].contains_window(100),
-        "window does not inherit the previously focused monitor"
-    );
-    assert_eq!(
-        state.focused_monitor, opening_monitor,
-        "focus_new_windows focuses the monitor where the window opened"
-    );
+fn new_window_monitor_state(mut config: Config) -> AppState {
+    config.animation.scroll_duration_ms = 0;
+    let mut state = AppState::new_with_config(config, two_monitors());
+    state.paused = false;
+    state.reduce_motion = true;
+    state.injected_apply_placements_behavior = Some(TestApplyPlacementsBehavior::SleepAndSucceed(
+        std::time::Duration::ZERO,
+    ));
+    state
 }
 
 #[test]
-fn test_created_event_off_monitor_uses_focused_monitor() {
-    let mut state = AppState::new_with_config(test_config(), two_monitors());
-    state.focused_monitor = 2;
+fn test_new_window_monitor_admission_and_layout() {
+    use crate::config::NewWindowMonitor;
+    for policy in [
+        None,
+        Some(NewWindowMonitor::Opening),
+        Some(NewWindowMonitor::Focused),
+    ] {
+        for focus in [1, 2, 999] {
+            for (rect, opening) in [
+                (Rect::new(100, 100, 800, 600), Some(1)),
+                (Rect::new(2200, 100, 800, 600), Some(2)),
+                (Rect::new(5000, 4000, 800, 600), None),
+            ] {
+                if focus == 999 && opening.is_none() {
+                    continue;
+                }
+                let mut config = test_config();
 
+                config.behavior.focus_new_windows = false;
+                if let Some(policy) = policy {
+                    config.behavior.new_window_monitor = policy;
+                }
+                let mut state = new_window_monitor_state(config);
+                state.focused_monitor = focus;
+                for monitor in [1, 2] {
+                    state.ensure_workspace_exists(monitor, 2);
+                    state.active_workspace.insert(monitor, 2);
+                }
+                let mut info = make_test_window_info(100);
+                info.rect = rect;
+                state.injected_window_info.insert(100, info);
+                let outcome =
+                    state.try_admit_window(100, crate::event_handler::AdmissionKind::Automatic);
+                let expected = if policy == Some(NewWindowMonitor::Focused) && focus != 999 {
+                    focus
+                } else {
+                    opening.unwrap_or(focus)
+                };
+                assert_eq!(outcome, crate::event_handler::AdmitOutcome::Admitted);
+                assert_eq!(
+                    state.find_window_workspace(100),
+                    Some((expected, 2)),
+                    "policy={policy:?}, focus={focus}, opening={opening:?}"
+                );
+                assert!(state.monitors[&expected]
+                    .contains_rect_center(&state.last_placed_layout_rects[&100]));
+                assert_eq!(state.focused_monitor, focus);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_new_window_monitor_workspace_rule_precedence() {
+    let mut config = test_config();
+
+    config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+    config.window_rules = vec![tile_open_on_workspace_rule("TestWindowClass", 3)];
+    let mut state = new_window_monitor_state(config);
+    state.focused_monitor = 1;
     let mut info = make_test_window_info(100);
-    info.rect = Rect::new(5000, 4000, 800, 600);
+    info.rect = Rect::new(2200, 100, 800, 600);
     state.injected_window_info.insert(100, info);
-
     state.handle_window_event(WindowEvent::Created(100, 0));
+    assert_eq!(state.find_window_workspace(100), Some((2, 2)));
+    assert_eq!(state.active_workspace_idx(2), 0);
+    assert_eq!(state.focused_monitor, 1);
+}
 
-    let focused_workspace = state.active_workspace_idx(2);
-    assert!(
-        state.workspaces[&2][focused_workspace].contains_window(100),
-        "an off-monitor opening rect retains the focused monitor"
+#[test]
+fn test_new_window_monitor_sticky_keeps_opening_monitor() {
+    for action in [
+        crate::config::WindowAction::Tile,
+        crate::config::WindowAction::Float,
+    ] {
+        for rule_workspace in [None, Some(3)] {
+            let mut config = test_config();
+
+            config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+            config.window_rules = vec![crate::config::WindowRule {
+                match_class: Some("TestWindowClass".to_string()),
+                action,
+                sticky: true,
+                open_on_workspace: rule_workspace,
+                ..Default::default()
+            }];
+            let mut state = new_window_monitor_state(config);
+            state.focused_monitor = 1;
+            let mut info = make_test_window_info(100);
+            info.rect = Rect::new(2200, 100, 800, 600);
+            state.injected_window_info.insert(100, info);
+            state.handle_window_event(WindowEvent::Created(100, 0));
+            assert_eq!(state.find_window_workspace(100), Some((2, 0)));
+            assert!(state.sticky_windows.contains(&100));
+            if action == crate::config::WindowAction::Float {
+                assert!(state.workspaces[&2][0].floating_windows()[0].pinned);
+                assert_eq!(
+                    state.workspaces[&2][0].floating_windows()[0].rect,
+                    Rect::new(2200, 100, 800, 600)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_new_window_monitor_floating_placement() {
+    for rect in [
+        Rect::new(2200, 100, 800, 600),
+        Rect::new(5000, 4000, 800, 600),
+    ] {
+        let mut config = test_config();
+
+        config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+        config.window_rules = vec![crate::config::WindowRule {
+            match_class: Some("TestWindowClass".to_string()),
+            action: crate::config::WindowAction::Float,
+            ..Default::default()
+        }];
+        let mut state = new_window_monitor_state(config);
+        state.focused_monitor = 1;
+        let mut info = make_test_window_info(100);
+        info.rect = rect;
+        state.injected_window_info.insert(100, info);
+        state.handle_window_event(WindowEvent::Created(100, 0));
+        assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            Rect::new(560, 220, 800, 600)
+        );
+        assert_eq!(
+            state.last_placed_layout_rects[&100],
+            Rect::new(560, 220, 800, 600)
+        );
+    }
+}
+
+#[test]
+fn test_new_window_monitor_reload_preserves_members_and_changes_next_admission() {
+    let mut state = new_window_monitor_state(test_config());
+    let mut info = make_test_window_info(100);
+    info.rect = Rect::new(2200, 100, 800, 600);
+    state.injected_window_info.insert(100, info.clone());
+    state.handle_window_event(WindowEvent::Created(100, 0));
+    let mut saved_workspace = Workspace::default();
+    saved_workspace.insert_window(200, None).unwrap();
+    let snapshot = crate::state::StateSnapshot {
+        saved_at: "0".to_string(),
+        workspaces: vec![crate::state::WorkspaceSnapshot {
+            monitor_device_name: "DISPLAY2".to_string(),
+            workspace_index: 1,
+            workspace: saved_workspace,
+        }],
+        focused_monitor_name: "DISPLAY1".to_string(),
+        active_workspace: std::collections::HashMap::new(),
+        tab_title_overrides: std::collections::HashMap::new(),
+    };
+    state.restore_workspace_structure_with(&snapshot, |_| true);
+    let mut restored = make_test_window_info(200);
+    restored.rect = Rect::new(100, 100, 800, 600);
+    state.injected_window_info.insert(200, restored.clone());
+    state.injected_enumerated_windows = Some(vec![info.clone(), restored]);
+    state.focused_monitor = 1;
+    let mut config = state.config.clone();
+    config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+    state.apply_config(config);
+    state.handle_window_event(WindowEvent::Created(100, 1));
+    assert_eq!(state.find_window_workspace(100), Some((2, 0)));
+    assert_eq!(state.find_window_workspace(200), Some((2, 1)));
+    for hwnd in [100, 200] {
+        assert_eq!(
+            state
+                .workspaces
+                .values()
+                .flatten()
+                .filter(|workspace| workspace.contains_window(hwnd))
+                .count(),
+            1,
+            "reload must not duplicate existing or restored membership"
+        );
+    }
+    info.hwnd = 300;
+    state.injected_window_info.insert(300, info);
+    state.handle_window_event(WindowEvent::Created(300, 2));
+    assert_eq!(state.find_window_workspace(300), Some((1, 0)));
+}
+
+#[test]
+fn test_new_window_monitor_enumeration_policy() {
+    for action in [
+        crate::config::WindowAction::Tile,
+        crate::config::WindowAction::Float,
+    ] {
+        let mut config = test_config();
+
+        config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+        config.window_rules = vec![crate::config::WindowRule {
+            match_class: Some("TestWindowClass".to_string()),
+            action,
+            ..Default::default()
+        }];
+        let mut state = new_window_monitor_state(config);
+        state.focused_monitor = 1;
+        let mut info = make_test_window_info(100);
+        info.rect = Rect::new(2200, 100, 800, 600);
+        state.injected_enumerated_windows = Some(vec![info]);
+        assert_eq!(state.enumerate_and_add_windows().unwrap(), 1);
+        state.apply_layout().unwrap();
+        assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+        assert!(state.monitors[&1].contains_rect_center(&state.last_placed_layout_rects[&100]));
+    }
+}
+
+#[test]
+fn test_new_window_monitor_explicit_readmit_keeps_native_monitor() {
+    let mut config = test_config();
+
+    config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+    let mut state = new_window_monitor_state(config);
+    state.focused_monitor = 1;
+    let mut info = make_test_window_info(100);
+    info.rect = Rect::new(2200, 100, 800, 600);
+    state.injected_window_info.insert(100, info);
+    assert_eq!(
+        state.try_admit_window(100, crate::event_handler::AdmissionKind::ExplicitReadmit),
+        crate::event_handler::AdmitOutcome::Admitted
     );
-    assert!(
-        !state.workspaces[&1][state.active_workspace_idx(1)].contains_window(100),
-        "an off-monitor opening rect does not fall back to the primary monitor"
-    );
+    assert_eq!(state.find_window_workspace(100), Some((2, 0)));
+}
+
+#[test]
+fn test_new_window_monitor_removal_uses_surviving_focus() {
+    let mut config = test_config();
+
+    config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+    let mut state = new_window_monitor_state(config);
+    state.focused_monitor = 2;
+    state.reconcile_monitors(test_monitors());
+    assert_eq!(state.focused_monitor, 1);
+    let mut info = make_test_window_info(100);
+    info.rect = Rect::new(2200, 100, 800, 600);
+    state.injected_window_info.insert(100, info);
+    state.handle_window_event(WindowEvent::Created(100, 0));
+    assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+    assert!(state.monitors[&1].contains_rect_center(&state.last_placed_layout_rects[&100]));
 }
 
 #[test]

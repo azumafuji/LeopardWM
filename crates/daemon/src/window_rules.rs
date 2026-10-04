@@ -123,6 +123,47 @@ impl AppState {
         }
     }
 
+    pub(crate) fn preferred_new_window_monitor(
+        &self,
+        rule_workspace: Option<usize>,
+        sticky: bool,
+    ) -> Option<MonitorId> {
+        if self.config.behavior.new_window_monitor == config::NewWindowMonitor::Focused
+            && rule_workspace.is_none()
+            && !sticky
+            && self.monitors.contains_key(&self.focused_monitor)
+        {
+            Some(self.focused_monitor)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn floating_rect_for_admission(
+        &self,
+        window: &WindowInfo,
+        executable: &str,
+        monitor_id: MonitorId,
+        use_preferred_monitor: bool,
+    ) -> Rect {
+        let mut rect = self.get_floating_rect_from_rules(
+            &window.class_name,
+            &window.title,
+            executable,
+            &window.rect,
+            Some(monitor_id),
+        );
+        if use_preferred_monitor {
+            let monitor = &self.monitors[&monitor_id];
+            if !monitor.contains_rect_center(&rect) {
+                let area = monitor.work_area;
+                rect.x = area.x + (area.width - rect.width) / 2;
+                rect.y = area.y + (area.height - rect.height) / 2;
+            }
+        }
+        rect
+    }
+
     /// Enumerate windows and add them to the appropriate workspace based on position.
     pub(crate) fn enumerate_and_add_windows(&mut self) -> Result<usize> {
         let windows = self.windows_for_enumeration()?;
@@ -152,9 +193,10 @@ impl AppState {
 
             let action =
                 self.evaluate_window_rules(&win_info.class_name, &win_info.title, &executable);
-            let rule_matched = self
-                .matched_rule(&win_info.class_name, &win_info.title, &executable)
-                .is_some();
+            let matched = self.matched_rule(&win_info.class_name, &win_info.title, &executable);
+            let rule_matched = matched.is_some();
+            let rule_workspace = matched.and_then(|rule| rule.open_on_workspace);
+            let sticky = matched.is_some_and(|rule| rule.sticky);
 
             if action == config::WindowAction::Ignore {
                 debug!(
@@ -166,20 +208,20 @@ impl AppState {
 
             // Windows restored from the persisted snapshot are already managed
             // (placed by restore_workspace_structure before this enumerate) and
-            // get skipped below. Genuinely-new windows land on the monitor their
-            // current on-screen position maps to.
-            let monitor_id = find_monitor_for_rect(&monitors, &win_info.rect)
+            // get skipped below.
+            let opening_monitor = find_monitor_for_rect(&monitors, &win_info.rect)
                 .map(|m| m.id)
                 .unwrap_or(self.focused_monitor);
+            let preferred_monitor = self.preferred_new_window_monitor(rule_workspace, sticky);
+            let monitor_id = preferred_monitor.unwrap_or(opening_monitor);
 
             // Get floating rect before borrowing workspace mutably (to avoid borrow conflict)
             let floating_rect = if action == config::WindowAction::Float {
-                Some(self.get_floating_rect_from_rules(
-                    &win_info.class_name,
-                    &win_info.title,
+                Some(self.floating_rect_for_admission(
+                    &win_info,
                     &executable,
-                    &win_info.rect,
-                    Some(monitor_id),
+                    monitor_id,
+                    preferred_monitor.is_some(),
                 ))
             } else {
                 None

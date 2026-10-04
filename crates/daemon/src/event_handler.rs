@@ -938,35 +938,31 @@ impl AppState {
                 return AdmitOutcome::DialogLike;
             }
 
-            // New windows belong to the monitor containing their opening center,
-            // or the focused monitor when they open outside attached displays.
-            // A per-app rule's open_on_workspace can still redirect them
-            // within that monitor below.
             let recreated_slot =
                 self.take_recreated_window_slot(&win_info, kind, action, rule_sticky);
+            let opening_monitor = self
+                .monitors
+                .values()
+                .find(|monitor| monitor.contains_rect_center(&win_info.rect))
+                .map(|monitor| monitor.id)
+                .unwrap_or(self.focused_monitor);
+            let preferred_monitor = self
+                .preferred_new_window_monitor(rule_workspace, rule_sticky)
+                .filter(|_| kind == AdmissionKind::Automatic);
             let monitor_id = recreated_slot
                 .as_ref()
                 .map(|slot| slot.monitor)
-                .unwrap_or_else(|| {
-                    self.monitors
-                        .values()
-                        .find(|monitor| monitor.contains_rect_center(&win_info.rect))
-                        .map(|monitor| monitor.id)
-                        .unwrap_or(self.focused_monitor)
-                });
+                .unwrap_or_else(|| preferred_monitor.unwrap_or(opening_monitor));
 
             // Get floating rect before borrowing workspace mutably
-            let floating_rect = if action == config::WindowAction::Float {
-                Some(self.get_floating_rect_from_rules(
-                    &win_info.class_name,
-                    &win_info.title,
+            let floating_rect = (action == config::WindowAction::Float).then(|| {
+                self.floating_rect_for_admission(
+                    &win_info,
                     &executable,
-                    &win_info.rect,
-                    Some(monitor_id),
-                ))
-            } else {
-                None
-            };
+                    monitor_id,
+                    recreated_slot.is_none() && preferred_monitor.is_some(),
+                )
+            });
 
             let viewport_width = self.viewport_width_for(monitor_id);
 

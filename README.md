@@ -129,6 +129,8 @@ Start the daemon:
 
 A default config is created automatically at `%APPDATA%\leopardwm\config\config.toml`. Customize via the tray icon → Settings, or edit the file directly.
 
+Set `new_window_monitor = "focused"` under `[behavior]` or choose Settings → Behavior → New window monitor → Focused monitor to open new windows on the focused monitor's active workspace, including an empty workspace. The default, `"opening"`, uses the monitor where Windows opened the window, falling back to the focused monitor when it opens outside all monitors. If no focused monitor is known, `"focused"` uses the opening behavior. Workspace-routing rules take precedence; sticky windows retain their opening monitor and active-workspace placement. Floating windows moved by this policy are centered on the chosen monitor. Changes apply live on config reload or Settings save only to subsequent admissions, not already-managed windows or startup persistence restores.
+
 ## Default Hotkeys
 
 Most hotkeys use `Ctrl+Alt` as the base modifier. Layered pattern: base = focus, +Shift = move, +Win = monitor scope. Every hotkey is rebindable in `config.toml`. Combos Windows reserves (like `Win+Ctrl+Arrow`) can't be bound directly, but the opt-in **Reclaim Windows-reserved shortcuts** setting lets you use them anyway.

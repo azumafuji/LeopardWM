@@ -1137,6 +1137,16 @@ input[type="range"]::-webkit-slider-thumb {
             </div>
           </div>
           <div class="field">
+            <div class="field-info"><div class="field-label">New window monitor</div><div class="field-desc">Open new windows where Windows placed them or on the focused monitor. Workspace rules and sticky windows keep their existing placement</div></div>
+            <div class="combobox" id="cb-behavior-new_window_monitor">
+              <button class="combobox-trigger" type="button"><span class="combobox-text">Opening monitor</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <div class="combobox-popup">
+                <div class="combobox-option selected" data-value="opening">Opening monitor</div>
+                <div class="combobox-option" data-value="focused">Focused monitor</div>
+              </div>
+            </div>
+          </div>
+          <div class="field">
             <div class="field-info"><div class="field-label">Overview previews</div><div class="field-desc">Card contents in the workspace overview: live window previews, snapshots captured when windows leave the screen, or placeholder icons</div></div>
             <div class="combobox" id="cb-overview-render">
               <button class="combobox-trigger" type="button"><span class="combobox-text">Live previews</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
@@ -1595,6 +1605,7 @@ function init(cfg) {
   setCb('cb-behavior-log_level', cfg.behavior.log_level);
   setCb('cb-behavior-tab_close_action', cfg.behavior.tab_close_action || 'close_window');
   setCb('cb-behavior-new_window_placement', cfg.behavior.new_window_placement || 'new_column');
+  setCb('cb-behavior-new_window_monitor', cfg.behavior.new_window_monitor || 'opening');
   setCb('cb-overview-render', (cfg.overview && cfg.overview.render) || 'live');
 
   if (cfg.hotkeys) {
@@ -2230,6 +2241,7 @@ function readConfig() {
     },
     behavior: {
       focus_new_windows: checked('behavior-focus_new_windows'),
+      new_window_monitor: cbVal('cb-behavior-new_window_monitor'),
       track_focus_changes: checked('behavior-track_focus_changes'),
       focus_follows_mouse: checked('behavior-focus_follows_mouse'),
       focus_follows_mouse_delay_ms: num('behavior-focus_follows_mouse_delay_ms'),

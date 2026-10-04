@@ -379,6 +379,8 @@ pub struct BehaviorConfig {
     #[serde(default = "default_true")]
     pub focus_new_windows: bool,
 
+    pub new_window_monitor: NewWindowMonitor,
+
     /// Whether to track window focus changes from Windows.
     #[serde(default = "default_true")]
     pub track_focus_changes: bool,
@@ -456,6 +458,14 @@ pub struct BehaviorConfig {
     pub skip_empty_workspaces: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewWindowMonitor {
+    #[default]
+    Opening,
+    Focused,
+}
+
 /// Placement for newly opened tiled windows.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -472,6 +482,7 @@ impl Default for BehaviorConfig {
     fn default() -> Self {
         Self {
             focus_new_windows: true,
+            new_window_monitor: NewWindowMonitor::default(),
             track_focus_changes: true,
             log_level: default_log_level(),
             focus_follows_mouse: false,
@@ -2841,6 +2852,39 @@ mod tests {
         assert!(compiled[0].sticky);
         assert_eq!(compiled[1].open_in_column, None);
         assert!(!compiled[1].sticky);
+    }
+
+    #[test]
+    fn test_new_window_monitor_defaults_and_roundtrips() {
+        assert_eq!(
+            Config::default().behavior.new_window_monitor,
+            NewWindowMonitor::Opening
+        );
+        for text in ["", "[behavior]\n"] {
+            let config: Config = toml::from_str(text).unwrap();
+            assert_eq!(
+                config.behavior.new_window_monitor,
+                NewWindowMonitor::Opening
+            );
+        }
+        for (value, expected) in [
+            ("opening", NewWindowMonitor::Opening),
+            ("focused", NewWindowMonitor::Focused),
+        ] {
+            let text = format!("[behavior]\nnew_window_monitor = \"{value}\"\n");
+            let config: Config = toml::from_str(&text).unwrap();
+            assert_eq!(config.behavior.new_window_monitor, expected);
+            let encoded = toml::to_string_pretty(&config).unwrap();
+            assert!(encoded.contains(&format!("new_window_monitor = \"{value}\"")));
+            let decoded: Config = toml::from_str(&encoded).unwrap();
+            assert_eq!(decoded.behavior.new_window_monitor, expected);
+            let json = serde_json::to_string(&config).unwrap();
+            let decoded: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded.behavior.new_window_monitor, expected);
+        }
+        assert!(
+            toml::from_str::<Config>("[behavior]\nnew_window_monitor = \"primary\"\n").is_err()
+        );
     }
 
     #[test]
