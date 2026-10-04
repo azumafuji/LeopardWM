@@ -3,56 +3,6 @@ use crate::*;
 use crate::workspace::Workspace;
 
 impl Workspace {
-    /// Screen-space viewport offset for a centered single column, without changing scroll state.
-    pub fn single_column_viewport_left(&self, viewport_width: i32) -> Option<i32> {
-        if !self.center_single_column || self.fullscreen_window.is_some() {
-            return None;
-        }
-        let column = self.single_active_column()?;
-        let width = self.effective_column_width(column);
-        let visible_width = self.visible_width(viewport_width);
-        (width <= visible_width).then(|| -(visible_width - width) / 2)
-    }
-
-    pub(super) fn single_active_column(&self) -> Option<&Column> {
-        let mut active = self.columns.iter().filter(|c| self.is_column_active(c));
-        let column = active.next()?;
-        active.next().is_none().then_some(column)
-    }
-
-    /// The current layout offset, including an in-flight single-column transition.
-    pub fn layout_viewport_left(&self, viewport_width: i32) -> i32 {
-        if self.fullscreen_window.is_some() {
-            return self.scroll_offset.round() as i32;
-        }
-        let single_column = self.single_active_column();
-        if self.center_single_column {
-            if let Some(offset) = self.rendered_viewport.offset(viewport_width) {
-                if self.rendered_viewport.single_column() != single_column.is_some() {
-                    return offset as i32;
-                }
-            }
-        }
-        if self.center_single_column && self.active_animation.is_some() {
-            self.effective_scroll_offset().round() as i32
-        } else {
-            self.single_column_viewport_left(viewport_width)
-                .unwrap_or_else(|| self.scroll_offset.round() as i32)
-        }
-    }
-
-    fn record_rendered_viewport(&self, viewport_width: i32, offset: i32) {
-        if self.center_single_column && self.fullscreen_window.is_none() {
-            let single_column = self.single_active_column().is_some();
-            if self.rendered_viewport.offset(viewport_width).is_none()
-                || self.rendered_viewport.single_column() == single_column
-            {
-                self.rendered_viewport
-                    .record(viewport_width, offset as f64, single_column);
-            }
-        }
-    }
-
     /// Compute placements for all windows given a viewport.
     ///
     /// Returns a list of WindowPlacement structs indicating where each window
@@ -61,8 +11,7 @@ impl Workspace {
     /// Note: Negative gaps are treated as zero for calculation purposes.
     pub fn compute_placements(&self, viewport: Rect) -> Vec<WindowPlacement> {
         // Use rounding instead of truncation to prevent sub-pixel jitter
-        let viewport_left = self.layout_viewport_left(viewport.width);
-        self.record_rendered_viewport(viewport.width, viewport_left);
+        let viewport_left = self.scroll_offset.round() as i32;
 
         // Fullscreen mode: one window covers the entire viewport, others are off-screen
         if let Some(fs_wid) = self.fullscreen_window {
@@ -335,12 +284,7 @@ impl Workspace {
     /// to support smooth scrolling animations.
     pub fn compute_placements_animated(&self, viewport: Rect) -> Vec<WindowPlacement> {
         // Use animated scroll offset
-        let viewport_left = if self.center_single_column && self.fullscreen_window.is_none() {
-            self.layout_viewport_left(viewport.width)
-        } else {
-            self.effective_scroll_offset().round() as i32
-        };
-        self.record_rendered_viewport(viewport.width, viewport_left);
+        let viewport_left = self.effective_scroll_offset().round() as i32;
 
         // Fullscreen mode: one window covers the entire viewport, others are off-screen
         if let Some(fs_wid) = self.fullscreen_window {

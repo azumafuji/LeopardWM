@@ -4,50 +4,11 @@ pub mod operations;
 pub mod sizing;
 pub mod state;
 
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-// Packed viewport width, centering regime, and rendered pixel offset keep the
-// query cache cloneable and Sync without sharing state between workspace clones.
-#[derive(Debug, Default)]
-pub(crate) struct RenderedViewport(AtomicU64);
-
-impl Clone for RenderedViewport {
-    fn clone(&self) -> Self {
-        Self(AtomicU64::new(self.0.load(Ordering::Relaxed)))
-    }
-}
-
-impl RenderedViewport {
-    fn offset(&self, width: i32) -> Option<f64> {
-        let value = self.0.load(Ordering::Relaxed);
-        (width > 0 && ((value >> 32) & 0x7fff_ffff) as i32 == width)
-            .then_some(value as u32 as i32 as f64)
-    }
-
-    fn single_column(&self) -> bool {
-        self.0.load(Ordering::Relaxed) >> 63 != 0
-    }
-
-    fn record(&self, width: i32, offset: f64, single_column: bool) {
-        self.0.store(
-            ((single_column as u64) << 63)
-                | ((width as u64) << 32)
-                | offset.round() as i32 as u32 as u64,
-            Ordering::Relaxed,
-        );
-    }
-
-    fn finish(&self, offset: f64) {
-        let width = ((self.0.load(Ordering::Relaxed) >> 32) & 0x7fff_ffff) as i32;
-        self.record(width, offset, self.single_column());
-    }
-}
-
 use crate::animation::{Easing, ScrollAnimation, DEFAULT_ANIMATION_DURATION_MS};
 use crate::column::Column;
 use crate::types::*;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 /// Focus centering mode.
 /// Determines how the viewport adjusts when focus changes.
@@ -92,7 +53,9 @@ pub struct FloatingWindow {
 /// 3. **Valid column widths:** All column widths are >= `MIN_COLUMN_WIDTH` (100px).
 /// 4. **Valid scroll range:** `0.0 <= scroll_offset <= max_scroll` where
 ///    `max_scroll = (total_width() - viewport_width).max(0)`.
-///    Exception: when `center_past_edges` is true, `scroll_offset` may be
+///    Exception: `center_single_column` collapses the range to the centered
+///    offset for one fitting active column; `center_past_edges` also allows
+///    negative offsets. When `center_past_edges` is true, `scroll_offset` may be
 ///    negative (centering first column) or exceed `max_scroll` (last column).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
@@ -125,10 +88,6 @@ pub struct Workspace {
     /// Active scroll animation, if any.
     #[serde(skip)]
     pub(crate) active_animation: Option<ScrollAnimation>,
-    #[serde(skip)]
-    pub(crate) rendered_viewport: RenderedViewport,
-    #[serde(skip)]
-    pub(crate) scroll_animation_landing_offset: Option<f64>,
     /// Floating windows outside the tiling layout.
     #[serde(default)]
     pub(crate) floating_windows: Vec<FloatingWindow>,
@@ -215,8 +174,6 @@ impl Default for Workspace {
             default_column_width: DEFAULT_COLUMN_WIDTH,
             centering_mode: CenteringMode::default(),
             active_animation: None,
-            rendered_viewport: RenderedViewport::default(),
-            scroll_animation_landing_offset: None,
             floating_windows: Vec::new(),
             fullscreen_window: None,
             minimized_windows: HashSet::new(),
@@ -517,10 +474,11 @@ impl Workspace {
 
     /// Center the only active tiled column when it fits inside the viewport.
     pub fn set_center_single_column(&mut self, center: bool) {
-        if self.center_single_column != center {
-            self.rendered_viewport.record(0, 0.0, false);
-        }
         self.center_single_column = center;
+    }
+
+    pub fn center_single_column(&self) -> bool {
+        self.center_single_column
     }
 
     /// Set whether center-column can scroll past content edges.

@@ -206,7 +206,8 @@ impl Workspace {
         // Reclamp scroll offset — column widths may have shrunk
         let vis_w = self.visible_width(viewport_width);
         let max_scroll = (self.total_width() - vis_w).max(0);
-        self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll as f64);
+        self.scroll_offset =
+            self.clamp_scroll_offset(self.scroll_offset, viewport_width, 0.0, max_scroll as f64);
     }
 
     /// Rescale all column widths after viewport or gap values change.
@@ -260,11 +261,17 @@ impl Workspace {
 
         let vis_w = self.visible_width(new_viewport_width);
         let max_scroll = (self.total_width() - vis_w).max(0) as f64;
-        if self.center_past_edges {
-            self.scroll_offset = self.scroll_offset.min(max_scroll);
+        let min_scroll = if self.center_past_edges {
+            f64::NEG_INFINITY
         } else {
-            self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
-        }
+            0.0
+        };
+        self.scroll_offset = self.clamp_scroll_offset(
+            self.scroll_offset,
+            new_viewport_width,
+            min_scroll,
+            max_scroll,
+        );
 
         true
     }

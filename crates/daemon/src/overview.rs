@@ -312,7 +312,7 @@ impl AppState {
     ) -> (Vec<OverviewCard>, Rect, Option<i32>) {
         let full_w = ws.total_width().saturating_add(work_area.width).max(1);
         let virtual_viewport = Rect::new(0, 0, full_w, work_area.height);
-        let scroll = ws.layout_viewport_left(work_area.width);
+        let scroll = ws.scroll_offset().round() as i32;
         // The strip region the real viewport currently shows.
         let viewport_region = Rect::new(scroll, 0, work_area.width, work_area.height);
 
@@ -1496,35 +1496,13 @@ mod tests {
         ws.set_all_column_widths(400);
         ws.set_center_single_column(true);
         ws.set_scroll_offset(137.0);
+        ws.reconcile_scroll_bounds(1920);
         let (_, model) = state.build_overview_model().expect("model");
         let card = &model.rows[0].cards[0];
         assert_eq!(card.window_id, 101);
         assert_eq!(card.from_rect.unwrap().x, 760);
         assert_eq!(card.from_rect.unwrap().width, 400);
-        assert_eq!(state.workspaces[&1][0].scroll_offset(), 137.0);
-        state.workspaces[&1][0].compute_placements(Rect::new(0, 0, 1920, 1040));
-        let ws = &mut state.workspaces.get_mut(&1).unwrap()[0];
-        ws.insert_window(102, Some(1600)).unwrap();
-        ws.ensure_focused_visible_animated(1920);
-        let (_, model) = state.build_overview_model().expect("model");
-        assert_eq!(
-            model.rows[0]
-                .cards
-                .iter()
-                .find(|c| c.window_id == 101)
-                .unwrap()
-                .from_rect
-                .unwrap()
-                .x,
-            760
-        );
-        let ws = &mut state.workspaces.get_mut(&1).unwrap()[0];
-        ws.tick_animation(50);
-        ws.stop_animation();
-        ws.remove_window(102).unwrap();
-        ws.ensure_focused_visible_animated(1920);
-        let (_, model) = state.build_overview_model().expect("model");
-        assert_eq!(model.rows[0].cards[0].from_rect.unwrap().x, -100);
+        assert_eq!(state.workspaces[&1][0].scroll_offset(), -750.0);
     }
 
     #[test]

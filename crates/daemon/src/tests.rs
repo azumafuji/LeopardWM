@@ -10450,6 +10450,97 @@ fn test_resync_minimized_from_os_corrects_stale_flags() {
 }
 
 #[test]
+fn test_center_single_column_apply_repairs_resync_and_nonrevealing_changes() {
+    use std::time::Duration;
+    for enabled in [false, true] {
+        for frame_boundary in [false, true] {
+            for scenario in 0..4 {
+                let mut monitors = test_monitors();
+                monitors[0].rect.width = 1000;
+                monitors[0].work_area.width = 1000;
+                let mut config = test_config();
+                config.layout.center_single_column = enabled;
+                let mut state = AppState::new_with_config(config, monitors);
+                state.paused = false;
+                let viewport = Rect::new(0, 0, 1000, 1040);
+                let mut ws = Workspace::with_gaps(10, 20);
+                ws.set_center_single_column(enabled);
+                ws.set_reduce_motion(false);
+                ws.insert_window(100, Some(400)).unwrap();
+                ws.ensure_focused_visible(1000);
+                ws.compute_placements(viewport);
+                match scenario {
+                    0 => ws.set_scroll_offset(0.0),
+                    1 => {
+                        ws.insert_window(200, Some(400)).unwrap();
+                        ws.set_scroll_offset(137.0);
+                        ws.compute_placements(viewport);
+                    }
+                    2 => ws.append_window_no_focus(200, Some(400)).unwrap(),
+                    3 => {
+                        ws.set_scroll_offset(137.0);
+                        ws.ensure_focused_visible_animated(1000);
+                        ws.tick_animation(50);
+                    }
+                    _ => unreachable!(),
+                }
+                state.workspaces.insert(1, vec![ws]);
+                if scenario == 1 {
+                    state.resync_minimized_with(|wid| Some(wid == 200));
+                }
+                let before = state.workspaces[&1][0].effective_scroll_offset();
+                let was_animating = state.workspaces[&1][0].is_animating();
+                if frame_boundary {
+                    for id in [100, 200] {
+                        state.application_fullscreen.insert(
+                            id,
+                            crate::state::ApplicationFullscreenState {
+                                monitor_id: 1,
+                                rect: viewport,
+                            },
+                        );
+                    }
+                    let (tx, _rx) = tokio::sync::mpsc::channel(4);
+                    let worker = animation_worker::AnimationWorkerHandle::spawn(
+                        tx,
+                        state.apply_worker_cancelled.clone(),
+                    )
+                    .unwrap();
+                    state.send_animation_frame(&worker).unwrap();
+                    drop(worker);
+                } else {
+                    state.injected_apply_placements_behavior =
+                        Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
+                    state.apply_layout().unwrap();
+                }
+                let ws = &state.workspaces[&1][0];
+                let expected_x = if scenario == 3 || !enabled {
+                    20 - before.round() as i32
+                } else if scenario == 2 {
+                    20
+                } else {
+                    300
+                };
+                if !frame_boundary {
+                    assert_eq!(
+                        state.last_placed_layout_rects[&100].x, expected_x,
+                        "enabled={enabled}, frame={frame_boundary}, scenario={scenario}"
+                    );
+                }
+                if !enabled || scenario == 3 {
+                    assert_eq!(ws.effective_scroll_offset(), before);
+                    assert_eq!(ws.is_animating(), was_animating);
+                }
+                assert_eq!(
+                    ws.compute_placements_animated(viewport)[0].rect.x,
+                    expected_x
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_resync_minimized_leaves_dead_windows_untouched() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     let ws = state.focused_workspace_mut().unwrap();
@@ -16497,49 +16588,58 @@ fn saved_two_column_workspace() -> leopardwm_core_layout::Workspace {
 
 #[test]
 fn test_restore_center_single_column_runtime_setting() {
-    for restore_path in 0..3 {
-        let mut state = structure_restore_state();
-        state.config.layout.center_single_column = true;
-        let initial_len = state.workspaces[&2].len();
-        let workspace_index = if restore_path == 2 {
-            0
-        } else {
-            initial_len + 2
-        };
-        let mut saved = leopardwm_core_layout::Workspace::new();
-        saved.insert_window(100, Some(400)).unwrap();
-        saved.set_scroll_offset(137.0);
-        saved.set_center_single_column(true);
-        let snapshot = crate::state::StateSnapshot {
-            saved_at: "0".to_string(),
-            workspaces: vec![crate::state::WorkspaceSnapshot {
-                monitor_device_name: "DISPLAY2".to_string(),
-                workspace_index,
-                workspace: saved,
-            }],
-            focused_monitor_name: "DISPLAY1".to_string(),
-            active_workspace: std::collections::HashMap::new(),
-            tab_title_overrides: std::collections::HashMap::new(),
-        };
-        let snapshot = serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
-        if restore_path == 0 {
-            state.restore_workspace_structure_with(&snapshot, |_| true);
-        } else {
-            state.restore_state(&snapshot);
-        }
-        let first = if restore_path == 2 { 0 } else { initial_len };
-        for idx in first..=workspace_index {
-            let ws = &mut state.workspaces.get_mut(&2).unwrap()[idx];
-            if ws.is_empty() {
-                ws.insert_window(1000 + idx as u64, Some(400)).unwrap();
+    for enabled in [false, true] {
+        for restore_path in 0..3 {
+            let mut state = structure_restore_state();
+            state.config.layout.center_single_column = enabled;
+            let initial_len = state.workspaces[&2].len();
+            let workspace_index = if restore_path == 2 {
+                0
+            } else {
+                initial_len + 2
+            };
+            let mut saved = leopardwm_core_layout::Workspace::new();
+            saved.insert_window(100, Some(400)).unwrap();
+            saved.set_center_single_column(true);
+            saved.ensure_focused_visible(1000);
+            let saved_offset = saved.scroll_offset();
+            assert!(saved_offset < 0.0);
+            let snapshot = crate::state::StateSnapshot {
+                saved_at: "0".to_string(),
+                workspaces: vec![crate::state::WorkspaceSnapshot {
+                    monitor_device_name: "DISPLAY2".to_string(),
+                    workspace_index,
+                    workspace: saved,
+                }],
+                focused_monitor_name: "DISPLAY1".to_string(),
+                active_workspace: std::collections::HashMap::new(),
+                tab_title_overrides: std::collections::HashMap::new(),
+            };
+            let snapshot =
+                serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+            if restore_path == 0 {
+                state.restore_workspace_structure_with(&snapshot, |_| true);
+            } else {
+                state.restore_state(&snapshot);
             }
             assert_eq!(
-                ws.compute_placements(Rect::new(0, 0, 1000, 600))[0].rect.x,
-                300,
-                "restore path {restore_path}, slot {idx}"
+                state.workspaces[&2][workspace_index].scroll_offset(),
+                saved_offset
             );
+            let first = if restore_path == 2 { 0 } else { initial_len };
+            for idx in first..=workspace_index {
+                let ws = &mut state.workspaces.get_mut(&2).unwrap()[idx];
+                if ws.is_empty() {
+                    ws.insert_window(1000 + idx as u64, Some(400)).unwrap();
+                }
+                ws.reconcile_scroll_bounds(1000);
+                assert_eq!(
+                    ws.compute_placements(Rect::new(0, 0, 1000, 600))[0].rect.x,
+                    if enabled { 300 } else { 10 },
+                    "enabled={enabled}, restore path {restore_path}, slot {idx}"
+                );
+            }
         }
-        assert_eq!(state.workspaces[&2][workspace_index].scroll_offset(), 137.0);
     }
 }
 
