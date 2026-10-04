@@ -97,6 +97,8 @@ const DARK_BG: u32 = 0x00202020;
 /// on the window's own thread (the only thread that may touch the webview).
 const WM_SETTINGS_PUSH_BINDS: u32 = WM_APP + 1;
 const WM_SETTINGS_PUSH_RECORDED: u32 = WM_APP + 2;
+const WM_SETTINGS_PUSH_LOCALE: u32 = WM_APP + 3;
+static PENDING_LOCALE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Thread id of the open settings window's message loop, or `None` when closed.
 /// We target the thread queue (not the HWND) so a destroyed or recycled window
@@ -122,6 +124,22 @@ pub fn push_failed_binds(failed_binds: &[String]) {
     }
     unsafe {
         let _ = PostThreadMessageW(thread_id, WM_SETTINGS_PUSH_BINDS, WPARAM(0), LPARAM(0));
+    }
+}
+
+pub fn push_locale(language: &str) {
+    let settings_thread = match SETTINGS_THREAD.lock() {
+        Ok(thread) => thread,
+        Err(_) => return,
+    };
+    let Some(thread_id) = *settings_thread else {
+        return;
+    };
+    if let Ok(mut pending) = PENDING_LOCALE.lock() {
+        *pending = Some(language.to_string());
+    }
+    unsafe {
+        let _ = PostThreadMessageW(thread_id, WM_SETTINGS_PUSH_LOCALE, WPARAM(0), LPARAM(0));
     }
 }
 
@@ -220,7 +238,10 @@ pub fn run_settings_window(
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class_name,
-            w!("LeopardWM Settings"),
+            &windows::core::HSTRING::from(crate::locale::text(
+                &config.appearance.language,
+                "settings.text.leopardwm_settings",
+            )),
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -305,12 +326,12 @@ pub fn run_settings_window(
         // moved into the IPC handler closure below.
         let close_tx = event_tx.clone();
 
-        let settings_html = SETTINGS_HTML.replace("{VERSION}", env!("CARGO_PKG_VERSION"));
+        let settings_html = SETTINGS_HTML;
         let webview = wry::WebViewBuilder::new_with_web_context(&mut web_context)
-            .with_html(&settings_html)
+            .with_html(settings_html)
             .with_initialization_script(format!(
-                "window._initConfig = {}; window._hotkeyCatalog = {}; window._failedHotkeys = {};",
-                config_json, catalog_json, failed_binds_json
+                "window._initConfig = {}; window._hotkeyCatalog = {}; window._failedHotkeys = {}; window._localeStrings = {}; window._language = {}; window._version = {};",
+                config_json, catalog_json, failed_binds_json, crate::locale::page_json(&config.appearance.language), serde_json::to_string(&config.appearance.language)?, serde_json::to_string(env!("CARGO_PKG_VERSION"))?
             ))
             .with_ipc_handler(move |req| {
                 handle_ipc(req.body(), &event_tx, hwnd);
@@ -356,6 +377,26 @@ pub fn run_settings_window(
                         json
                     );
                     let _ = webview.evaluate_script(&js);
+                }
+                continue;
+            }
+            if msg_buf.message == WM_SETTINGS_PUSH_LOCALE {
+                let language = PENDING_LOCALE
+                    .lock()
+                    .ok()
+                    .and_then(|mut pending| pending.take());
+                if let Some(language) = language {
+                    let js = format!(
+                        "refreshLocale({}, {})",
+                        crate::locale::page_json(&language),
+                        serde_json::to_string(&language)?
+                    );
+                    let _ = webview.evaluate_script(&js);
+                    let title = windows::core::HSTRING::from(crate::locale::text(
+                        &language,
+                        "settings.text.leopardwm_settings",
+                    ));
+                    let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(hwnd, &title);
                 }
                 continue;
             }

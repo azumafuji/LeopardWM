@@ -624,19 +624,17 @@ impl AppState {
                 );
                 // Tailor remediation: elevating helps for a higher-integrity
                 // window, but not for a protected/PPL process.
-                let body = if matches!(block, ManageBlock::Protected) {
-                    format!(
-                        "\u{201c}{title}\u{201d} is a protected process LeopardWM can't manage, \
-                         so it's left floating for this session."
-                    )
+                let key = if matches!(block, ManageBlock::Protected) {
+                    "notification.floating.protected"
                 } else {
-                    format!(
-                        "\u{201c}{title}\u{201d} runs at a higher privilege level (e.g. as \
-                         administrator). LeopardWM can't tile it unless it also runs as \
-                         administrator, so it's left floating for this session."
-                    )
+                    "notification.floating.elevated"
                 };
-                crate::notify::show_toast("Window left floating", &body);
+                let language = &self.config.appearance.language;
+                let body = crate::locale::format(language, key, &[("title", title)]);
+                crate::notify::show_toast(
+                    &crate::locale::text(language, "notification.floating.title"),
+                    &body,
+                );
                 true
             }
             ElevationCheck::BlockedKnown => {

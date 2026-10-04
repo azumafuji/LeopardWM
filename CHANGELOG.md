@@ -6,6 +6,8 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Features
 
+- **Settings, tray menus, and daemon notifications now support English and Simplified Chinese.** Choose Settings → Appearance → Language or set `language = "zh-CN"` under `[appearance]`; English remains the default, and changes apply without restarting. Contributor-editable locale files are embedded at build time. The zh-CN translation is a machine draft pending native-speaker review. (#98)
+
 - **Your directional focus bindings now navigate the workspace overview without closing it.** `focus_left`, `focus_right`, `focus_up`, and `focus_down` follow your configured keys; arrows, Enter, Esc, and mouse controls still work. (#70)
 - **Taskbar buttons can now stay visible for windows scrolled out of view on the active workspace.** Set `taskbar_buttons = "hide_inactive_workspaces"` under `[behavior]` or choose Settings → Behavior → Taskbar buttons → Hide inactive workspaces. The default, `"hide_offscreen"`, preserves the existing behavior; `"show_all"` keeps all buttons. The old `hide_offscreen_taskbar_buttons` key keeps working, with the new key taking precedence when both are present. (#105)
 - **New windows can now open on the focused monitor's active workspace instead of the monitor where Windows placed them.** Set `new_window_monitor = "focused"` under `[behavior]` or choose Settings → Behavior → New window monitor → Focused monitor; `"opening"` remains the default. This applies only to windows that open while LeopardWM is running, not already-open windows discovered at startup or during reload/rescan. Workspace rules select the workspace index on the chosen monitor; sticky windows keep their existing placement. (#108)

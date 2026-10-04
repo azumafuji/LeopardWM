@@ -283,6 +283,7 @@ impl From<CenteringModeConfig> for CenteringMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceConfig {
+    pub language: String,
     /// Whether to highlight the active window border (Windows 11+).
     #[serde(default = "default_true")]
     pub active_border: bool,
@@ -346,6 +347,7 @@ fn default_tab_strip_opacity() -> u8 {
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
+            language: "en".to_string(),
             active_border: true,
             active_border_color: default_active_border_color(),
             active_border_width: default_active_border_width(),
@@ -1157,6 +1159,16 @@ impl Config {
     /// Validate configuration values, clamping out-of-range fields and returning warnings.
     pub fn validate(&mut self) -> Vec<ConfigWarning> {
         let mut warnings = Vec::new();
+        if !crate::locale::SUPPORTED_LANGUAGES.contains(&self.appearance.language.as_str()) {
+            warnings.push(ConfigWarning {
+                field: "appearance.language".to_string(),
+                message: format!(
+                    "Unsupported language '{}', using English",
+                    self.appearance.language
+                ),
+            });
+            self.appearance.language = "en".to_string();
+        }
 
         if self.behavior.floating_above_tiled && !self.behavior.track_focus_changes {
             warnings.push(ConfigWarning {
@@ -1633,6 +1645,32 @@ fn dirs_home() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_default_round_trip_and_validation() {
+        let mut config = Config::default();
+        assert_eq!(config.appearance.language, "en");
+        let legacy: Config = toml::from_str("[appearance]\nactive_border = false").unwrap();
+        assert_eq!(legacy.appearance.language, "en");
+        config.appearance.language = "zh-CN".into();
+        let serialized = toml::to_string(&config).unwrap();
+        let mut loaded: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(loaded.appearance.language, "zh-CN");
+        assert!(loaded.validate().is_empty());
+        for unsupported in ["auto", "zh-cn", "fr", ""] {
+            loaded.appearance.language = unsupported.into();
+            let warnings = loaded.validate();
+            assert_eq!(loaded.appearance.language, "en");
+            assert_eq!(
+                warnings
+                    .iter()
+                    .filter(|warning| warning.field == "appearance.language")
+                    .count(),
+                1
+            );
+            assert!(loaded.validate().is_empty());
+        }
+    }
 
     #[test]
     fn test_default_config() {

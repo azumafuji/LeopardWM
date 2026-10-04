@@ -60,6 +60,8 @@ centering_mode = "{centering_mode}"
 center_single_column = false
 
 [appearance]
+# Settings, tray, and daemon notification language: "en" or "zh-CN"
+language = "en"
 
 [behavior]
 # Automatically focus new windows when they appear

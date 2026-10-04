@@ -10,7 +10,7 @@ pub const SETTINGS_HTML: &str = r##"<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LeopardWM Settings</title>
+<title data-i18n="settings.text.leopardwm_settings"></title>
 <style>
 /* ── Reset ────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -901,39 +901,39 @@ input[type="range"]::-webkit-slider-thumb {
 <body>
 <div class="app">
   <nav class="nav">
-    <div class="nav-brand">Settings</div>
+    <div class="nav-brand" data-i18n="settings.text.settings"></div>
     <a href="#" data-section="layout" class="nav-item active">
       <svg class="nav-icon" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="5" height="11" rx="1"/><rect x="9.5" y="2.5" width="5" height="11" rx="1"/></svg>
-      Layout
+      <span data-i18n="settings.text.layout"></span>
     </a>
     <a href="#" data-section="appearance" class="nav-item">
       <svg class="nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11" stroke-dasharray="1.5 2"/></svg>
-      Appearance
+      <span data-i18n="settings.text.appearance"></span>
     </a>
     <a href="#" data-section="behavior" class="nav-item">
       <svg class="nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2m0 9v2m-6.5-6.5h2m9 0h2M3.17 3.17l1.42 1.42m6.82 6.82l1.42 1.42M3.17 12.83l1.42-1.42m6.82-6.82l1.42-1.42"/></svg>
-      Behavior
+      <span data-i18n="settings.text.behavior"></span>
     </a>
     <a href="#" data-section="hotkeys" class="nav-item">
       <svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="3.5" width="14" height="9" rx="1.5"/><rect x="3.5" y="5.5" width="2" height="1.5" rx="0.3"/><rect x="7" y="5.5" width="2" height="1.5" rx="0.3"/><rect x="10.5" y="5.5" width="2" height="1.5" rx="0.3"/><rect x="5" y="9" width="6" height="1.5" rx="0.3"/></svg>
-      Hotkeys
+      <span data-i18n="settings.text.hotkeys"></span>
     </a>
     <a href="#" data-section="rules" class="nav-item">
       <svg class="nav-icon" viewBox="0 0 16 16"><rect x="3" y="1.5" width="10" height="13" rx="1.5"/><line x1="5.5" y1="5" x2="10.5" y2="5"/><line x1="5.5" y1="8" x2="10.5" y2="8"/><line x1="5.5" y1="11" x2="8.5" y2="11"/></svg>
-      Rules
+      <span data-i18n="settings.text.rules"></span>
     </a>
     <a href="#" data-section="gestures" class="nav-item">
       <svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 2v7"/><path d="M5.5 6.5L8 9l2.5-2.5"/><path d="M4 12.5c0-1 1-2 4-2s4 1 4 2" /></svg>
-      Gestures
+      <span data-i18n="settings.text.gestures"></span>
     </a>
     <a href="#" data-section="snaphints" class="nav-item">
       <svg class="nav-icon" viewBox="0 0 16 16" stroke-width="1.5"><path d="M2 5.5V3.5a1.5 1.5 0 011.5-1.5H5.5"/><path d="M10.5 2H12.5A1.5 1.5 0 0114 3.5V5.5"/><path d="M14 10.5v2a1.5 1.5 0 01-1.5 1.5H10.5"/><path d="M5.5 14H3.5A1.5 1.5 0 012 12.5V10.5"/></svg>
-      Snap Hints
+      <span data-i18n="settings.text.snap_hints_titlecase"></span>
     </a>
     <div class="nav-spacer"></div>
     <a href="#" data-section="about" class="nav-item">
       <svg class="nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke-width="1.2"/><text x="8" y="11.5" text-anchor="middle" font-size="9" font-weight="600" fill="currentColor" stroke="none">i</text></svg>
-      About
+      <span data-i18n="settings.text.about"></span>
     </a>
   </nav>
 
@@ -941,134 +941,141 @@ input[type="range"]::-webkit-slider-thumb {
     <div class="content">
       <!-- Layout -->
       <div id="sec-layout" class="section active">
-        <h2 class="section-title">Layout</h2>
+        <h2 class="section-title" data-i18n="settings.text.layout"></h2>
         <div class="card">
           <div class="field">
-            <div class="field-info"><div class="field-label">Gap</div><div class="field-desc">Space between columns and between stacked windows (px)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.layout.gap.label"></div><div class="field-desc" data-i18n="settings.layout.gap.description"></div></div>
             <input type="number" id="layout-gap" min="0" max="100">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Outer gap left</div><div class="field-desc">Space at the left edge (px)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.layout.outer_gap_left.label"></div><div class="field-desc" data-i18n="settings.layout.outer_gap_left.description"></div></div>
             <input type="number" id="layout-outer_gap_left" min="0" max="100">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Outer gap right</div><div class="field-desc">Space at the right edge (px)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.layout.outer_gap_right.label"></div><div class="field-desc" data-i18n="settings.layout.outer_gap_right.description"></div></div>
             <input type="number" id="layout-outer_gap_right" min="0" max="100">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Outer gap top</div><div class="field-desc">Space at the top edge (px)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.layout.outer_gap_top.label"></div><div class="field-desc" data-i18n="settings.layout.outer_gap_top.description"></div></div>
             <input type="number" id="layout-outer_gap_top" min="0" max="100">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Outer gap bottom</div><div class="field-desc">Space at the bottom edge (px)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.layout.outer_gap_bottom.label"></div><div class="field-desc" data-i18n="settings.layout.outer_gap_bottom.description"></div></div>
             <input type="number" id="layout-outer_gap_bottom" min="0" max="100">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Centering mode</div><div class="field-desc">How the focused column is positioned in the viewport</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.layout.centering_mode.label"></div><div class="field-desc" data-i18n="settings.layout.centering_mode.description"></div></div>
             <div class="combobox" id="cb-layout-centering_mode">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">Center</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <button class="combobox-trigger" type="button"><span class="combobox-text" data-i18n="settings.text.center"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">
-                <div class="combobox-option selected" data-value="center">Center</div>
-                <div class="combobox-option" data-value="just_in_view">Just in view</div>
-                <div class="combobox-option" data-value="on_overflow">On overflow</div>
+                <div class="combobox-option selected" data-value="center" data-i18n="settings.text.center"></div>
+                <div class="combobox-option" data-value="just_in_view" data-i18n="settings.text.just_in_view"></div>
+                <div class="combobox-option" data-value="on_overflow" data-i18n="settings.text.on_overflow"></div>
               </div>
             </div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Center single column</div><div class="field-desc">Center the only active tiled column when it fits in the viewport</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.layout.center_single_column.label"></div><div class="field-desc" data-i18n="settings.layout.center_single_column.description"></div></div>
             <label class="toggle"><input type="checkbox" id="layout-center_single_column"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Center past edges</div><div class="field-desc">Allow centering to scroll past content boundaries</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.layout.center_past_edges.label"></div><div class="field-desc" data-i18n="settings.layout.center_past_edges.description"></div></div>
             <label class="toggle"><input type="checkbox" id="layout-center_past_edges"><span class="track"></span><span class="thumb"></span></label>
           </div>
         </div>
-        <h3 class="section-subtitle">Width presets</h3>
-        <p class="section-desc">Column width presets as viewport fractions, used for width cycling.</p>
+        <h3 class="section-subtitle" data-i18n="settings.text.width_presets"></h3>
+        <p class="section-desc" data-i18n="settings.text.column_width_presets_as_viewport_fractions_used_for_width_cycling"></p>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Fraction</th><th style="width:36px"></th></tr></thead>
+            <thead><tr><th data-i18n="settings.text.fraction"></th><th style="width:36px"></th></tr></thead>
             <tbody id="width-presets-body"></tbody>
           </table>
         </div>
-        <div class="table-actions"><button class="btn btn-sm" onclick="addPresetRow('width',null)">+ Add preset</button></div>
+        <div class="table-actions"><button class="btn btn-sm" onclick="addPresetRow('width',null)" data-i18n="settings.text.add_preset"></button></div>
         <div class="card" id="default-width-preset-card">
           <div class="field">
-            <div class="field-info"><div class="field-label">Default preset for new windows</div><div class="field-desc">Which configured width preset new windows use</div></div>
-            <div class="combobox" id="cb-layout-default_width_preset" aria-label="Default width preset for new windows"></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.layout.default_width_preset.label"></div><div class="field-desc" data-i18n="settings.layout.default_width_preset.description"></div></div>
+            <div class="combobox" id="cb-layout-default_width_preset" aria-label="" data-i18n-aria-label="settings.text.default_width_preset_for_new_windows"></div>
           </div>
         </div>
-        <h3 class="section-subtitle">Height presets</h3>
-        <p class="section-desc">Window height presets as column fractions for cycling window heights.</p>
+        <h3 class="section-subtitle" data-i18n="settings.text.height_presets"></h3>
+        <p class="section-desc" data-i18n="settings.text.window_height_presets_as_column_fractions_for_cycling_window_heights"></p>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Fraction</th><th style="width:36px"></th></tr></thead>
+            <thead><tr><th data-i18n="settings.text.fraction"></th><th style="width:36px"></th></tr></thead>
             <tbody id="height-presets-body"></tbody>
           </table>
         </div>
-        <div class="table-actions"><button class="btn btn-sm" onclick="addPresetRow('height',null)">+ Add preset</button></div>
-        <h3 class="section-subtitle">Workspace names</h3>
-        <p class="section-desc">Optional labels for workspaces 1-9. Shown in <code>lwm query workspace</code> and sent to bars over IPC. Leave blank to use the number.</p>
+        <div class="table-actions"><button class="btn btn-sm" onclick="addPresetRow('height',null)" data-i18n="settings.text.add_preset"></button></div>
+        <h3 class="section-subtitle" data-i18n="settings.text.workspace_names"></h3>
+        <p class="section-desc" data-i18n="settings.text.optional_labels_for_workspaces_1_9_shown_in_lwm_query_workspace_and_sent_to"></p>
         <div class="card" id="workspace-names-card"></div>
       </div>
 
       <!-- Appearance -->
       <div id="sec-appearance" class="section">
-        <h2 class="section-title">Appearance</h2>
+        <h2 class="section-title" data-i18n="settings.text.appearance"></h2>
         <div class="card">
+          <div class="field">
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.language.label"></div><div class="field-desc" data-i18n="settings.appearance.language.description"></div></div>
+            <div class="combobox" id="cb-appearance-language">
+              <button class="combobox-trigger" type="button"><span class="combobox-text">English</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2 4l4 4 4-4"/></svg></button>
+              <div class="combobox-popup"><div class="combobox-option selected" data-value="en">English</div><div class="combobox-option" data-value="zh-CN">简体中文</div></div>
+            </div>
+          </div>
           <div class="info-bar" id="hc-info-bar" hidden>
             <svg class="info-bar-icon" viewBox="0 0 16 16">
               <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-.75 3.5a.75.75 0 011.5 0v4a.75.75 0 01-1.5 0v-4zm.75 7a.75.75 0 110-1.5.75.75 0 010 1.5z"/>
             </svg>
             <div class="info-bar-content">
-              <span class="info-bar-title">High contrast mode.</span><span class="info-bar-message">Border color is overridden by the system highlight color.</span>
+              <span class="info-bar-title" data-i18n="settings.text.high_contrast_mode"></span><span class="info-bar-message" data-i18n="settings.text.border_color_is_overridden_by_the_system_highlight_color"></span>
             </div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Active border</div><div class="field-desc">Highlight the focused window border</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.active_border.label"></div><div class="field-desc" data-i18n="settings.appearance.active_border.description"></div></div>
             <label class="toggle"><input type="checkbox" id="appearance-active_border"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Border color</div><div class="field-desc">Active window border color</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.active_border_color.label"></div><div class="field-desc" data-i18n="settings.appearance.active_border_color.description"></div></div>
             <input type="color" id="appearance-active_border_color">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Border width</div><div class="field-desc">Active window border thickness (px)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.active_border_width.label"></div><div class="field-desc" data-i18n="settings.appearance.active_border_width.description"></div></div>
             <input type="number" id="appearance-active_border_width" min="1" max="20">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Border position</div><div class="field-desc">Draw border outside or inside the window frame</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.active_border_position.label"></div><div class="field-desc" data-i18n="settings.appearance.active_border_position.description"></div></div>
             <div class="combobox" id="cb-appearance-active_border_position">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">Outside</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <button class="combobox-trigger" type="button"><span class="combobox-text" data-i18n="settings.text.outside"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">
-                <div class="combobox-option selected" data-value="outside">Outside</div>
-                <div class="combobox-option" data-value="inside">Inside</div>
+                <div class="combobox-option selected" data-value="outside" data-i18n="settings.text.outside"></div>
+                <div class="combobox-option" data-value="inside" data-i18n="settings.text.inside"></div>
               </div>
             </div>
           </div>
           <div class="card-divider"></div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Tab strip height</div><div class="field-desc">Tab strip height in pixels at 96 DPI (scaled per monitor)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.tab_strip_height.label"></div><div class="field-desc" data-i18n="settings.appearance.tab_strip_height.description"></div></div>
             <input type="number" id="appearance-tab_strip_height" min="16" max="64">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Tab strip background</div><div class="field-desc">Background color for the strip</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.tab_strip_bg.label"></div><div class="field-desc" data-i18n="settings.appearance.tab_strip_bg.description"></div></div>
             <input type="color" id="appearance-tab_strip_bg">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Active tab background</div><div class="field-desc">Highlight color for the active tab</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.tab_strip_active_bg.label"></div><div class="field-desc" data-i18n="settings.appearance.tab_strip_active_bg.description"></div></div>
             <input type="color" id="appearance-tab_strip_active_bg">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Active tab text</div><div class="field-desc">Text color for the active tab</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.tab_strip_active_text.label"></div><div class="field-desc" data-i18n="settings.appearance.tab_strip_active_text.description"></div></div>
             <input type="color" id="appearance-tab_strip_active_text">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Inactive tab text</div><div class="field-desc">Text color for inactive tabs</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.tab_strip_inactive_text.label"></div><div class="field-desc" data-i18n="settings.appearance.tab_strip_inactive_text.description"></div></div>
             <input type="color" id="appearance-tab_strip_inactive_text">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Tab strip opacity</div><div class="field-desc">Strip translucency (0 transparent &rarr; 255 opaque)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.appearance.tab_strip_opacity.label"></div><div class="field-desc" data-i18n="settings.appearance.tab_strip_opacity.description"></div></div>
             <input type="number" id="appearance-tab_strip_opacity" min="0" max="255">
           </div>
         </div>
@@ -1076,155 +1083,155 @@ input[type="range"]::-webkit-slider-thumb {
 
       <!-- Behavior -->
       <div id="sec-behavior" class="section">
-        <h2 class="section-title">Behavior</h2>
+        <h2 class="section-title" data-i18n="settings.text.behavior"></h2>
         <div class="card">
           <div class="field">
-            <div class="field-info"><div class="field-label">Start with Windows</div><div class="field-desc">Automatically launch LeopardWM when you sign in to Windows</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.startup.auto_start.label"></div><div class="field-desc" data-i18n="settings.startup.auto_start.description"></div></div>
             <label class="toggle"><input type="checkbox" id="startup-auto_start" data-no-config><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Focus new windows</div><div class="field-desc">Automatically focus newly opened windows</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.focus_new_windows.label"></div><div class="field-desc" data-i18n="settings.behavior.focus_new_windows.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-focus_new_windows"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Track focus changes</div><div class="field-desc">Follow Windows focus changes</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.track_focus_changes.label"></div><div class="field-desc" data-i18n="settings.behavior.track_focus_changes.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-track_focus_changes"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Focus follows mouse</div><div class="field-desc">Focus windows on mouse enter</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.focus_follows_mouse.label"></div><div class="field-desc" data-i18n="settings.behavior.focus_follows_mouse.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-focus_follows_mouse"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Focus delay</div><div class="field-desc">Delay before focus change on mouse enter (ms)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.focus_follows_mouse_delay_ms.label"></div><div class="field-desc" data-i18n="settings.behavior.focus_follows_mouse_delay_ms.description"></div></div>
             <input type="number" id="behavior-focus_follows_mouse_delay_ms" min="50" max="2000">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Mouse follows focus</div><div class="field-desc">Move the cursor onto the focused window after focus commands (inverse of focus follows mouse)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.mouse_follows_focus.label"></div><div class="field-desc" data-i18n="settings.behavior.mouse_follows_focus.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-mouse_follows_focus"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Workspace edge wrap</div><div class="field-desc">Focus or move up/down past a column's top or bottom edge switches to the adjacent workspace</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.workspace_edge_wrap.label"></div><div class="field-desc" data-i18n="settings.behavior.workspace_edge_wrap.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-workspace_edge_wrap"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Skip empty workspaces</div><div class="field-desc">Previous/next workspace and edge-wrap focus skip workspaces without tiled or floating windows (sticky windows do not count)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.skip_empty_workspaces.label"></div><div class="field-desc" data-i18n="settings.behavior.skip_empty_workspaces.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-skip_empty_workspaces"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Fullscreen follows focus</div><div class="field-desc">Carry fullscreen to the next focused window (monocle) instead of dropping to the tiled layout. Turn off so fullscreen affects only the one window</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.fullscreen_follows_focus.label"></div><div class="field-desc" data-i18n="settings.behavior.fullscreen_follows_focus.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-fullscreen_follows_focus"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Disable snap layouts</div><div class="field-desc">Prevent Windows 11 edge-drag snapping for tiled windows</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.disable_snap_layouts.label"></div><div class="field-desc" data-i18n="settings.behavior.disable_snap_layouts.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-disable_snap_layouts"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Smooth app animations (experimental)</div><div class="field-desc">Use DWM thumbnails to animate Chromium / Electron / Firefox / Terminal / .NET windows during column scrolls. Eliminates the 1px wobble and repaint stutter on Chrome, Slack, Discord, WinForms/WPF apps, etc.</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.swap_chain_ghost_animation.label"></div><div class="field-desc" data-i18n="settings.behavior.swap_chain_ghost_animation.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-swap_chain_ghost_animation"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Keep floating windows above tiled windows</div><div class="field-desc">Keep visible floating and sticky floating windows above tiled windows without changing focus. Disabled during fullscreen and overview. Requires Track focus changes to be enabled (the default).</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.floating_above_tiled.label"></div><div class="field-desc" data-i18n="settings.behavior.floating_above_tiled.description"></div></div>
             <label class="toggle"><input type="checkbox" id="behavior-floating_above_tiled"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Taskbar buttons</div><div class="field-desc">Choose which windows keep their taskbar buttons. Inactive workspaces are per monitor; floating and minimized windows keep theirs on the active workspace.</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.taskbar_buttons.label"></div><div class="field-desc" data-i18n="settings.behavior.taskbar_buttons.description"></div></div>
             <div class="combobox" id="cb-behavior-taskbar_buttons">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">Hide off-screen</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <button class="combobox-trigger" type="button"><span class="combobox-text" data-i18n="settings.text.hide_off_screen"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">
-                <div class="combobox-option selected" data-value="hide_offscreen">Hide off-screen</div>
-                <div class="combobox-option" data-value="hide_inactive_workspaces">Hide inactive workspaces</div>
-                <div class="combobox-option" data-value="show_all">Show all</div>
+                <div class="combobox-option selected" data-value="hide_offscreen" data-i18n="settings.text.hide_off_screen"></div>
+                <div class="combobox-option" data-value="hide_inactive_workspaces" data-i18n="settings.text.hide_inactive_workspaces"></div>
+                <div class="combobox-option" data-value="show_all" data-i18n="settings.text.show_all"></div>
               </div>
             </div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">New window placement</div><div class="field-desc">Where newly opened windows go: their own column or stacked into the focused column</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.new_window_placement.label"></div><div class="field-desc" data-i18n="settings.behavior.new_window_placement.description"></div></div>
             <div class="combobox" id="cb-behavior-new_window_placement">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">New column</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <button class="combobox-trigger" type="button"><span class="combobox-text" data-i18n="settings.text.new_column"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">
-                <div class="combobox-option selected" data-value="new_column">New column</div>
-                <div class="combobox-option" data-value="in_column">In focused column</div>
+                <div class="combobox-option selected" data-value="new_column" data-i18n="settings.text.new_column"></div>
+                <div class="combobox-option" data-value="in_column" data-i18n="settings.text.in_focused_column"></div>
               </div>
             </div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">New window monitor</div><div class="field-desc">Choose the monitor for windows opening while LeopardWM runs. Already-open windows discovered at startup or reload/rescan keep their placement. Workspace rules select the workspace index on the chosen monitor for live openings. Sticky windows keep their existing placement</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.new_window_monitor.label"></div><div class="field-desc" data-i18n="settings.behavior.new_window_monitor.description"></div></div>
             <div class="combobox" id="cb-behavior-new_window_monitor">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">Opening monitor</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <button class="combobox-trigger" type="button"><span class="combobox-text" data-i18n="settings.text.opening_monitor"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">
-                <div class="combobox-option selected" data-value="opening">Opening monitor</div>
-                <div class="combobox-option" data-value="focused">Focused monitor</div>
+                <div class="combobox-option selected" data-value="opening" data-i18n="settings.text.opening_monitor"></div>
+                <div class="combobox-option" data-value="focused" data-i18n="settings.text.focused_monitor"></div>
               </div>
             </div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Overview previews</div><div class="field-desc">Card contents in the workspace overview: live window previews, snapshots captured when windows leave the screen, or placeholder icons</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.overview.render.label"></div><div class="field-desc" data-i18n="settings.overview.render.description"></div></div>
             <div class="combobox" id="cb-overview-render">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">Live previews</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <button class="combobox-trigger" type="button"><span class="combobox-text" data-i18n="settings.text.live_previews"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">
-                <div class="combobox-option selected" data-value="live">Live previews</div>
-                <div class="combobox-option" data-value="snapshot">Snapshots</div>
-                <div class="combobox-option" data-value="placeholder">Placeholder icons</div>
+                <div class="combobox-option selected" data-value="live" data-i18n="settings.text.live_previews"></div>
+                <div class="combobox-option" data-value="snapshot" data-i18n="settings.text.snapshots"></div>
+                <div class="combobox-option" data-value="placeholder" data-i18n="settings.text.placeholder_icons"></div>
               </div>
             </div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Tab close action</div><div class="field-desc">What X-button click and middle-click do to a tab</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.tab_close_action.label"></div><div class="field-desc" data-i18n="settings.behavior.tab_close_action.description"></div></div>
             <div class="combobox" id="cb-behavior-tab_close_action">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">Close window</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <button class="combobox-trigger" type="button"><span class="combobox-text" data-i18n="settings.text.close_window"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">
-                <div class="combobox-option selected" data-value="close_window">Close window</div>
-                <div class="combobox-option" data-value="untab">Untab</div>
+                <div class="combobox-option selected" data-value="close_window" data-i18n="settings.text.close_window"></div>
+                <div class="combobox-option" data-value="untab" data-i18n="settings.text.untab"></div>
               </div>
             </div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Log level</div><div class="field-desc">Daemon logging verbosity</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.behavior.log_level.label"></div><div class="field-desc" data-i18n="settings.behavior.log_level.description"></div></div>
             <div class="combobox" id="cb-behavior-log_level">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">Info</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <button class="combobox-trigger" type="button"><span class="combobox-text" data-i18n="settings.text.info"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">
-                <div class="combobox-option" data-value="trace">Trace</div>
-                <div class="combobox-option" data-value="debug">Debug</div>
-                <div class="combobox-option selected" data-value="info">Info</div>
-                <div class="combobox-option" data-value="warn">Warn</div>
-                <div class="combobox-option" data-value="error">Error</div>
+                <div class="combobox-option" data-value="trace" data-i18n="settings.text.trace"></div>
+                <div class="combobox-option" data-value="debug" data-i18n="settings.text.debug"></div>
+                <div class="combobox-option selected" data-value="info" data-i18n="settings.text.info"></div>
+                <div class="combobox-option" data-value="warn" data-i18n="settings.text.warn"></div>
+                <div class="combobox-option" data-value="error" data-i18n="settings.text.error"></div>
               </div>
             </div>
           </div>
         </div>
-        <h3 class="section-subtitle">Animation</h3>
-        <p class="section-desc">Transition timing. Durations in milliseconds; 0 snaps instantly.</p>
+        <h3 class="section-subtitle" data-i18n="settings.text.animation"></h3>
+        <p class="section-desc" data-i18n="settings.text.transition_timing_durations_in_milliseconds_0_snaps_instantly"></p>
         <div class="card">
           <div class="field">
-            <div class="field-info"><div class="field-label">Layout duration</div><div class="field-desc">Column move / resize / tab changes (ms)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.animation.layout_duration_ms.label"></div><div class="field-desc" data-i18n="settings.animation.layout_duration_ms.description"></div></div>
             <input type="number" id="animation-layout_duration_ms" min="0" max="2000">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Workspace switch duration</div><div class="field-desc">Switching workspaces (ms)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.animation.workspace_switch_duration_ms.label"></div><div class="field-desc" data-i18n="settings.animation.workspace_switch_duration_ms.description"></div></div>
             <input type="number" id="animation-workspace_switch_duration_ms" min="0" max="2000">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Scroll duration</div><div class="field-desc">Scrolling a column into view (ms)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.animation.scroll_duration_ms.label"></div><div class="field-desc" data-i18n="settings.animation.scroll_duration_ms.description"></div></div>
             <input type="number" id="animation-scroll_duration_ms" min="0" max="2000">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Overview</div><div class="field-desc">Overview open/close zoom (ms)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.animation.overview_duration_ms.label"></div><div class="field-desc" data-i18n="settings.animation.overview_duration_ms.description"></div></div>
             <input type="number" id="animation-overview_duration_ms" min="0" max="2000">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Easing</div><div class="field-desc">Acceleration curve for all animations</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.animation.easing.label"></div><div class="field-desc" data-i18n="settings.animation.easing.description"></div></div>
             <div class="combobox" id="cb-animation-easing">
-              <button class="combobox-trigger" type="button"><span class="combobox-text">Ease out</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
+              <button class="combobox-trigger" type="button"><span class="combobox-text" data-i18n="settings.text.ease_out"></span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
               <div class="combobox-popup">
-                <div class="combobox-option" data-value="linear">Linear</div>
-                <div class="combobox-option" data-value="ease_in">Ease in</div>
-                <div class="combobox-option selected" data-value="ease_out">Ease out</div>
-                <div class="combobox-option" data-value="ease_in_out">Ease in-out</div>
+                <div class="combobox-option" data-value="linear" data-i18n="settings.text.linear"></div>
+                <div class="combobox-option" data-value="ease_in" data-i18n="settings.text.ease_in"></div>
+                <div class="combobox-option selected" data-value="ease_out" data-i18n="settings.text.ease_out"></div>
+                <div class="combobox-option" data-value="ease_in_out" data-i18n="settings.text.ease_in_out"></div>
               </div>
             </div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Reduce motion on battery</div><div class="field-desc">Also applies in Windows power saver. Windows Accessibility animation effects always override this setting.</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.animation.reduce_motion_on_battery.label"></div><div class="field-desc" data-i18n="settings.animation.reduce_motion_on_battery.description"></div></div>
             <label class="toggle"><input type="checkbox" id="animation-reduce_motion_on_battery"><span class="track"></span><span class="thumb"></span></label>
           </div>
         </div>
@@ -1232,7 +1239,7 @@ input[type="range"]::-webkit-slider-thumb {
 
       <!-- Hotkeys -->
       <div id="sec-hotkeys" class="section">
-        <h2 class="section-title">Hotkeys</h2>
+        <h2 class="section-title" data-i18n="settings.text.hotkeys"></h2>
         <div class="info-bar warning" id="hotkey-warn-bar" hidden>
           <svg class="info-bar-icon" viewBox="0 0 20 20" aria-hidden="true">
             <path d="M10 2.2a1.3 1.3 0 0 1 1.13.66l7.3 12.64A1.3 1.3 0 0 1 17.3 17.5H2.7a1.3 1.3 0 0 1-1.13-1.95L8.87 2.86A1.3 1.3 0 0 1 10 2.2Zm0 9.55a.85.85 0 0 0 .85-.85V7.4a.85.85 0 0 0-1.7 0v3.5c0 .47.38.85.85.85Zm0 1.2a.95.95 0 1 0 0 1.9.95.95 0 0 0 0-1.9Z"/>
@@ -1240,67 +1247,67 @@ input[type="range"]::-webkit-slider-thumb {
           <div class="info-bar-content">
             <span class="info-bar-title" id="hotkey-warn-title"></span><span class="info-bar-message" id="hotkey-warn-msg"></span>
           </div>
-          <button class="info-bar-close" title="Dismiss" aria-label="Dismiss" onclick="document.getElementById('hotkey-warn-bar').hidden=true">&#10005;</button>
+          <button class="info-bar-close" title="" data-i18n-title="settings.text.dismiss" aria-label="" data-i18n-aria-label="settings.text.dismiss" onclick="document.getElementById('hotkey-warn-bar').hidden=true">&#10005;</button>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Command</th><th>Key binding</th><th style="width:36px"></th></tr></thead>
+            <thead><tr><th data-i18n="settings.text.command"></th><th data-i18n="settings.text.key_binding"></th><th style="width:36px"></th></tr></thead>
             <tbody id="hotkeys-body"></tbody>
           </table>
         </div>
-        <div class="table-actions"><button class="btn btn-sm" onclick="resetHotkeys()">Reset to defaults</button></div>
+        <div class="table-actions"><button class="btn btn-sm" onclick="resetHotkeys()" data-i18n="settings.text.reset_to_defaults"></button></div>
       </div>
 
       <!-- Rules -->
       <div id="sec-rules" class="section">
-        <h2 class="section-title">Window rules</h2>
+        <h2 class="section-title" data-i18n="settings.text.window_rules"></h2>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Class</th><th>Title</th><th>Executable</th><th>Action</th><th title="Per-app open behavior">Options</th><th style="width:36px"></th></tr></thead>
+            <thead><tr><th data-i18n="settings.text.class"></th><th data-i18n="settings.text.title"></th><th data-i18n="settings.text.executable"></th><th data-i18n="settings.text.action"></th><th title="" data-i18n-title="settings.text.per_app_open_behavior" data-i18n="settings.text.options"></th><th style="width:36px"></th></tr></thead>
             <tbody id="rules-body"></tbody>
           </table>
         </div>
-        <div class="table-actions"><button class="btn btn-sm" onclick="addRuleRow({})">+ Add rule</button></div>
+        <div class="table-actions"><button class="btn btn-sm" onclick="addRuleRow({})" data-i18n="settings.text.add_rule"></button></div>
       </div>
 
       <!-- Gestures -->
       <div id="sec-gestures" class="section">
-        <h2 class="section-title">Gestures</h2>
+        <h2 class="section-title" data-i18n="settings.text.gestures"></h2>
         <div class="card">
           <div class="field">
-            <div class="field-info"><div class="field-label">Enable gestures</div><div class="field-desc">Enable touchpad gesture support</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.gestures.enabled.label"></div><div class="field-desc" data-i18n="settings.gestures.enabled.description"></div></div>
             <label class="toggle"><input type="checkbox" id="gestures-enabled"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Wheel-based swipes</div><div class="field-desc">Detect swipes from touchpad drivers and mouse side wheels. When off, Precision Touchpads can keep swipes through the native option below.</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.gestures.wheel_swipes.label"></div><div class="field-desc" data-i18n="settings.gestures.wheel_swipes.description"></div></div>
             <label class="toggle"><input type="checkbox" id="gestures-wheel_swipes"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Native three-finger swipes</div><div class="field-desc">Use Precision Touchpad Raw Input. Set Windows three- and four-finger touchpad gestures to Nothing. Experimental; restart LeopardWM after changing.</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.gestures.raw_input.label"></div><div class="field-desc" data-i18n="settings.gestures.raw_input.description"></div></div>
             <label class="toggle"><input type="checkbox" id="gestures-raw_input"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Swipe left</div><div class="field-desc">Three-finger swipe left command</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.gestures.swipe_left.label"></div><div class="field-desc" data-i18n="settings.gestures.swipe_left.description"></div></div>
             <div class="combobox" id="cb-gestures-swipe_left" data-value="focus_left"></div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Swipe right</div><div class="field-desc">Three-finger swipe right command</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.gestures.swipe_right.label"></div><div class="field-desc" data-i18n="settings.gestures.swipe_right.description"></div></div>
             <div class="combobox" id="cb-gestures-swipe_right" data-value="focus_right"></div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Swipe up</div><div class="field-desc">Three-finger swipe up command</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.gestures.swipe_up.label"></div><div class="field-desc" data-i18n="settings.gestures.swipe_up.description"></div></div>
             <div class="combobox" id="cb-gestures-swipe_up" data-value="focus_up"></div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Swipe down</div><div class="field-desc">Three-finger swipe down command</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.gestures.swipe_down.label"></div><div class="field-desc" data-i18n="settings.gestures.swipe_down.description"></div></div>
             <div class="combobox" id="cb-gestures-swipe_down" data-value="focus_down"></div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label" id="lbl-scroll-up">Scroll up</div><div class="field-desc">Scroll wheel up command</div></div>
+            <div class="field-info"><div class="field-label" id="lbl-scroll-up" data-i18n="settings.gestures.scroll_up.label"></div><div class="field-desc" data-i18n="settings.gestures.scroll_up.description"></div></div>
             <div class="combobox" id="cb-gestures-scroll_up" data-value="focus_next"></div>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label" id="lbl-scroll-down">Scroll down</div><div class="field-desc">Scroll wheel down command</div></div>
+            <div class="field-info"><div class="field-label" id="lbl-scroll-down" data-i18n="settings.gestures.scroll_down.label"></div><div class="field-desc" data-i18n="settings.gestures.scroll_down.description"></div></div>
             <div class="combobox" id="cb-gestures-scroll_down" data-value="focus_prev"></div>
           </div>
         </div>
@@ -1308,18 +1315,18 @@ input[type="range"]::-webkit-slider-thumb {
 
       <!-- Snap Hints -->
       <div id="sec-snaphints" class="section">
-        <h2 class="section-title">Snap hints</h2>
+        <h2 class="section-title" data-i18n="settings.text.snap_hints"></h2>
         <div class="card">
           <div class="field">
-            <div class="field-info"><div class="field-label">Enable snap hints</div><div class="field-desc">Show visual feedback during resize operations</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.snaphints.enabled.label"></div><div class="field-desc" data-i18n="settings.snaphints.enabled.description"></div></div>
             <label class="toggle"><input type="checkbox" id="snaphints-enabled"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Duration</div><div class="field-desc">How long hints are shown (ms)</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.snaphints.duration_ms.label"></div><div class="field-desc" data-i18n="settings.snaphints.duration_ms.description"></div></div>
             <input type="number" id="snaphints-duration_ms" min="50" max="2000">
           </div>
           <div class="field">
-            <div class="field-info"><div class="field-label">Opacity</div><div class="field-desc">Hint overlay opacity</div></div>
+            <div class="field-info"><div class="field-label" data-i18n="settings.snaphints.opacity.label"></div><div class="field-desc" data-i18n="settings.snaphints.opacity.description"></div></div>
             <div class="slider-group">
               <input type="range" id="snaphints-opacity" min="0" max="255" oninput="document.getElementById('opacity-val').textContent=this.value">
               <span class="slider-val" id="opacity-val">128</span>
@@ -1330,32 +1337,32 @@ input[type="range"]::-webkit-slider-thumb {
 
       <!-- About -->
       <div id="sec-about" class="section">
-        <h2 class="section-title">About</h2>
+        <h2 class="section-title" data-i18n="settings.text.about"></h2>
         <div class="card about-card">
           <div class="about-header">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="55.8 55 137.72 139.27" class="about-icon"><path fill="#30373b" d="M193.42 113.77c-4.61 34.32-25.38 66.18-64.94 80.49-1.37-11.15-8.1-35.25-19.51-37.32-8.88-1.65-11.91 10.04-24.29 10.04-10.61 0-17.14-8.12-17.14-15.47-5.42-1.4-5.45-9.13-7.45-14.2-.8-2.17-4.26-3.54-4.26-9.4 0-5.2 4.95-11 12.93-21.72 2.85-3.82 3.62-6 3.62-10.1 0-8.35 9.34-15.98 22.43-25.78-.74-6.7 2.37-15.31 8.4-15.31 3.2 0 4.55 2.65 13.24 7.5 3.71-.59 9.28-.91 14.7-.79 5.12-5.26 8.92-6.71 15.04-6.71 10.82 0 15.52 8.88 15.52 16.46v3.64c12.92 10.63 22.31 20.41 31.48 37.12.42.64.33.97.23 1.55"/><path fill="#f0e9d4" d="M130.01 186.78c-1.9-9.77-4.29-16.39-4.88-18.06-.32-.91.45-1.09.68-1.29 13.44-11.28 27.96-24.34 27.21-50.55-.1-1.65-2.54-3.79-2.91 0-1.99 20.16-11.99 31.08-27.2 30.6-8.1-.27-14.02.63-17.72 3.05 2.64-2.72 4.57-4.9 3.82-7.92-1.27-4.42-8.93-3.52-10.53-5.36-.76-1.88-2.29-1.53-2.57-.41-.32 1.22-1.72 1.47-2.88 1.67-4.92.86-10.85.46-17.32.46-1.55 0-1.64 2.02 0 2.25 4.9.69 11 .87 15.68-.11.78 1.5-.98 3.77-5.37 3.65-2.26-.05-4.06-.07-5.44-.05-1.67.03-1.92 2.11 0 2.45 1.82.35 4.14.65 4.51 2.53.32 1.5-1.61 1.5-3.01 1.03-3.45-.99-6.19-1.6-10.69-3.81-3.58-1.85-5.31-8.85-1.11-11.6 2.89-1.85 3.45-2.7 5.09-5.99.95-2.04-.68-4.07-2.95-2.3-2.26 1.76-2.21 1.91-4.61.5-1.99-1.11-4-.38-6.4.29-1.63.52-1.54-1.89-.23-4.18 3.53-6.02 12.31-15.67 14.99-21.47 1.27-3.02 1.13-5.1 1.45-7.97.75-6.01 16.49-19.11 27.29-23.73 6.32-2.82 14.07-3.73 23.06-3.64-1.22 2.61-2.49 4.94-5.29 5.84-1.4.23-1.67 1.05-1.58 2.05.14 1.07 1.03 1.36 2.1 1.27 3.98-.23 5.47-3.09 7.64-7.37 3.25-6.46 8.27-8.88 14.2-8.88 8.68 0 11.75 7.2 11.75 13.98 0 5.01-3.68 8.3-3.68 12.4 0 1.95.9 2.77.8 3.99-.23 2.86-4.73 6.16-5 10.01-.19 2.17.71 2.17 1.71 1.47 6.99-4.28 9.25-8.86 10.1-19.75 1.73.9 3.56 3.08 4.21 4.28-.85.47-2.02 1.21-2.02 2.86 0 1.52.42 1.75.42 3.4 0 1.85 2.59 2.59 3.19.64.6-1.94 1.29-2.85 3.29-2.61 2.26.32 2.91 2.38 2.91 4.7 0 1.31.41 2.61-.18 3.41-.85 1.08-2.35.12-3.62-1.21-1.84-2.08-3.78 0-3.6 1.85.37 3.01 4.06 5.19 7.13 4.72 2.63-.46 4.26-2.12 5.62-3.64 3.94 4.02 8.64 11.38 10.09 14.13-1.07 8.35-2.8 14.8-3.97 18.92-.42 1.41-1.36.23-1.78-.47-1.54-2.53-3.7-3-6.1-2.88-6.22.35-7.39 8.82-5.56 12.68 1.27 3.02 2.81 3.02 4.08 2.04 1.36-1.08.9-2.48.14-5.5-.65-2.85 1.66-4.13 3.2-3.43s1.64 2.47 2.19 5.99c.32 2.06-1.27 4.7-2.33 6.75-4.12 7.46-9.91 16.01-12.98 18.63-1.36.58-3.04-2.93-6.83-3.28-7.09-.72-9.84 5.91-8.3 12.25.51 2.27.19 2.62-.98 3.35-6.85 4.7-12.87 6.65-18.93 7.37"/><path fill="#f0e9d4" d="M71.81 150.52c.32 6.64 5.44 11.01 12.67 11.01 5.03 0 7.71-2.42 10.15-4.37-2.35-.75-4.61-.63-6.01-2.03-.85-.98-1.45-.87-2.9-.75-4.74.35-7.91-1.59-13.91-3.86M155.01 174.01l5.21-5c-1.17-1.65-3.1-1.77-4.17-1.3-2.26 1.07-2.44 3.6-1.84 6.02z"/><path fill="#f9f8f5" d="M77.02 101.01c.6.59 2.33 1.32 4.59 1.08 5.37-.61 7.48-2.38 8.5-3.46 2.17-2.42 2.92-2.07 6.26-1.96 4.04.15 8.12.74 11.96.86 1.55.12 1.36 2.54-.62 2.89-1.78.35-2.63.94-3.27 3.8-1 4.42-4.35 6.59-8.43 6.24-3.3-.35-5.99 0-7.98 2.18-2.4 2.85-8 8.65-9.12 12.51-.59 2.27-.27 2.81-.97 3.28-.96.53-1.86-1.32-4.21-.82-2.12.47-2.71 1.06-4.55-.09-1.55-.99-3.94-.5-5.77.09-2.4.82-3.2-.5-2.03-2.82 2.54-5.01 11.74-15.54 14.33-19.96 1.01-1.92 1.01-4.17 1.31-3.82"/><path fill="#30373b" d="M145.51 66.06c-7.34 0-11.69 11.92-12.86 16.3-.46 1.75.39 2.45 1.46 2.33 3.6-.35 6.14 1.05 6.88 4.07.75 3.13.84 5.2 2.77 5.2 2.4 0 3.05-5.2 3.05-9.05 0-3.54 4.31-6.07 4.31-11.55 0-4.28-2.17-7.3-5.61-7.3M130.97 101.36c-1.45-2.17-.44-3.25 1.24-2.9 3.02.73 3.87 5.53 3.64 7.6-.23 1.65-3.16 2.12-3.58 0-.55-2.31-.33-3.25-1.3-4.7M122.51 109.48c-1.84-1.65-1.37-3.42.61-3.42 3.49 0 5.75 3.13 5.61 7.39-.09 1.95.42 2.56.19 3.74-.33 1.52-3.91 1.52-3.91-1.13 0-2.87 0-4.64-2.5-6.58M134.61 113.9c1.4-1.53 4.14 0 5.1 2.52.6 1.65 1.55 1.3 2.1 1.65 1.36.7 1.36 2.1.94 3.94-.46 1.95-4.04 1.6-4.23-.67-.23-2.63-1.5-2.51-2.76-3.5-1.45-1.07-1.95-2.92-1.15-3.94M142.23 107.83c-.55-2.07.1-.95-.04-1.3-.65-1.75 2.75-.47 3.02 1.48.51 3.02-.04 5.08-1.68 5.08-1.72 0-.87-3.02-1.3-5.26M158.17 103.75c.55-2.63 2.19-2.04 2.94-1.45 1.84 1.33 2.48 2.85.94 5.71-1.17 2.32-2.02 2.1-3.33 2.06-1.94-.23-2.31-2.18-1.4-4.01.42-.85.65-1.28.85-2.31M171.92 109.95c1.27-3.86 5.48-3.13 7.74-1.61 2.45 1.65 1.9 4.18.17 4.3-1.72.11-2.19-1.41-3.26-.95-1.26.59-.46 2.36-.56 3.67-.22 1.65-1.86 1.77-2.93.37-1.36-1.84-1.77-4.12-1.16-5.78M177.98 118.42c.85-.7 1.31-.47 1.96-2 .8-1.94 4.2-.77 3.88 2.26-.33 2.74-1.87 4.8-4.31 4.68-3.03-.23-3.49-3.35-1.53-4.94M161.72 129.69c3.07 0 3.44 2.63 2.69 5.16-.46 1.64-.18 1.88-.69 2.73-1 1.65-4.4.73-4.91-1.33-.27-1.07.37-1.64-.27-3.29-.66-1.85.69-3.27 3.18-3.27M165.81 147.51c1.17-2.32 3.24-2.09 3.89.55 1.06 4.16-.97 9.63-6.57 10.1-2.85.23-3.12-2.04-2.32-3.69.95-2.06 3.02-1.6 3.77-3.36.65-1.42.51-2.15 1.23-3.6M155.72 145.42c1.89-.7 3.19.96 2.59 3.49-.55 2.28-3.29 2.4-4.74 4.34-1.64 2.43-4.85 2.78-5.22-.24-.42-3.29 1.12-4.6 3.06-4.6 2.4 0 2.86-2.42 4.31-2.99M143.21 161.45c2.3-1.41 3.89.54 3.14 2.81-.74 2.27-.56 1.92-.74 3.45-.33 2.38-4.26 2.61-5.43.18-1.27-2.86.09-4.8 3.03-6.44M136.03 174.36c1.4-1.76 3.8-1.41 3.98 1.01.18 2.53-1.18 4.47-3 4.35-2.17-.22-2.26-3.25-.98-5.36M163.04 115.73c2.69-.24 2.55 3.5 2.18 6.13-.46 2.75-2.09 2.87-2.84 2.75-2.31-.35-2.26-2.98-2.07-5.62.23-2.42 1.03-3.15 2.73-3.26M170.09 123.87c.23-1.77 1.39-1.78 2.04-1.66 1.59.35 1.59 1.9 1.22 3.1-.74 2.17-3.72 1.58-3.26-1.44M88.81 90.95c.6-3.74 2.14-6.49 4.54-6.26s2.77 3.86.78 6.99c-1.35 2.33-2 4.09-3.26 4.82-1.64.91-2.71-1.83-2.06-5.55M83.44 93.6c1.63-.73 2.1.53 1.87 2.18-.33 1.94-2.68 1.71-2.91.12-.23-1.29 0-1.89 1.04-2.3M104.11 74.91c2.68-.99 3.64 1.07 2.63 2.92-1.01 1.95-3.69 1.37-4.91 3.02-1.45 2.16-3.22 2.39-3.59.33-.6-2.86 2.09-4.92 5.87-6.27M113.71 71.4c2.69-.47 4.23 1.29 4.14 3.36-.14 2.06-2.13 1.95-3.13 1.25-1.11-.73-1.58-.38-2.23-.5-1.54-.35-1.68-3.56 1.22-4.11M111.68 79.63c1.94-.24 2.45.84 2.35 1.91-.22 1.66-1.95 1.77-3.22.86-1.26-1.08-.94-2.51.87-2.77M119.87 81.57c1.84-.47 2.75 1.48 2.52 2.89-.32 1.65-2.67 1.65-3.57.12-1.01-1.77-.41-2.68 1.05-3.01M123.07 87.71c2.17-.99 4.76.78 5.71 2.19 1.17 1.85-.66 3.17-2.2 2.58-1.55-.73-2.51-1.57-3.67-2.58-1.17-1.08-.8-1.67.16-2.19M138.92 99.21c.85-.98 2.3.09 2.12 1.74-.23 1.41-2.22 1.18-2.68-.23-.28-.91.05-1.02.56-1.51M123.39 95.36c2.31-.24 2.82 1.29 2.59 2.36-.42 1.86-2.54 1.74-3.61.91-1.45-1.22-.94-3.03 1.02-3.27M115.31 92.72c2.78-1.41 4 .44 3.31 2.5-.9 2.64-4.59 2.41-5.29 1.94-1.31-.95.09-3.38 1.98-4.44M107.93 86.11c2.49-.73 4.75.92 4.8 2.33.09 1.66-.46 2.28-1.91 2.28-1.68 0-3.18-.91-3.92-1.38-.85-.73-.58-2.67 1.03-3.23M98.92 88.18c.8-1.53 2.16-1.65 3.28-.92 1.27.92.52 2.2-.88 3.72-1.36 1.53-2.26 2.44-3.27 2.56-1.27.12-.67-2.63.87-5.36M87.41 109.13c.95-2.86 3.12-4.12 4.07-6.65.85-2.53.25-5.07 4.89-4.95 3.69.12 6.52.7 10.45.93 1.99.12 1.89 2.29-.65 2.41-2.35.11-3.1.58-3.75 2.85-1.11 3.73-4.41 5.04-7.35 4.46-3.02-.73-4.47.58-6.06 2.85-1.4 1.75-2.4.35-1.6-1.9"/><path fill="#f0e9d4" d="M98.83 100.31c1.45-.59 2.3.39 2.21 1.46-.23 1.52-1.96 1.64-2.87.84-1.06-.99-.46-1.89.66-2.3"/><path fill="#30373b" d="M116.01 101.36c2.9-.59 3.17 2.16 2.52 4.58s-2.48 2.19-3.03 1.95c-1.54-.6-.99-2.25-1.37-3.78-.51-1.85.29-2.4 1.88-2.75M104.89 113.71c2.54-.7 4.43.19 4.34 2.04-.18 1.95-2.4 2.3-4.39 1.83-2.12-.57-2.44-3.1.05-3.87M99.47 119.23c1.54-.12 3.27 1.19 3.64 2.38.42 1.3-1.03 1.65-2.58.75-1.93-1.17-2.78-3.02-1.06-3.13M92.72 118.81c.7-.98 2.01-.39 2.52.79.64 1.41-.1 2.14-1.32 1.55-1.21-.73-1.68-1.64-1.2-2.34M95.51 124.72c.91-.73 1.92-.11 2.1.97.23 1.21-1.08 1.67-1.88.82-.7-.73-.7-1.31-.22-1.79M102.31 128.08c1.01-1.41 2.41-.82 2.6.47.32 1.76-.58 2.67-1.8 2.44-1.5-.35-1.68-1.67-.8-2.91M108.11 130.81c1.22-1.53 3.39-1.18 3.53.35.18 1.85-1.13 2.75-2.72 2.52-1.59-.35-1.64-1.67-.81-2.87M117.76 131.34c2.85-.59 5.06.23 5.15 1.76.14 1.85-.82 2.21-2.89 2.21-2.99 0-3.99-.7-3.99-1.98-.09-1.17.42-1.64 1.73-1.99M116.03 139.61c2.17-.73 3.08.35 2.75 2-.42 1.85-2.68 1.73-3.15 1.62-1.4-.35-1.3-2.88.4-3.62M128.64 137.76c4.08-.9 5.97-.55 6.48 1.39.69 2.74-1.99 4.27-6.11 4.51-2.94.23-3.49-1.72-3.26-3.31.18-1.32 1.34-2.16 2.89-2.59M133.81 128.43c2.12-1.94 4.91 0 5.82 1.95 1.01 2.27-1.21 4.03-2.89 3.56-2.68-.84-4.72-3.7-2.93-5.51M119.07 121.39c1.54-1.09 3.04.22 4.58.8 1.64.59 3.62 0 4.47 1.76.8 1.76-.05 4.03-2.21 3.8-1.99-.23-3.1-2-5.5-2.35-2.07-.35-2.72-2.77-1.34-4.01M115.72 114.31c1.45-.69 2.2 0 2.11.91-.14 1.2-1.59 1.55-2.43 1.31-1.07-.35-.89-1.52.32-2.22M80.21 132.81c3.94-.12 8.5-.59 12.07-2.12 1.84-.73 2.79 1.53 1.16 2.51-2.4 1.41-8.72 1.98-13.32 1.86-1.78 0-1.83-2.16.09-2.25"/></svg>
             <div class="about-title-block">
               <div class="about-name">LeopardWM</div>
-              <div class="about-version">Version {VERSION}</div>
+              <div class="about-version" data-i18n="settings.text.version_version"></div>
             </div>
           </div>
-          <div class="about-desc">A scrollable tiling window manager for Windows 10/11. Scroll-first layout with vsync-aligned animations, written in Rust.</div>
+          <div class="about-desc" data-i18n="settings.text.a_scrollable_tiling_window_manager_for_windows_10_11_scroll_first_layout_wi"></div>
           <div class="about-divider"></div>
           <div class="about-meta">
-            <div class="about-row"><span class="about-label">Created by</span><span class="about-value">Jose Cardama</span></div>
-            <div class="about-row"><span class="about-label">Contributors</span><a href="#" class="about-link" onclick="window.ipc.postMessage(JSON.stringify({action:'open_url',url:'https://github.com/jcardama/LeopardWM/graphs/contributors'}));return false;">View on GitHub</a></div>
-            <div class="about-row"><span class="about-label">License</span><span class="about-value">GPL-3.0</span></div>
-            <div class="about-row"><span class="about-label">Source</span><a href="#" class="about-link" onclick="window.ipc.postMessage(JSON.stringify({action:'open_url',url:'https://github.com/jcardama/LeopardWM'}));return false;">github.com/jcardama/LeopardWM</a></div>
+            <div class="about-row"><span class="about-label" data-i18n="settings.text.created_by"></span><span class="about-value">Jose Cardama</span></div>
+            <div class="about-row"><span class="about-label" data-i18n="settings.text.contributors"></span><a href="#" class="about-link" onclick="window.ipc.postMessage(JSON.stringify({action:'open_url',url:'https://github.com/jcardama/LeopardWM/graphs/contributors'}));return false;" data-i18n="settings.text.view_on_github"></a></div>
+            <div class="about-row"><span class="about-label" data-i18n="settings.text.license"></span><span class="about-value">GPL-3.0</span></div>
+            <div class="about-row"><span class="about-label" data-i18n="settings.text.source"></span><a href="#" class="about-link" onclick="window.ipc.postMessage(JSON.stringify({action:'open_url',url:'https://github.com/jcardama/LeopardWM'}));return false;">github.com/jcardama/LeopardWM</a></div>
           </div>
           <div class="about-divider"></div>
           <div class="about-legal">
-            <div class="about-legal-title">Third-party notices</div>
-            <div class="about-legal-text">LeopardWM uses open-source libraries licensed under MIT, Apache-2.0, MPL-2.0, and other permissive licenses. Key dependencies include the <strong>windows</strong> crate (Microsoft, MIT/Apache-2.0), <strong>wry</strong> and <strong>tray-icon/muda</strong> (Tauri Programme, MIT/Apache-2.0), <strong>tokio</strong> (MIT), and <strong>WebView2</strong> (Microsoft). Full dependency list is available via <code>cargo tree</code> in the source repository.</div>
+            <div class="about-legal-title" data-i18n="settings.text.third_party_notices"></div>
+            <div class="about-legal-text" data-i18n="settings.text.leopardwm_uses_open_source_libraries_licensed_under_mit_apache_2_0_mpl_2_0_"></div>
           </div>
           <div class="about-divider"></div>
           <a href="#" class="about-coffee" onclick="window.ipc.postMessage(JSON.stringify({action:'open_url',url:'https://buymeacoffee.com/jcardama'}));return false;">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h1a4 4 0 010 8h-1"/><path d="M3 8h14v9a4 4 0 01-4 4H7a4 4 0 01-4-4V8z"/><line x1="6" y1="2" x2="6" y2="4"/><line x1="10" y1="2" x2="10" y2="4"/><line x1="14" y1="2" x2="14" y2="4"/></svg>
-            Buy me a coffee
+            <span data-i18n="settings.text.buy_me_a_coffee"></span>
           </a>
         </div>
       </div>
@@ -1365,6 +1372,49 @@ input[type="range"]::-webkit-slider-thumb {
 </div>
 
 <script>
+var localeStrings = window._localeStrings || {};
+function t(key, values) {
+  return (Object.prototype.hasOwnProperty.call(localeStrings, key) ? localeStrings[key] : key).replace(/\{([A-Za-z_][A-Za-z_0-9]*)\}/g, function(match, name) {
+    return values && Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match;
+  });
+}
+function applyLocale(strings, language) {
+  localeStrings = strings;
+  document.documentElement.lang = language;
+  document.querySelectorAll('[data-i18n]').forEach(function(el) {
+    el.textContent = t(el.dataset.i18n, Object.assign({version: window._version}, el.dataset));
+  });
+  ['title', 'aria-label', 'placeholder'].forEach(function(attribute) {
+    document.querySelectorAll('[data-i18n-' + attribute + ']').forEach(function(el) {
+      el.setAttribute(attribute, t(el.getAttribute('data-i18n-' + attribute)));
+    });
+  });
+}
+applyLocale(localeStrings, window._language || 'en');
+function refreshLocale(strings, language) {
+  if (document.documentElement.lang === language) return;
+  applyLocale(strings, language);
+  setCb('cb-appearance-language', language);
+  document.querySelectorAll('.combobox').forEach(function(cb) {
+    var selected = Array.from(cb.querySelectorAll('.combobox-option')).find(function(option) {
+      return option.dataset.value === cb.dataset.value;
+    });
+    if (selected) cb.querySelector('.combobox-text').textContent = selected.textContent;
+  });
+  document.querySelectorAll('#rules-body tr').forEach(function(tr) {
+    tr.querySelectorAll('.menu-item.has-sub').forEach(function(item) {
+      var selected = item.querySelector('.menu-radio.selected');
+      if (selected) item.querySelector('.menu-value').textContent = selected.textContent;
+    });
+    validateRuleColumnWidth(tr);
+    updateRuleSummary(tr);
+  });
+  refreshDefaultWidthPresetOptions();
+  refreshDuplicateWarnings();
+  renderFailedHotkeys();
+  updateScrollLabels();
+}
+
 /* ── Navigation ─────────────────────────────────────────────────────── */
 document.querySelectorAll('.nav-item[data-section]').forEach(function(link) {
   link.addEventListener('click', function(e) {
@@ -1504,19 +1554,19 @@ function refreshDefaultWidthPresetOptions(selectedValue) {
   }
 
   var chevron = '<svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg>';
-  var triggerText = 'No valid presets';
+  var triggerText = t('settings.text.no_valid_presets');
   var options = '';
   if (selectedIndex >= 0) {
     entries.forEach(function(entry, index) {
-      var label = 'Preset ' + (index + 1) + ' (' + (entry.value * 100).toFixed(1).replace(/\.0$/, '') + '%)';
+      var label = t('settings.text.preset_index_percent', {index: index + 1, percent: (entry.value * 100).toFixed(1).replace(/\.0$/, '')});
       if (index === selectedIndex) triggerText = label;
-      options += '<div class="combobox-option' + (index === selectedIndex ? ' selected' : '') + '" data-value="' + (index + 1) + '">' + label + '</div>';
+      options += '<div class="combobox-option' + (index === selectedIndex ? ' selected' : '') + '" data-value="' + (index + 1) + '">' + escHtml(label) + '</div>';
     });
     lastValidWidthPresets = entries.map(function(entry) { return entry.value; });
     lastValidDefaultWidthPreset = selectedIndex + 1;
   }
   cb.classList.remove('open');
-  cb.innerHTML = '<button class="combobox-trigger" type="button"><span class="combobox-text">' + triggerText + '</span>' + chevron + '</button>' +
+  cb.innerHTML = '<button class="combobox-trigger" type="button"><span class="combobox-text">' + escHtml(triggerText) + '</span>' + chevron + '</button>' +
     '<div class="combobox-popup">' + options + '</div>';
   var trigger = cb.querySelector('.combobox-trigger');
   if (selectedIndex >= 0) {
@@ -1585,6 +1635,7 @@ function init(cfg) {
   setChecked('layout-center_single_column', cfg.layout.center_single_column);
   setChecked('layout-center_past_edges', cfg.layout.center_past_edges);
 
+  setCb('cb-appearance-language', cfg.appearance.language || 'en');
   setChecked('appearance-active_border', cfg.appearance.active_border);
   setVal('appearance-active_border_color', hexToInput(cfg.appearance.active_border_color));
   setVal('appearance-active_border_width', cfg.appearance.active_border_width);
@@ -1668,7 +1719,7 @@ function init(cfg) {
     for (var i = 1; i <= 9; i++) {
       var row = document.createElement('div');
       row.className = 'field';
-      row.innerHTML = '<div class="field-info"><div class="field-label">Workspace ' + i + '</div></div>' +
+      row.innerHTML = '<div class="field-info"><div class="field-label" data-i18n="settings.text.workspace_index" data-index="' + i + '">' + escHtml(t('settings.text.workspace_index', {index:i})) + '</div></div>' +
         '<input type="text" id="workspace-name-' + i + '" maxlength="32" placeholder="' + i + '">';
       wsCard.appendChild(row);
     }
@@ -1713,8 +1764,8 @@ function updateScrollLabels() {
   var modDisplay = mod.split('+').map(function(s) { return s.trim(); }).join(' + ');
   var up = document.getElementById('lbl-scroll-up');
   var dn = document.getElementById('lbl-scroll-down');
-  if (up) up.textContent = modDisplay + ' + Scroll up';
-  if (dn) dn.textContent = modDisplay + ' + Scroll down';
+  if (up) up.textContent = t('settings.text.modifier_scroll_up', {modifier:modDisplay});
+  if (dn) dn.textContent = t('settings.text.modifier_scroll_down', {modifier:modDisplay});
 }
 
 /* Build gesture comboboxes from CMD_ORDER/CMD_LABELS */
@@ -1723,12 +1774,12 @@ function initGestureCombo(id) {
   if (!cb) return;
   var chevron = '<svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg>';
   var current = cb.dataset.value || '';
-  var options = '<div class="combobox-option' + (current === '' ? ' selected' : '') + '" data-value="">No action</div>' +
+  var options = '<div class="combobox-option' + (current === '' ? ' selected' : '') + '" data-value="" data-i18n="settings.text.no_action">' + escHtml(t('settings.text.no_action')) + '</div>' +
     CMD_ORDER.map(function(cmd) {
       return '<div class="combobox-option' + (cmd === current ? ' selected' : '') + '" data-value="' + cmd + '">' + cmdLabel(cmd) + '</div>';
     }).join('');
-  var currentLabel = current === '' ? 'No action' : cmdLabel(current);
-  cb.innerHTML = '<button class="combobox-trigger" type="button"><span class="combobox-text">' + currentLabel + '</span>' + chevron + '</button>' +
+  var currentLabel = current === '' ? t('settings.text.no_action') : cmdLabel(current);
+  cb.innerHTML = '<button class="combobox-trigger" type="button"><span class="combobox-text">' + escHtml(currentLabel) + '</span>' + chevron + '</button>' +
     '<div class="combobox-popup">' + options + '</div>';
   initCombobox(cb);
 }
@@ -1788,7 +1839,8 @@ function postRecording(active) {
 function exitRecording(input) {
   var wasRecording = input.classList.contains('recording');
   input.classList.remove('recording');
-  input.placeholder = 'e.g. Ctrl+Alt+H';
+  input.dataset.i18nPlaceholder = 'settings.text.e_g_ctrl_alt_h';
+  input.placeholder = t('settings.text.e_g_ctrl_alt_h');
   if (activeRecorder === input) { activeRecorder = null; activeRecorderState = null; }
   if (wasRecording) { postRecording(false); }
 }
@@ -1823,7 +1875,8 @@ function attachRecorder(input) {
     if (input.classList.contains('recording')) return;
     prevValue = input.value;
     input.classList.add('recording');
-    input.placeholder = 'Press shortcut, Esc to cancel';
+    input.dataset.i18nPlaceholder = 'settings.text.press_shortcut_esc_to_cancel';
+    input.placeholder = t('settings.text.press_shortcut_esc_to_cancel');
     input.value = '';
     resetExtra();
     activeRecorder = input;
@@ -1911,8 +1964,8 @@ function addHotkeyRow(key, cmd) {
   var labelTitle = fullLabel === shortLabel ? '' : ' title="' + escAttr(fullLabel) + '"';
   tr.innerHTML =
     '<td class="hk-cmd-label"' + labelTitle + '>' + escHtml(shortLabel) + '</td>' +
-    '<td><input type="text" class="hk-key hk-record" value="' + escAttr(humanizeKey(key)) + '" placeholder="e.g. Ctrl+Alt+H" readonly title="Click or press Enter to record a shortcut"><span class="hk-dup-note"></span></td>' +
-    '<td><button class="row-delete" title="Reset to default" onclick="resetHotkeyRow(this.closest(\'tr\'))">' + resetIcon + '</button></td>';
+    '<td><input type="text" class="hk-key hk-record" value="' + escAttr(humanizeKey(key)) + '" data-i18n-placeholder="settings.text.e_g_ctrl_alt_h" placeholder="' + escAttr(t('settings.text.e_g_ctrl_alt_h')) + '" readonly data-i18n-title="settings.text.click_or_press_enter_to_record_a_shortcut" title="' + escAttr(t('settings.text.click_or_press_enter_to_record_a_shortcut')) + '"><span class="hk-dup-note"></span></td>' +
+    '<td><button class="row-delete" data-i18n-title="settings.text.reset_to_default" title="' + escAttr(t('settings.text.reset_to_default')) + '" onclick="resetHotkeyRow(this.closest(\'tr\'))">' + resetIcon + '</button></td>';
   tbody.appendChild(tr);
   wrapAllInputs(tr);
   attachRecorder(tr.querySelector('.hk-key'));
@@ -1948,14 +2001,14 @@ function refreshDuplicateWarnings() {
     if (group && group.length > 1) {
       var others = group.filter(function(t) { return t !== tr; })
         .map(function(t) { return cmdShortLabel(t.dataset.cmd); });
-      note.textContent = 'Also bound to ' + others.join(', ');
+      note.textContent = t('settings.text.also_bound_to_commands', {commands:others.join(', ')});
     } else {
       note.textContent = '';
     }
   });
 }
 
-function escHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 var resetIcon = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 2v3h3"/><path d="M2.1 7.5a4 4 0 1 0 .5-4L1.5 5"/></svg>';
 
@@ -1978,13 +2031,12 @@ function renderFailedHotkeys() {
   if (!failed.length) { bar.hidden = true; return; }
   var n = failed.length;
   var combos = n === 1 ? failed[0]
-    : n === 2 ? failed[0] + ' and ' + failed[1]
-    : failed.slice(0, -1).join(', ') + ', and ' + failed[n - 1];
-  document.getElementById('hotkey-warn-title').textContent =
-    n + (n === 1 ? ' hotkey is likely unsupported.' : ' hotkeys are likely unsupported.');
-  document.getElementById('hotkey-warn-msg').textContent =
-    combos + (n === 1 ? ' is' : ' are') +
-    ' reserved by Windows and can\'t be intercepted, so it likely won\'t fire. Pick a different combination.';
+    : n === 2 ? t('settings.hotkeys.list_pair', {first:failed[0], last:failed[1]})
+    : t('settings.hotkeys.list_many', {first:failed.slice(0, -1).join(t('settings.hotkeys.list_separator')), last:failed[n - 1]});
+  document.getElementById('hotkey-warn-title').textContent = t(n === 1
+    ? 'settings.hotkeys.unsupported_one' : 'settings.hotkeys.unsupported_many', {count:n});
+  document.getElementById('hotkey-warn-msg').textContent = t(n === 1
+    ? 'settings.hotkeys.reserved_one' : 'settings.hotkeys.reserved_many', {combos:combos});
   bar.hidden = false;
 }
 
@@ -2009,9 +2061,9 @@ function loadHotkeysSorted(bindings, scrollModifier, disabled) {
   var tr = document.createElement('tr');
   tr.dataset.special = 'scroll_modifier';
   tr.innerHTML =
-    '<td class="hk-cmd-label">Scroll modifier</td>' +
-    '<td><input type="text" class="hk-key" value="' + escAttr(scrollModifier || 'Ctrl+Alt') + '" placeholder="e.g. Ctrl+Alt"></td>' +
-    '<td><button class="row-delete" title="Reset to default" onclick="this.closest(\'tr\').querySelector(\'.hk-key\').value=\'Ctrl+Alt\';updateScrollLabels();autoSave(0);">' + resetIcon + '</button></td>';
+    '<td class="hk-cmd-label" data-i18n="settings.text.scroll_modifier">' + escHtml(t('settings.text.scroll_modifier')) + '</td>' +
+    '<td><input type="text" class="hk-key" value="' + escAttr(scrollModifier || 'Ctrl+Alt') + '" data-i18n-placeholder="settings.text.e_g_ctrl_alt" placeholder="' + escAttr(t('settings.text.e_g_ctrl_alt')) + '"></td>' +
+    '<td><button class="row-delete" data-i18n-title="settings.text.reset_to_default" title="' + escAttr(t('settings.text.reset_to_default')) + '" onclick="this.closest(\'tr\').querySelector(\'.hk-key\').value=\'Ctrl+Alt\';updateScrollLabels();autoSave(0);">' + resetIcon + '</button></td>';
   var focusRows = tbody.querySelectorAll('tr[data-cmd="focus_down"]');
   var anchor = focusRows.length ? focusRows[0] : null;
   if (anchor && anchor.nextSibling) { tbody.insertBefore(tr, anchor.nextSibling); }
@@ -2033,50 +2085,51 @@ function addRuleRow(r) {
   /* Keep the original rule object so fields without a control
      (width, height, future keys) survive a settings save. */
   tr._rule = r || {};
+  var actionLabels = { tile:t('settings.text.tile'), float:t('settings.text.float'), ignore:t('settings.text.ignore') };
   var action = r.action || 'tile';
-  var actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+  var actionLabel = actionLabels[action] || action;
   var corner = r.corner_style || 'auto';
-  var cornerLabels = { auto: 'Auto', square: 'Square', rounded: 'Rounded', small_rounded: 'Small rounded' };
+  var cornerLabels = { auto: t('settings.text.auto'), square: t('settings.text.square'), rounded: t('settings.text.rounded'), small_rounded: t('settings.text.small_rounded') };
   var chevron = '<svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg>';
   var actionOpts = ['tile','float','ignore'].map(function(a) {
-    var label = a.charAt(0).toUpperCase() + a.slice(1);
-    return '<div class="combobox-option' + (a === action ? ' selected' : '') + '" data-value="' + a + '">' + label + '</div>';
+    var label = actionLabels[a];
+    return '<div class="combobox-option' + (a === action ? ' selected' : '') + '" data-value="' + a + '" data-i18n="settings.text.' + a + '">' + escHtml(label) + '</div>';
   }).join('');
   var menuArrow = '<svg class="menu-arrow" viewBox="0 0 12 12"><path d="M4.35 2.15a.5.5 0 000 .7L7.79 6 4.35 9.15a.5.5 0 10.7.7l3.5-3.5a.5.5 0 000-.7l-3.5-3.5a.5.5 0 00-.7 0z"/></svg>';
   var cornerRadios = ['auto','square','rounded','small_rounded'].map(function(c) {
-    return '<div class="menu-radio' + (c === corner ? ' selected' : '') + '" data-value="' + c + '">' + cornerLabels[c] + '</div>';
+    return '<div class="menu-radio' + (c === corner ? ' selected' : '') + '" data-value="' + c + '" data-i18n="settings.text.' + c + '">' + escHtml(cornerLabels[c]) + '</div>';
   }).join('');
   var ws = (r.open_on_workspace >= 1 && r.open_on_workspace <= 9) ? String(r.open_on_workspace) : '';
   var wsRadios = ['','1','2','3','4','5','6','7','8','9'].map(function(w) {
-    return '<div class="menu-radio' + (w === ws ? ' selected' : '') + '" data-value="' + w + '">' + (w === '' ? 'None' : w) + '</div>';
+    return '<div class="menu-radio' + (w === ws ? ' selected' : '') + '" data-value="' + w + '"' + (w === '' ? ' data-i18n="settings.text.none"' : '') + '>' + escHtml(w === '' ? t('settings.text.none') : w) + '</div>';
   }).join('');
   var slot = (r.open_in_column >= 1) ? String(r.open_in_column) : '';
   var columnWidth = r.column_width != null ? String(r.column_width) : '';
   tr.innerHTML =
-    '<td><input type="text" class="rule-class" value="' + escAttr(r.match_class||'') + '" placeholder="regex"></td>' +
-    '<td><input type="text" class="rule-title" value="' + escAttr(r.match_title||'') + '" placeholder="regex"></td>' +
-    '<td><input type="text" class="rule-exe" value="' + escAttr(r.match_executable||'') + '" placeholder="app.exe"></td>' +
+    '<td><input type="text" class="rule-class" value="' + escAttr(r.match_class||'') + '" data-i18n-placeholder="settings.text.regex" placeholder="' + escAttr(t('settings.text.regex')) + '"></td>' +
+    '<td><input type="text" class="rule-title" value="' + escAttr(r.match_title||'') + '" data-i18n-placeholder="settings.text.regex" placeholder="' + escAttr(t('settings.text.regex')) + '"></td>' +
+    '<td><input type="text" class="rule-exe" value="' + escAttr(r.match_executable||'') + '" data-i18n-placeholder="settings.text.app_exe" placeholder="' + escAttr(t('settings.text.app_exe')) + '"></td>' +
     '<td><div class="combobox rule-action" data-value="' + action + '">' +
-      '<button class="combobox-trigger" type="button"><span class="combobox-text">' + actionLabel + '</span>' + chevron + '</button>' +
+      '<button class="combobox-trigger" type="button"><span class="combobox-text">' + escHtml(actionLabel) + '</span>' + chevron + '</button>' +
       '<div class="combobox-popup">' + actionOpts + '</div>' +
     '</div></td>' +
     '<td><div class="rule-opts">' +
-      '<button type="button" class="rule-opts-btn"><span class="rule-opts-summary">Options</span>' + chevron + '</button>' +
+      '<button type="button" class="rule-opts-btn"><span class="rule-opts-summary" data-i18n="settings.text.options">' + escHtml(t('settings.text.options')) + '</span>' + chevron + '</button>' +
       '<div class="rule-opts-pop menu-flyout">' +
         '<div class="menu-item has-sub rule-workspace" data-value="' + ws + '">' +
-          '<span class="menu-label">Open on workspace</span><span class="menu-value">' + (ws === '' ? 'None' : ws) + '</span>' + menuArrow +
+          '<span class="menu-label" data-i18n="settings.text.open_on_workspace">' + escHtml(t('settings.text.open_on_workspace')) + '</span><span class="menu-value">' + escHtml(ws === '' ? t('settings.text.none') : ws) + '</span>' + menuArrow +
           '<div class="menu-sub">' + wsRadios + '</div></div>' +
-        '<div class="menu-item input-row"><span class="menu-label">Open in column</span>' +
+        '<div class="menu-item input-row"><span class="menu-label" data-i18n="settings.text.open_in_column">' + escHtml(t('settings.text.open_in_column')) + '</span>' +
           '<input type="number" min="1" class="rule-slot opt-num" placeholder="-" value="' + slot + '"></div>' +
-        '<div class="menu-item input-row"><span class="menu-label">Column width</span>' +
-          '<input type="number" min="0.05" max="1" step="any" class="rule-column-width opt-num" placeholder="Auto" value="' + escAttr(columnWidth) + '"></div>' +
+        '<div class="menu-item input-row"><span class="menu-label" data-i18n="settings.text.column_width">' + escHtml(t('settings.text.column_width')) + '</span>' +
+          '<input type="number" min="0.05" max="1" step="any" class="rule-column-width opt-num" data-i18n-placeholder="settings.text.auto" placeholder="' + escAttr(t('settings.text.auto')) + '" value="' + escAttr(columnWidth) + '"></div>' +
         '<div class="rule-column-width-error" role="alert" aria-live="polite" hidden></div>' +
         '<div class="menu-sep"></div>' +
-        '<div class="menu-item menu-toggle rule-maximized' + (r.open_maximized ? ' checked' : '') + '"><span class="menu-label">Maximize on open</span></div>' +
-        '<div class="menu-item menu-toggle rule-sticky' + (r.sticky ? ' checked' : '') + '"><span class="menu-label">Sticky (follows workspaces)</span></div>' +
+        '<div class="menu-item menu-toggle rule-maximized' + (r.open_maximized ? ' checked' : '') + '"><span class="menu-label" data-i18n="settings.text.maximize_on_open">' + escHtml(t('settings.text.maximize_on_open')) + '</span></div>' +
+        '<div class="menu-item menu-toggle rule-sticky' + (r.sticky ? ' checked' : '') + '"><span class="menu-label" data-i18n="settings.text.sticky_follows_workspaces">' + escHtml(t('settings.text.sticky_follows_workspaces')) + '</span></div>' +
         '<div class="menu-sep"></div>' +
         '<div class="menu-item has-sub rule-corner" data-value="' + corner + '">' +
-          '<span class="menu-label">Corners</span><span class="menu-value">' + cornerLabels[corner] + '</span>' + menuArrow +
+          '<span class="menu-label" data-i18n="settings.text.corners">' + escHtml(t('settings.text.corners')) + '</span><span class="menu-value">' + escHtml(cornerLabels[corner]) + '</span>' + menuArrow +
           '<div class="menu-sub">' + cornerRadios + '</div></div>' +
       '</div>' +
     '</div></td>' +
@@ -2103,7 +2156,7 @@ function validateRuleColumnWidth(tr) {
   var width = Number(raw);
   var valid = !input.validity.badInput &&
     (raw === '' || (Number.isFinite(width) && width >= 0.05 && width <= 1.0));
-  var message = valid ? '' : 'Enter a finite fraction from 0.05 to 1.0, or leave this blank.';
+  var message = valid ? '' : t('settings.text.enter_a_finite_fraction_from_0_05_to_1_0_or_leave_this_blank');
   input.setCustomValidity(message);
   input.setAttribute('aria-invalid', String(!valid));
   if (error) {
@@ -2118,16 +2171,16 @@ function updateRuleSummary(tr) {
   var parts = [];
   var cornerEl = tr.querySelector('.rule-corner');
   var corner = cornerEl ? cornerEl.dataset.value : 'auto';
-  var cornerShort = { square: 'Square', rounded: 'Round', small_rounded: 'SmRound' };
+  var cornerShort = { square: t('settings.text.square'), rounded: t('settings.text.round'), small_rounded: t('settings.text.smround') };
   if (corner && corner !== 'auto') parts.push(cornerShort[corner] || corner);
   var wsEl = tr.querySelector('.rule-workspace');
-  if (wsEl && wsEl.dataset.value) parts.push('WS' + wsEl.dataset.value);
+  if (wsEl && wsEl.dataset.value) parts.push(t('settings.text.ws_index', {index:wsEl.dataset.value}));
   var slotEl = tr.querySelector('.rule-slot');
-  if (slotEl && slotEl.value.trim()) parts.push('Col' + slotEl.value.trim());
-  if (tr.querySelector('.rule-maximized').classList.contains('checked')) parts.push('Max');
-  if (tr.querySelector('.rule-sticky').classList.contains('checked')) parts.push('Sticky');
+  if (slotEl && slotEl.value.trim()) parts.push(t('settings.text.col_index', {index:slotEl.value.trim()}));
+  if (tr.querySelector('.rule-maximized').classList.contains('checked')) parts.push(t('settings.text.max'));
+  if (tr.querySelector('.rule-sticky').classList.contains('checked')) parts.push(t('settings.text.sticky'));
   var sum = tr.querySelector('.rule-opts-summary');
-  if (sum) sum.textContent = parts.length ? parts.join(' · ') : 'Options';
+  if (sum) sum.textContent = parts.length ? parts.join(' · ') : t('settings.text.options');
 }
 
 function initRuleOptions(tr) {
@@ -2216,7 +2269,7 @@ function initRuleOptions(tr) {
   });
 }
 
-function escAttr(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function escAttr(s) { return escHtml(s || ''); }
 
 function readConfig() {
   var widthPresets = readPresets('width');
@@ -2240,6 +2293,7 @@ function readConfig() {
       center_past_edges: checked('layout-center_past_edges')
     },
     appearance: {
+      language: cbVal('cb-appearance-language'),
       active_border: checked('appearance-active_border'),
       active_border_color: inputToHex(val('appearance-active_border_color')),
       active_border_width: num('appearance-active_border_width'),
@@ -2435,6 +2489,39 @@ mod tests {
     use super::SETTINGS_HTML;
 
     #[test]
+    fn translations_render_literally_in_settings_and_switch_live() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let payload = serde_json::json!({
+            "page": SETTINGS_HTML,
+            "english": serde_json::from_str::<serde_json::Value>(&crate::locale::page_json("en")).unwrap(),
+            "chinese": serde_json::from_str::<serde_json::Value>(&crate::locale::page_json("zh-CN")).unwrap(),
+        });
+        let mut child = Command::new("node")
+            .arg("-e")
+            .arg(include_str!("locale.test.js"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Node.js is required for the Settings JavaScript test");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn center_single_column_is_wired_into_settings_config() {
         assert!(SETTINGS_HTML.contains("id=\"layout-center_single_column\""));
         assert!(SETTINGS_HTML.contains(
@@ -2459,7 +2546,7 @@ mod tests {
     fn default_width_preset_uses_custom_combobox() {
         assert!(SETTINGS_HTML.contains("class=\"card\" id=\"default-width-preset-card\""));
         assert!(SETTINGS_HTML.contains(
-            "<div class=\"combobox\" id=\"cb-layout-default_width_preset\" aria-label=\"Default width preset for new windows\"></div>"
+            "<div class=\"combobox\" id=\"cb-layout-default_width_preset\" aria-label=\"\" data-i18n-aria-label=\"settings.text.default_width_preset_for_new_windows\"></div>"
         ));
         assert!(!SETTINGS_HTML.contains("<select id=\"layout-default_width_preset\""));
         assert!(
@@ -2468,7 +2555,7 @@ mod tests {
         assert!(SETTINGS_HTML
             .contains("refreshDefaultWidthPresetOptions(cfg.layout.default_width_preset || 1);"));
         assert!(SETTINGS_HTML.contains("presetRow = entry.row"));
-        assert!(SETTINGS_HTML.contains("'Preset ' + (index + 1) + ' ('"));
+        assert!(SETTINGS_HTML.contains("t('settings.text.preset_index_percent', {index: index + 1"));
         assert!(SETTINGS_HTML
             .contains("row.querySelector('.row-delete').disabled = row === onlyValidRow;"));
         assert!(SETTINGS_HTML.contains("widthPresets = lastValidWidthPresets.slice();"));
@@ -2486,13 +2573,14 @@ mod tests {
 
     #[test]
     fn gesture_combos_offer_and_preserve_no_action_and_custom_commands() {
-        let no_action = "var options = '<div class=\"combobox-option' + (current === '' ? ' selected' : '') + '\" data-value=\"\">No action</div>' +";
+        let no_action = "var options = '<div class=\"combobox-option' + (current === '' ? ' selected' : '') + '\" data-value=\"\" data-i18n=\"settings.text.no_action\">' + escHtml(t('settings.text.no_action')) + '</div>' +";
         let catalog_options = "CMD_ORDER.map(function(cmd) {";
         assert!(
             SETTINGS_HTML.find(no_action).unwrap() < SETTINGS_HTML.find(catalog_options).unwrap()
         );
-        assert!(SETTINGS_HTML
-            .contains("var currentLabel = current === '' ? 'No action' : cmdLabel(current);"));
+        assert!(SETTINGS_HTML.contains(
+            "var currentLabel = current === '' ? t('settings.text.no_action') : cmdLabel(current);"
+        ));
         assert!(SETTINGS_HTML.contains(
             "if (!matched && showUnknown) cb.querySelector('.combobox-text').textContent = value;"
         ));
@@ -2528,14 +2616,18 @@ mod tests {
 
     #[test]
     fn window_rule_column_width_roundtrip_is_validated() {
-        assert!(SETTINGS_HTML.contains("class=\"rule-column-width opt-num\" placeholder=\"Auto\""));
+        assert!(SETTINGS_HTML.contains(
+            "class=\"rule-column-width opt-num\" data-i18n-placeholder=\"settings.text.auto\""
+        ));
         assert!(SETTINGS_HTML.contains("min=\"0.05\" max=\"1\" step=\"any\""));
         assert!(SETTINGS_HTML
             .contains("var columnWidth = r.column_width != null ? String(r.column_width) : '';"));
         assert!(SETTINGS_HTML.contains("delete r.column_width;"));
         assert!(SETTINGS_HTML.contains("r.column_width = columnWidth;"));
         assert!(SETTINGS_HTML.contains("Number.isFinite(width) && width >= 0.05 && width <= 1.0"));
-        assert!(SETTINGS_HTML.contains("Enter a finite fraction from 0.05 to 1.0"));
+        assert!(SETTINGS_HTML.contains(
+            "t('settings.text.enter_a_finite_fraction_from_0_05_to_1_0_or_leave_this_blank')"
+        ));
         assert!(!SETTINGS_HTML.contains("validateRuleColumnWidths"));
         assert!(SETTINGS_HTML
             .contains("function autoSave(delay) {\n  clearTimeout(_saveTimer);\n  _saveTimer"));

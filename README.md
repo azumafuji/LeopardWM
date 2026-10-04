@@ -257,6 +257,23 @@ as modifiers cannot be represented by PowerToys and are skipped with a warning;
 F13-F24 used as ordinary trigger keys can be exported. Warnings go to stderr so
 stdout remains usable YAML.
 
+### Interface language
+
+Choose **Settings → Appearance → Language**, or set this in `config.toml`:
+
+```toml
+[appearance]
+language = "en" # "en" (default) or "zh-CN"
+```
+
+The open Settings window, tray menu, and daemon notifications use the selected
+language after saving or reloading config; no daemon restart is needed. Unsupported
+values fall back to English with a config warning. There is no automatic OS-language
+selection. Simplified Chinese is a **machine draft pending native-speaker review**.
+Locale files are embedded in the daemon, so editing a translation requires a rebuild.
+See the [localization contributor guide](docs/localization.md) for file locations,
+placeholders, validation, and the surfaces that remain English.
+
 ### Layout options
 
 Enable **Settings → Layout → Center single column**, or set `center_single_column = true` under `[layout]`, to center the only active tiled column when it fits within the viewport’s outer gaps. It is off by default and applies with every `centering_mode` (`center`, `just_in_view`, or `on_overflow`), independently of `center_past_edges`. Minimized-only columns and floating windows do not count; wider columns keep the normal scrolling behavior.

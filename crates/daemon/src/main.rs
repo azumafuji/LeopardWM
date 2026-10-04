@@ -25,6 +25,7 @@ mod helpers;
 mod hotkey_resolution;
 mod ipc_server;
 mod layout_apply;
+mod locale;
 mod managed_lifetime;
 #[cfg(test)]
 mod managed_lifetime_tests;
@@ -348,6 +349,7 @@ struct HotkeyState {
 /// Build the tray quick-toggle state from config (reads autostart from the registry).
 fn quick_toggle_state(config: &Config) -> tray::QuickToggleState {
     tray::QuickToggleState {
+        language: config.appearance.language.clone(),
         active_border: config.appearance.active_border,
         focus_new_windows: config.behavior.focus_new_windows,
         focus_follows_mouse: config.behavior.focus_follows_mouse,
@@ -415,6 +417,17 @@ async fn reload_config_and_hotkeys(
     // reflects the new registration instead of the snapshot taken at open.
     settings::push_failed_binds(&hotkey_state.failed_binds);
     sync_tray_toggles(tray_manager, &new_config);
+    if let Some(manager) = tray_manager {
+        let state = state.lock().await;
+        manager.update_tooltip(
+            state.all_managed_window_ids().len(),
+            state.monitors.len(),
+            state.paused,
+            Some((hotkey_state.registered_count, hotkey_state.requested_count)),
+            (state.active_workspace_idx(state.focused_monitor) + 1) as u8,
+        );
+    }
+    settings::push_locale(&new_config.appearance.language);
     if let Some(ref overlay) = snap_hint_overlay {
         overlay.set_opacity(new_config.snap_hints.opacity);
     }
@@ -783,11 +796,13 @@ async fn sync_pending_layout_apply_timeout_ui(
         );
     }
 
+    let language = state.lock().await.config.appearance.language.clone();
     notify::show_toast(
-        "Tiling paused",
-        &format!(
-            "Window placement did not finish within {} seconds, so tiling was automatically paused. Choose Resume Tiling from the tray after the windows settle.",
-            report.timeout.as_secs()
+        &locale::text(&language, "notification.tiling_paused.title"),
+        &locale::format(
+            &language,
+            "notification.tiling_paused.body",
+            &[("seconds", &report.timeout.as_secs().to_string())],
         ),
     );
 }
@@ -2213,12 +2228,15 @@ async fn handle_release_all_windows(ctx: &mut EventLoopCtx<'_>) {
             (state.active_workspace_idx(state.focused_monitor) + 1) as u8,
         );
     }
+    let language = ctx.state.lock().await.config.appearance.language.clone();
     if let Some(error) = release_error {
         std::thread::spawn(move || {
             use windows::core::{w, HSTRING};
             use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-            let message = HSTRING::from(format!(
-                "Windows may have been only partially released. Tiling remains paused.\n\nDetails: {error}"
+            let message = HSTRING::from(locale::format(
+                &language,
+                "dialog.release_failed",
+                &[("error", &error)],
             ));
             unsafe {
                 let _ = MessageBoxW(None, &message, w!("LeopardWM"), MB_OK | MB_ICONERROR);
@@ -2227,14 +2245,14 @@ async fn handle_release_all_windows(ctx: &mut EventLoopCtx<'_>) {
     } else {
         let event_tx_clone = ctx.event_tx.clone();
         std::thread::spawn(move || {
-            use windows::core::w;
+            use windows::core::{w, HSTRING};
             use windows::Win32::UI::WindowsAndMessaging::{
                 MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO,
             };
             let result = unsafe {
                 MessageBoxW(
                     None,
-                    w!("All windows have been released and cascaded.\n\nWould you like to restart tiling?"),
+                    &HSTRING::from(locale::text(&language, "dialog.release_complete")),
                     w!("LeopardWM"),
                     MB_YESNO | MB_ICONQUESTION,
                 )
