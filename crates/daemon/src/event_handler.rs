@@ -3181,6 +3181,19 @@ impl AppState {
         (chrome_rect, dwm_rect)
     }
 
+    pub(crate) fn observe_current_application_fullscreen(
+        &self,
+        hwnd: u64,
+    ) -> Option<ApplicationFullscreenState> {
+        let (chrome_rect, dwm_rect) = self.application_fullscreen_geometry(hwnd);
+        self.observe_application_fullscreen(
+            hwnd,
+            chrome_rect,
+            dwm_rect,
+            leopardwm_platform_win32::is_window_maximized(hwnd),
+        )
+    }
+
     pub(crate) fn observe_application_fullscreen(
         &self,
         hwnd: u64,
@@ -3723,6 +3736,7 @@ impl AppState {
                 self.reconcile_monitors(new_monitors);
                 self.reconcile_application_fullscreen_sessions();
 
+                // Correct minimized flags before deciding whether foreground can be adopted.
                 self.resync_minimized_from_os();
 
                 // Topology changes can move the foreground window without a focus event.
@@ -3736,6 +3750,13 @@ impl AppState {
                     if workspace.is_minimized(hwnd)
                         || fullscreen_focus_guard(false, workspace.fullscreen_window_id(), hwnd)
                             .is_some()
+                    {
+                        return None;
+                    }
+                    if let Some(session) = self.observe_current_application_fullscreen(hwnd) {
+                        self.application_fullscreen.insert(hwnd, session);
+                    }
+                    if self.is_application_fullscreen(hwnd)
                         || self.application_fullscreen.iter().any(|(&other, session)| {
                             other != hwnd && session.monitor_id == monitor_id
                         })
@@ -3765,7 +3786,7 @@ impl AppState {
                 }
 
                 // Adopt foreground first so its workspace is not parked as inactive.
-                self.prepare_inactive_workspace_windows();
+                self.park_inactive_workspace_windows();
 
                 // Re-apply layout with updated monitor configuration
                 self.display_change_apply_in_progress = true;

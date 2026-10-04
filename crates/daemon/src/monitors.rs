@@ -372,14 +372,14 @@ impl AppState {
         }
     }
 
-    /// After workspace model and fullscreen sessions are current, resync
-    /// minimized flags from the OS and park inactive-workspace windows that
-    /// `apply_layout` will not place. Shared by startup and display-change
-    /// reconciliation so a stashed reconnect cannot leave those windows on the
-    /// remaining monitor. Pause keeps the old display-change resync but skips
-    /// parking and fullscreen observation.
+    /// Resync minimized flags and park inactive-workspace windows for startup and resume.
+    /// Pause still resyncs but skips parking and fullscreen observation.
     pub(crate) fn prepare_inactive_workspace_windows(&mut self) {
         self.resync_minimized_from_os();
+        self.park_inactive_workspace_windows();
+    }
+
+    pub(crate) fn park_inactive_workspace_windows(&mut self) {
         if self.paused {
             return;
         }
@@ -394,13 +394,7 @@ impl AppState {
                     if workspace.is_minimized(wid) || self.is_application_fullscreen(wid) {
                         continue;
                     }
-                    let (chrome_rect, dwm_rect) = self.application_fullscreen_geometry(wid);
-                    if let Some(session) = self.observe_application_fullscreen(
-                        wid,
-                        chrome_rect,
-                        dwm_rect,
-                        leopardwm_platform_win32::is_window_maximized(wid),
-                    ) {
+                    if let Some(session) = self.observe_current_application_fullscreen(wid) {
                         self.application_fullscreen.insert(wid, session);
                         continue;
                     }

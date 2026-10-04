@@ -10234,6 +10234,67 @@ fn test_display_change_focus_preserves_restored_fullscreen_against_other_foregro
 }
 
 #[test]
+fn test_display_change_focus_does_not_adopt_untracked_application_fullscreen() {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+
+    let fullscreen = ParkProbeWindow::new(false);
+    unsafe {
+        SetWindowPos(
+            fullscreen.0,
+            None,
+            0,
+            0,
+            1920,
+            1080,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+        .unwrap();
+    }
+    let before = fullscreen.rect();
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = false;
+    state.injected_apply_placements_behavior =
+        Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(100, Some(600))
+        .unwrap();
+    state.ensure_workspace_exists(1, 1);
+    state.workspaces.get_mut(&1).unwrap()[1]
+        .insert_window(fullscreen.id(), Some(600))
+        .unwrap();
+    state.previous_focused_hwnd = Some(100);
+    state.injected_foreground_hwnd = Some(Some(fullscreen.id()));
+    state.injected_display_monitors = Some(test_monitors());
+    assert!(!state.is_application_fullscreen(fullscreen.id()));
+    let mut events = state.event_broadcaster.subscribe();
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert_eq!(state.active_workspace_idx(1), 0);
+    assert_eq!(state.previous_focused_hwnd, Some(100));
+    assert_eq!(
+        state.focused_workspace().unwrap().focused_window(),
+        Some(100)
+    );
+    assert!(state.is_application_fullscreen(fullscreen.id()));
+    assert!(!state
+        .inactive_workspace_park_requests
+        .contains(&fullscreen.id()));
+    assert!(!state
+        .injected_apply_placements_batches
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .contains(&fullscreen.id()));
+    assert!(display_change_focus_events(&mut events).is_empty());
+    assert_eq!(fullscreen.rect(), before);
+    assert!(!leopardwm_platform_win32::is_window_visible(
+        fullscreen.id()
+    ));
+}
+
+#[test]
 fn test_display_change_focus_does_not_adopt_minimized_foreground() {
     let mut state = display_change_focus_state();
     state.workspaces.get_mut(&2).unwrap()[0].mark_minimized(100);
