@@ -1654,12 +1654,10 @@ impl AppState {
             workspace.ensure_focused_visible_animated(viewport_width);
         }
 
-        self.start_layout_transition(snapshot);
-        if !sync_focus {
+        let started_transition = self.start_layout_transition(snapshot);
+        if started_transition && !sync_focus {
             if let Some(transition) = &mut self.layout_transition {
                 transition.suppress_landing_focus_resync = true;
-            } else if self.is_animating() {
-                self.pending_suppress_landing_focus_resync = true;
             }
         }
         if let Err(e) = self.apply_layout() {

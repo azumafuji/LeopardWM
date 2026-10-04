@@ -3011,9 +3011,15 @@ async fn handle_overview_event(
                 warn!("Overview workspace switch failed: {}", message);
             }
         }
-        OverviewEvent::MoveWindow { window_id, forward } => {
+        OverviewEvent::MoveWindow {
+            window_id,
+            forward,
+            generation,
+        } => {
             let mut s = ctx.state.lock().await;
-            if let IpcResponse::Error { message } = s.move_overview_window(window_id, forward) {
+            if let IpcResponse::Error { message } =
+                s.move_overview_window(window_id, forward, generation)
+            {
                 warn!("Overview window move failed: {}", message);
             }
         }

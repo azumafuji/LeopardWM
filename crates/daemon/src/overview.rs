@@ -166,16 +166,28 @@ impl AppState {
         &mut self,
         wid: u64,
         forward: bool,
+        generation: u32,
     ) -> leopardwm_ipc::IpcResponse {
+        if !leopardwm_platform_win32::overview::is_input_session_current(generation) {
+            return leopardwm_ipc::IpcResponse::Ok;
+        }
         let response = self.transfer_overview_window(wid, forward);
-        if self.overview_open {
+        if self.overview_open
+            && leopardwm_platform_win32::overview::is_input_session_current(generation)
+        {
             match self.build_overview_model_with_selection(Some(wid)) {
                 Some((_, model)) => {
                     if let Some(overlay) = &self.overview_overlay {
-                        overlay.complete_window_move(model, wid);
+                        overlay.complete_window_move(model, wid, generation);
                     }
                 }
-                None => self.hide_overview(),
+                None if leopardwm_platform_win32::overview::is_input_session_current(
+                    generation,
+                ) =>
+                {
+                    self.hide_overview()
+                }
+                None => {}
             }
         }
         response
@@ -751,6 +763,62 @@ mod tests {
     }
 
     #[test]
+    fn stale_overview_move_does_not_transfer_or_refresh() {
+        for wid in [201, 999] {
+            let mut state = test_state();
+            add_windows(&mut state, 0, &[201]);
+            state.overview_open = true;
+            state.previous_focused_hwnd = Some(201);
+            assert!(matches!(
+                state.move_overview_window(wid, true, 1),
+                leopardwm_ipc::IpcResponse::Ok
+            ));
+            assert_eq!(state.find_window_workspace(201), Some((1, 0)));
+            assert!(state.overview_open);
+            assert_eq!(state.previous_focused_hwnd, Some(201));
+            assert!(
+                state.overview_icon_cache.is_empty(),
+                "stale moves must not rebuild the model"
+            );
+        }
+        let mut empty = test_state();
+        empty.overview_open = true;
+        assert!(matches!(
+            empty.move_overview_window(999, true, 1),
+            leopardwm_ipc::IpcResponse::Ok
+        ));
+        assert!(
+            empty.overview_open,
+            "a stale move must not hide a fresh empty overview"
+        );
+    }
+
+    #[test]
+    fn overview_move_without_layout_transition_does_not_suppress_scroll_landing() {
+        let mut state = test_state();
+        state.paused = false;
+        state.reduce_motion = true;
+        add_windows(&mut state, 0, &[101, 201]);
+        {
+            let ws = &mut state.workspaces.get_mut(&1).unwrap()[0];
+            ws.set_all_column_widths(1400);
+            ws.focus_window(201).unwrap();
+            ws.set_scroll_offset(1400.0);
+        }
+        state.overview_open = true;
+        assert!(matches!(
+            state.transfer_overview_window(201, true),
+            leopardwm_ipc::IpcResponse::Ok
+        ));
+        assert!(state.layout_transition.is_none());
+        assert!(
+            state.is_animating(),
+            "source visibility starts an independent scroll animation"
+        );
+        assert!(!state.pending_suppress_landing_focus_resync);
+    }
+
+    #[test]
     fn overview_selected_window_transfer_preserves_membership_and_foreground() {
         for mode in [
             "tiled",
@@ -791,7 +859,7 @@ mod tests {
                 state.previous_focused_hwnd = Some(101);
                 assert!(
                     matches!(
-                        state.move_overview_window(201, forward),
+                        state.transfer_overview_window(201, forward),
                         leopardwm_ipc::IpcResponse::Ok
                     ),
                     "{mode}"
@@ -899,7 +967,7 @@ mod tests {
         state.apply_layout().unwrap();
         assert!(state.last_placed_layout_rects.contains_key(&201));
         assert!(matches!(
-            state.move_overview_window(201, true),
+            state.transfer_overview_window(201, true),
             leopardwm_ipc::IpcResponse::Ok
         ));
         state.tick_animations(1000);
@@ -936,7 +1004,7 @@ mod tests {
                 .map(Workspace::all_window_ids)
                 .collect();
             assert!(matches!(
-                state.move_overview_window(201, reason != "first"),
+                state.transfer_overview_window(201, reason != "first"),
                 leopardwm_ipc::IpcResponse::Ok
             ));
             assert_eq!(
