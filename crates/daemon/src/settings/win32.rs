@@ -527,10 +527,7 @@ fn do_save(cfg_val: &serde_json::Value, event_tx: &mpsc::Sender<SettingsEvent>) 
 
     let warnings = cfg.validate();
     for w in &warnings {
-        // The persistent dependency warning is emitted by the reload after saving.
-        if w.field != "behavior.floating_above_tiled" {
-            warn!("Config validation: {}: {}", w.field, w.message);
-        }
+        warn!("Config: {} - {}", w.field, w.message);
     }
 
     match cfg.save() {

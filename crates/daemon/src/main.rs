@@ -3109,7 +3109,8 @@ async fn handle_settings_event(
             info!("Settings: config saved, triggering reload");
             let response = {
                 let mut state = ctx.state.lock().await;
-                state.handle_command(IpcCommand::Reload)
+                // Settings already logged validation warnings before saving the clamped config.
+                state.reload_config(false)
             };
             if matches!(response, IpcResponse::Ok) {
                 reload_config_and_hotkeys(

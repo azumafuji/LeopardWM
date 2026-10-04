@@ -671,10 +671,16 @@ impl AppState {
 
     /// Handle `IpcCommand::Reload`.
     fn handle_reload(&mut self) -> IpcResponse {
+        self.reload_config(true)
+    }
+
+    pub(crate) fn reload_config(&mut self, log_validation_warnings: bool) -> IpcResponse {
         match Config::load() {
             Ok(mut new_config) => {
                 for warning in new_config.validate() {
-                    warn!("Config: {} - {}", warning.field, warning.message);
+                    if log_validation_warnings {
+                        warn!("Config: {} - {}", warning.field, warning.message);
+                    }
                 }
                 self.apply_config(new_config);
                 if let Err(e) = self.apply_layout() {
