@@ -8148,6 +8148,7 @@ fn test_tear_off_event_order_does_not_leave_stale_focus_or_ghost() {
 
 fn taskbar_policy_state() -> AppState {
     let mut state = AppState::new_with_config(test_config(), two_monitors());
+    state.paused = false;
     state.ensure_workspace_exists(1, 2);
     state.ensure_workspace_exists(2, 2);
     state.active_workspace.insert(2, 1);
@@ -18442,8 +18443,8 @@ fn test_paused_display_change_event_resyncs_without_moving_and_syncs_taskbar() {
     assert_eq!(minimized.rect(), before_minimized);
     let commands = state.take_recorded_taskbar_commands();
     assert!(commands.contains(&(active.id(), true)));
-    assert!(commands.contains(&(inactive_tiled.id(), false)));
-    assert!(commands.contains(&(minimized.id(), false)));
+    assert!(commands.contains(&(inactive_tiled.id(), true)));
+    assert!(commands.contains(&(minimized.id(), true)));
 }
 
 #[test]
@@ -19007,19 +19008,23 @@ fn test_taskbar_buttons_background_admission_respects_policy() {
         (HideInactiveWorkspaces, false),
         (ShowAll, true),
     ] {
-        let mut config = test_config();
-        config.behavior.taskbar_buttons = mode;
-        config.window_rules = vec![tile_open_on_workspace_rule("TaskbarBackground", 2)];
-        let mut state = AppState::new_with_config(config, test_monitors());
-        let mut window = make_test_window_info(100);
-        window.class_name = "TaskbarBackground".into();
-        state.injected_window_info.insert(100, window);
-        state.handle_window_event(WindowEvent::Created(100, 0));
-        assert_eq!(state.find_window_workspace(100), Some((1, 1)));
-        assert_eq!(state.active_workspace_idx(1), 0);
-        let commands = state.take_recorded_taskbar_commands();
-        assert!(commands.contains(&(100, show)), "{mode:?}: {commands:?}");
-        assert!(!commands.contains(&(100, !show)), "{mode:?}: {commands:?}");
+        for paused in [false, true] {
+            let show = show || paused;
+            let mut config = test_config();
+            config.behavior.taskbar_buttons = mode;
+            config.window_rules = vec![tile_open_on_workspace_rule("TaskbarBackground", 2)];
+            let mut state = AppState::new_with_config(config, test_monitors());
+            state.paused = paused;
+            let mut window = make_test_window_info(100);
+            window.class_name = "TaskbarBackground".into();
+            state.injected_window_info.insert(100, window);
+            state.handle_window_event(WindowEvent::Created(100, 0));
+            assert_eq!(state.find_window_workspace(100), Some((1, 1)));
+            assert_eq!(state.active_workspace_idx(1), 0);
+            let commands = state.take_recorded_taskbar_commands();
+            assert!(commands.contains(&(100, show)), "{mode:?}: {commands:?}");
+            assert!(!commands.contains(&(100, !show)), "{mode:?}: {commands:?}");
+        }
     }
 }
 
@@ -19031,24 +19036,167 @@ fn test_taskbar_buttons_inactive_fullscreen_exit_respects_policy() {
         (HideInactiveWorkspaces, false),
         (ShowAll, true),
     ] {
-        let mut state = AppState::new_with_config(test_config(), test_monitors());
-        state.config.behavior.taskbar_buttons = mode;
-        state.ensure_workspace_exists(1, 2);
-        state.workspaces.get_mut(&1).unwrap()[1]
-            .insert_window(100, None)
-            .unwrap();
-        state.application_fullscreen.insert(
-            100,
-            crate::state::ApplicationFullscreenState {
-                monitor_id: 1,
-                rect: Rect::new(0, 0, 1920, 1080),
-            },
-        );
-        state.handle_window_event(WindowEvent::MovedOrResized(100));
-        assert!(!state.is_application_fullscreen(100));
-        assert_eq!(state.find_window_workspace(100), Some((1, 1)));
-        let commands = state.take_recorded_taskbar_commands();
-        assert!(commands.contains(&(100, show)), "{mode:?}: {commands:?}");
-        assert!(!commands.contains(&(100, !show)), "{mode:?}: {commands:?}");
+        for paused in [false, true] {
+            let show = show || paused;
+            let mut state = AppState::new_with_config(test_config(), test_monitors());
+            state.paused = paused;
+            state.config.behavior.taskbar_buttons = mode;
+            state.ensure_workspace_exists(1, 2);
+            state.workspaces.get_mut(&1).unwrap()[1]
+                .insert_window(100, None)
+                .unwrap();
+            state.application_fullscreen.insert(
+                100,
+                crate::state::ApplicationFullscreenState {
+                    monitor_id: 1,
+                    rect: Rect::new(0, 0, 1920, 1080),
+                },
+            );
+            state.handle_window_event(WindowEvent::MovedOrResized(100));
+            assert!(!state.is_application_fullscreen(100));
+            assert_eq!(state.find_window_workspace(100), Some((1, 1)));
+            let commands = state.take_recorded_taskbar_commands();
+            assert!(commands.contains(&(100, show)), "{mode:?}: {commands:?}");
+            assert!(!commands.contains(&(100, !show)), "{mode:?}: {commands:?}");
+        }
     }
+}
+
+fn assert_taskbar_buttons_all_shown(state: &AppState) {
+    let mut commands = state.take_recorded_taskbar_commands();
+    assert!(!commands.is_empty());
+    assert!(commands.iter().all(|(_, show)| *show), "{commands:?}");
+    commands.sort_unstable();
+    commands.dedup();
+    let mut expected: Vec<_> = state
+        .all_managed_window_ids()
+        .into_iter()
+        .map(|wid| (wid, true))
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(commands, expected);
+}
+
+#[test]
+fn test_taskbar_buttons_paused_reload_keeps_buttons_shown_until_resume() {
+    use config::TaskbarButtons::*;
+    for release_all in [false, true] {
+        for mode in [HideOffscreen, HideInactiveWorkspaces, ShowAll] {
+            let mut state = taskbar_policy_state();
+            state.sync_taskbar_buttons();
+            assert!(state
+                .take_recorded_taskbar_commands()
+                .contains(&(700, false)));
+            if release_all {
+                assert!(matches!(
+                    state.handle_command(IpcCommand::ReleaseAllWindows),
+                    IpcResponse::Ok
+                ));
+            } else {
+                state.toggle_pause("paused config regression").unwrap();
+            }
+            assert_taskbar_buttons_all_shown(&state);
+            state.application_fullscreen.insert(
+                100,
+                crate::state::ApplicationFullscreenState {
+                    monitor_id: 1,
+                    rect: Rect::new(0, 0, 1920, 1080),
+                },
+            );
+            let mut config = state.config.clone();
+            config.behavior.taskbar_buttons = mode;
+            state.apply_config(config);
+            assert!(state.paused);
+            assert_eq!(state.config.behavior.taskbar_buttons, mode);
+            assert_taskbar_buttons_all_shown(&state);
+            state.application_fullscreen.remove(&100);
+            state
+                .toggle_pause("paused config regression resume")
+                .unwrap();
+            assert!(!state.paused);
+            let commands = state.take_recorded_taskbar_commands();
+            assert!(
+                commands.contains(&(700, mode == ShowAll)),
+                "{mode:?}: {commands:?}"
+            );
+            assert!(
+                commands.contains(&(300, mode != HideOffscreen)),
+                "{mode:?}: {commands:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_taskbar_buttons_paused_tray_selection_keeps_buttons_shown_until_resume() {
+    use config::TaskbarButtons::*;
+    let mut state = taskbar_policy_state();
+    state.sync_taskbar_buttons();
+    assert!(state
+        .take_recorded_taskbar_commands()
+        .contains(&(700, false)));
+    state.toggle_pause("paused tray regression").unwrap();
+    assert_taskbar_buttons_all_shown(&state);
+    let cancelled = state.apply_worker_cancelled.clone();
+    let epoch = state.apply_epoch.clone();
+    #[allow(clippy::arc_with_non_send_sync)]
+    let state = Arc::new(Mutex::new(state));
+    let (event_tx, _event_rx) = mpsc::channel(8);
+    let (settings_tx, _settings_rx) = std::sync::mpsc::channel();
+    let worker =
+        animation_worker::AnimationWorkerHandle::spawn(event_tx.clone(), cancelled.clone())
+            .unwrap();
+    let quit = quit_fallback::QuitFallback::new(
+        cancelled,
+        epoch,
+        || {},
+        |_| {},
+        |_| {},
+        quit_fallback::QuitTiming::default(),
+    );
+    let mut ctx = EventLoopCtx {
+        quit_fallback: &quit,
+        state: &state,
+        event_tx: &event_tx,
+        hotkey_state: &mut HotkeyState {
+            handle: None,
+            hook: None,
+            mapping: HashMap::new(),
+            requested_count: 0,
+            registered_count: 0,
+            failed_binds: Vec::new(),
+            recording: false,
+        },
+        tray_manager: &None,
+        snap_hint_overlay: &None,
+        settings_sync_tx: &settings_tx,
+        settings_handle: &mut None,
+        animation_worker: &worker,
+        animation_active: &mut false,
+        last_frame_instant: &mut None,
+        snap_hint_timer_handle: &mut None,
+        focus_follows_mouse_timer: &mut None,
+        display_change_timer: &mut None,
+        idle_layout_reapply_timer: &mut None,
+        display_change_apply_retry_timer: &mut None,
+        mouse_hook_handle: &mut None,
+    };
+    for mode in [
+        HideInactiveWorkspaces,
+        HideOffscreen,
+        ShowAll,
+        HideInactiveWorkspaces,
+    ] {
+        handle_tray_event(&mut ctx, tray::TrayEvent::SetTaskbarButtons(mode)).await;
+        let state = state.lock().await;
+        assert!(state.paused);
+        assert_eq!(state.config.behavior.taskbar_buttons, mode);
+        assert_taskbar_buttons_all_shown(&state);
+    }
+    let mut state = state.lock().await;
+    state.toggle_pause("paused tray regression resume").unwrap();
+    assert!(!state.paused);
+    let commands = state.take_recorded_taskbar_commands();
+    assert!(commands.contains(&(700, false)), "{commands:?}");
+    assert!(commands.contains(&(300, true)), "{commands:?}");
 }

@@ -325,12 +325,17 @@ impl AppState {
     }
 
     pub(crate) fn sync_inactive_workspace_taskbar_button(&self, wid: u64) {
-        let show = self.config.behavior.taskbar_buttons == config::TaskbarButtons::ShowAll;
+        let show =
+            self.paused || self.config.behavior.taskbar_buttons == config::TaskbarButtons::ShowAll;
         self.apply_taskbar_button_action(wid, taskbar_button_action(false, show));
     }
 
     pub(crate) fn sync_taskbar_buttons(&self) {
         use leopardwm_core_layout::Visibility;
+        if self.paused {
+            self.restore_taskbar_buttons();
+            return;
+        }
         // Disabled: make sure no button stays hidden (restores any we hid before
         // the user turned the option off), then leave the taskbar alone.
         if self.config.behavior.taskbar_buttons == config::TaskbarButtons::ShowAll {

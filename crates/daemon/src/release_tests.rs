@@ -334,7 +334,7 @@ fn test_taskbar_buttons_pause_and_release_restore_hidden_buttons() {
         state.sync_taskbar_buttons();
         assert!(state
             .take_recorded_taskbar_commands()
-            .contains(&(30, false)));
+            .contains(&(30, already_paused)));
         if release_all {
             assert!(matches!(
                 state.handle_command(IpcCommand::ReleaseAllWindows),
