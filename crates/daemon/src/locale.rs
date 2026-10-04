@@ -159,13 +159,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn referenced_keys_exist_in_english() {
-        let english: BTreeMap<String, String> = toml::from_str(ENGLISH).unwrap();
+    fn missing_keys(source: &str, english: &BTreeMap<String, String>) -> Vec<String> {
         let references = regex::Regex::new(
             r#"["']((?:settings|tray|notification|dialog)\.(?:[a-z_0-9-]+\.)*[a-z_0-9-]+)["']"#,
         )
         .unwrap();
+        let attributes = regex::Regex::new(r#"data-i18n(?:-[a-z-]+)?="([^"]+)""#).unwrap();
+        references
+            .captures_iter(source)
+            .map(|capture| capture[1].to_string())
+            .chain(
+                attributes
+                    .captures_iter(source)
+                    .filter(|capture| !capture[1].contains("' + "))
+                    .map(|capture| capture[1].to_string()),
+            )
+            .filter(|key| !english.contains_key(key))
+            .collect()
+    }
+
+    #[test]
+    fn referenced_keys_exist_in_english() {
+        let english: BTreeMap<String, String> = toml::from_str(ENGLISH).unwrap();
         for source in [
             include_str!("settings/html.rs"),
             include_str!("tray.rs"),
@@ -173,13 +188,21 @@ mod tests {
             include_str!("main.rs"),
             include_str!("settings/win32.rs"),
         ] {
-            for capture in references.captures_iter(source) {
-                assert!(
-                    english.contains_key(&capture[1]),
-                    "Unknown locale key: {}",
-                    &capture[1]
-                );
-            }
+            let missing = missing_keys(source, &english);
+            assert!(missing.is_empty(), "Unknown locale keys: {missing:?}");
         }
+    }
+
+    #[test]
+    fn attribute_key_guard_rejects_invalid_generated_markup_key() {
+        let english: BTreeMap<String, String> = toml::from_str(ENGLISH).unwrap();
+        let source = include_str!("settings/html.rs");
+        let defective = source.replace(
+            "data-i18n=\"settings.text.workspace_index\"",
+            "data-i18n=\"settings.text.workspace_index!\"",
+        );
+        assert_ne!(source, defective);
+        assert!(missing_keys(&defective, &english)
+            .contains(&"settings.text.workspace_index!".to_string()));
     }
 }

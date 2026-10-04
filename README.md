@@ -113,7 +113,10 @@ Current releases are not code-signed, so Windows SmartScreen may show a warning 
 
 ## Quick Start (from source)
 
-Prerequisites: [Rust](https://rustup.rs) with the MSVC toolchain (`stable-x86_64-pc-windows-msvc`)
+Prerequisites: [Rust](https://rustup.rs) with the MSVC toolchain (`stable-x86_64-pc-windows-msvc`).
+Running workspace tests (`cargo test --workspace`) also requires [Node.js](https://nodejs.org/)
+on `PATH` for the Settings JavaScript test; missing Node.js fails the test rather than skipping it.
+See [Contributing](CONTRIBUTING.md#development-setup) for development checks.
 
 ```bash
 git clone https://github.com/jcardama/LeopardWM.git

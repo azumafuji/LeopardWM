@@ -50,6 +50,12 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 
 ## Development Setup
 
+Building requires Rust with the MSVC toolchain (`stable-x86_64-pc-windows-msvc`).
+Running workspace tests also requires [Node.js](https://nodejs.org/) on `PATH`:
+the Settings JavaScript test fails explicitly if Node.js is missing; it is never
+silently skipped. The final `pwsh -NoProfile -File tools/check.ps1` check also
+requires PowerShell 7 and Python for the tools tests.
+
 ```bash
 # Install Rust (if not already installed)
 # https://rustup.rs/

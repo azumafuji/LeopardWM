@@ -76,9 +76,12 @@ changes are unnecessary.
    pwsh -NoProfile -File tools/check.ps1
    ```
 
-   The Settings JavaScript rendering test requires Node.js on `PATH`. It executes
-   the embedded page script without a browser or WebView and exercises literal
-   text/attribute insertion, escaped generated markup, and language relabeling.
+   **Node.js on `PATH` is a prerequisite for workspace tests** (`cargo test
+   --workspace`) and `tools/check.ps1`, because the Settings JavaScript rendering
+   test fails explicitly when Node.js is missing; it never silently skips. It
+   executes the embedded page script without a browser or WebView and exercises
+   literal text/attribute insertion, escaped generated markup, generated locale
+   keys, and language relabeling while a preset save is pending.
    Config tests cover the default, legacy configs, round-trip, and warning path.
 5. Rebuild the daemon. Arrange separately authorized native UI acceptance for long
    labels, text scaling, high contrast, and non-ASCII WebView/tray rendering. Unit

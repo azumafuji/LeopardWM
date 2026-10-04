@@ -108,3 +108,171 @@ context.renderFailedHotkeys();
 assert.equal(warnings['hotkey-warn-bar'].hidden, true);
 context.localeStrings = { test: '{name} {count} {unknown}' };
 assert.equal(context.t('test', { name: '{count}', count: 2 }), '{count} 2 {unknown}');
+
+function attributeKeys(markup) {
+  return Array.from(markup.matchAll(/\bdata-i18n(?:-[a-z-]+)?="([^"]+)"/g), match => match[1]);
+}
+function assertKnownKeys(markup, catalog = english) {
+  for (const key of attributeKeys(markup)) {
+    assert.ok(Object.hasOwn(catalog, key), `Unknown generated locale key: ${key}`);
+  }
+}
+assertKnownKeys(page.split('<script>')[0]);
+
+function ruleMarkup(source) {
+  const shell = { addEventListener() {}, querySelectorAll: () => [], classList: { contains: () => false } };
+  const row = {
+    querySelectorAll: () => [],
+    querySelector: selector => ['.rule-opts-btn', '.rule-opts-pop', '.rule-maximized', '.rule-sticky'].includes(selector)
+      ? shell : null
+  };
+  const doc = {
+    documentElement: { lang: 'en' }, addEventListener() {}, querySelectorAll: () => [],
+    getElementById: () => null
+  };
+  const ctx = vm.createContext({ document: doc, window: { _localeStrings: english } });
+  vm.runInContext(source, ctx);
+  doc.createElement = () => row;
+  doc.getElementById = () => ({ appendChild() {} });
+  ctx.addRuleRow({});
+  return row.innerHTML;
+}
+const rules = ruleMarkup(script);
+assertKnownKeys(rules);
+const ruleKeys = new Set(attributeKeys(rules));
+assert.ok(ruleKeys.size > 0);
+for (const key of ruleKeys) {
+  const incomplete = { ...english };
+  delete incomplete[key];
+  assert.throws(() => assertKnownKeys(rules, incomplete), error =>
+    error.message.includes(`Unknown generated locale key: ${key}`));
+}
+
+function eventElement() {
+  const listeners = {};
+  const classes = new Set();
+  return {
+    value: '', checked: false, dataset: {}, style: {}, textContent: '',
+    classList: {
+      add: name => classes.add(name), remove: name => classes.delete(name),
+      contains: name => classes.has(name)
+    },
+    addEventListener(name, callback) { (listeners[name] ||= []).push(callback); },
+    emit(name) { for (const callback of listeners[name] || []) callback({ stopPropagation() {} }); }
+  };
+}
+function presetFixture(values = [0.333, 0.5, 0.667]) {
+  const rows = [];
+  const fields = {};
+  const timers = new Map();
+  const saves = [];
+  let nextTimer = 0;
+  const doc = {
+    documentElement: { lang: 'en' }, addEventListener() {}, querySelectorAll: () => [],
+    getElementById: () => null, querySelector: () => null
+  };
+  const ctx = vm.createContext({
+    document: doc, window: { _localeStrings: english, ipc: { postMessage: json => saves.push(JSON.parse(json)) } },
+    setTimeout(callback, delay) { timers.set(++nextTimer, { callback, delay }); return nextTimer; },
+    clearTimeout(id) { timers.delete(id); }
+  });
+  vm.runInContext(script, ctx);
+  const trigger = eventElement();
+  const triggerText = eventElement();
+  const popup = eventElement();
+  const combo = eventElement();
+  let options = [];
+  Object.defineProperty(combo, 'innerHTML', {
+    set(markup) {
+      triggerText.textContent = markup.match(/class="combobox-text">([^<]*)/)[1];
+      options = Array.from(markup.matchAll(/class="combobox-option([^"]*)" data-value="([^"]+)">([^<]*)/g), match => {
+        const option = eventElement();
+        if (match[1].includes('selected')) option.classList.add('selected');
+        option.dataset.value = match[2]; option.textContent = match[3];
+        return option;
+      });
+    }
+  });
+  combo.querySelectorAll = () => options;
+  combo.querySelector = selector => selector === '.combobox-trigger' ? trigger
+    : selector === '.combobox-text' ? triggerText : popup;
+  const language = eventElement();
+  const languageLabel = eventElement();
+  const languageOptions = [['en', 'English'], ['zh-CN', '简体中文']].map(([value, textContent]) => {
+    const option = eventElement(); option.dataset.value = value; option.textContent = textContent; return option;
+  });
+  language.querySelectorAll = () => languageOptions;
+  language.querySelector = () => languageLabel;
+  fields['cb-layout-default_width_preset'] = combo;
+  fields['cb-appearance-language'] = language;
+  fields['width-presets-body'] = { appendChild: row => rows.push(row) };
+  doc.getElementById = id => fields[id] ||= eventElement();
+  doc.querySelectorAll = selector => selector === '#width-presets-body tr' ? rows
+    : selector === '.combobox' ? [combo, language] : [];
+  doc.createElement = () => {
+    const input = eventElement();
+    const button = eventElement();
+    const row = {
+      isConnected: true, input, querySelectorAll: () => [],
+      querySelector: selector => selector === '.row-delete' ? button : input
+    };
+    Object.defineProperty(row, 'innerHTML', { set(markup) { input.value = markup.match(/value="([^"]*)"/)[1]; } });
+    return row;
+  };
+  values.forEach(value => ctx.addPresetRow('width', value));
+  ctx.refreshDefaultWidthPresetOptions(1);
+  return { ctx, rows, combo, options: () => options, timers, saves,
+    flush() { const pending = Array.from(timers.values()); timers.clear(); pending.forEach(timer => timer.callback()); } };
+}
+function presetState(fixture) {
+  const { ctx, combo } = fixture;
+  return {
+    selected: ctx.selectedWidthPresetRow,
+    value: combo.dataset.value,
+    widths: Array.from(ctx.lastValidWidthPresets),
+    defaultPreset: ctx.lastValidDefaultWidthPreset
+  };
+}
+const pending = presetFixture();
+pending.options()[1].emit('click');
+assert.equal(pending.timers.size, 1);
+assert.equal(Array.from(pending.timers.values())[0].delay, 0);
+assert.equal(pending.ctx.selectedWidthPresetRow, pending.rows[1]);
+const selectedBeforePush = presetState(pending);
+pending.ctx.refreshLocale(chinese, 'zh-CN');
+assert.deepEqual(presetState(pending), selectedBeforePush);
+pending.flush();
+assert.equal(pending.saves[0].config.layout.default_width_preset, 2);
+assert.deepEqual(pending.saves[0].config.layout.width_presets, [0.333, 0.5, 0.667]);
+
+for (const [draft, expectedWidths, expectedDefault] of [
+  ['0.6', [0.333, 0.6, 0.667], 2],
+  ['unfinished', [0.333, 0.667], 1],
+  ['', [0.333, 0.667], 1]
+]) {
+  const fixture = presetFixture();
+  fixture.options()[1].emit('click');
+  fixture.flush();
+  fixture.rows[1].input.value = draft;
+  fixture.rows[1].input.emit('input');
+  assert.equal(fixture.timers.size, 1);
+  assert.equal(Array.from(fixture.timers.values())[0].delay, 500);
+  const beforePush = presetState(fixture);
+  fixture.ctx.refreshLocale(chinese, 'zh-CN');
+  assert.deepEqual(presetState(fixture), beforePush);
+  assert.equal(fixture.rows[1].input.value, draft);
+  fixture.flush();
+  assert.equal(fixture.saves[1].config.layout.default_width_preset, expectedDefault);
+  assert.deepEqual(fixture.saves[1].config.layout.width_presets, expectedWidths);
+}
+const invalid = presetFixture([0.5]);
+invalid.rows[0].input.value = 'unfinished';
+invalid.rows[0].input.emit('input');
+assert.equal(Array.from(invalid.timers.values())[0].delay, 500);
+const fallbackBeforePush = presetState(invalid);
+invalid.ctx.refreshLocale(chinese, 'zh-CN');
+assert.deepEqual(presetState(invalid), fallbackBeforePush);
+assert.equal(invalid.rows[0].input.value, 'unfinished');
+invalid.flush();
+assert.deepEqual(invalid.saves[0].config.layout.width_presets, [0.5]);
+assert.equal(invalid.saves[0].config.layout.default_width_preset, 1);
