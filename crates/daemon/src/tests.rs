@@ -19207,17 +19207,30 @@ fn test_floating_above_tiled_config_round_trip() {
     let omitted: Config = toml::from_str("[behavior]\ntrack_focus_changes = false").unwrap();
     assert!(!omitted.behavior.floating_above_tiled);
     for enabled in [false, true] {
-        let from_settings: Config = serde_json::from_value(serde_json::json!({
-            "behavior": {"floating_above_tiled": enabled}
-        }))
-        .unwrap();
-        let saved = toml::to_string_pretty(&from_settings).unwrap();
-        let reloaded: Config = toml::from_str(&saved).unwrap();
-        assert_eq!(reloaded.behavior.floating_above_tiled, enabled);
-        assert_eq!(
-            serde_json::to_value(reloaded).unwrap()["behavior"]["floating_above_tiled"],
-            enabled
-        );
+        for tracking in [false, true] {
+            let from_settings: Config = serde_json::from_value(serde_json::json!({
+                "behavior": {"floating_above_tiled": enabled, "track_focus_changes": tracking}
+            }))
+            .unwrap();
+            let saved = toml::to_string_pretty(&from_settings).unwrap();
+            let mut reloaded: Config = toml::from_str(&saved).unwrap();
+            let warnings = reloaded.validate();
+            let floating_warnings: Vec<_> = warnings
+                .iter()
+                .filter(|warning| warning.field == "behavior.floating_above_tiled")
+                .collect();
+            assert_eq!(floating_warnings.len(), usize::from(enabled && !tracking));
+            if let Some(warning) = floating_warnings.first() {
+                assert!(warning.message.contains("track_focus_changes"));
+                assert!(warning.message.contains("no effect"));
+            }
+            assert_eq!(reloaded.behavior.floating_above_tiled, enabled);
+            assert_eq!(reloaded.behavior.track_focus_changes, tracking);
+            assert_eq!(
+                serde_json::to_value(reloaded).unwrap()["behavior"]["floating_above_tiled"],
+                enabled
+            );
+        }
     }
 }
 

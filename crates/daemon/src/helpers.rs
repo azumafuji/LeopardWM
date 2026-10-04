@@ -170,7 +170,6 @@ impl AppState {
 
     /// Apply configuration to all workspaces.
     pub(crate) fn apply_config(&mut self, config: config::Config) {
-        config.warn_about_ineffective_floating_above_tiled();
         // Config reload may turn off swap_chain_ghost_animation, change
         // monitor geometry assumptions, or simply re-evaluate behavior.
         // Cleanest contract: any in-flight ghost animation dies on

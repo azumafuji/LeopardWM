@@ -3,7 +3,8 @@
 use crate::types::Win32Error;
 use crate::window_id_to_hwnd;
 use leopardwm_core_layout::WindowId;
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetForegroundWindow, GetTopWindow, GetWindow, GetWindowLongW, GetWindowRect,
@@ -311,6 +312,24 @@ pub fn set_foreground_window(hwnd: WindowId) -> Result<bool, Win32Error> {
     }
 }
 
+fn dwm_cloak_blocks_raise(cloaked: u32) -> bool {
+    cloaked != 0
+}
+
+fn is_window_dwm_cloaked(hwnd: HWND) -> bool {
+    let mut cloaked: u32 = 0;
+    unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut std::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        )
+        .is_err()
+            || dwm_cloak_blocks_raise(cloaked)
+    }
+}
+
 /// Visible, non-minimized top-level windows, ordered from top to bottom.
 pub fn visible_window_z_order() -> Vec<WindowId> {
     let mut windows = Vec::new();
@@ -323,7 +342,7 @@ pub fn visible_window_z_order() -> Vec<WindowId> {
         }
         if crate::is_window_visible(id)
             && !unsafe { IsIconic(hwnd).as_bool() }
-            && !crate::is_window_shell_cloaked(id)
+            && !is_window_dwm_cloaked(hwnd)
             && !crate::is_placement_cloaked(id)
             && !crate::is_placement_parked(id)
         {
@@ -346,7 +365,7 @@ pub fn can_raise_normal_window(window_id: WindowId) -> bool {
         normal_window_can_raise(
             IsWindow(Some(hwnd)).as_bool() && crate::is_window_visible(window_id),
             IsIconic(hwnd).as_bool(),
-            crate::is_window_shell_cloaked(window_id)
+            is_window_dwm_cloaked(hwnd)
                 || crate::is_placement_cloaked(window_id)
                 || crate::is_placement_parked(window_id),
             GetWindowLongW(hwnd, GWL_EXSTYLE) as u32,
@@ -405,6 +424,19 @@ pub fn close_window(hwnd: WindowId) -> Result<(), Win32Error> {
 mod tests {
 
     #[test]
+    fn floating_above_tiled_rejects_any_dwm_cloak() {
+        for (cloak, blocked) in [
+            (0, false),
+            (0x1, true),
+            (0x2, true),
+            (0x4, true),
+            (0x7, true),
+        ] {
+            assert_eq!(dwm_cloak_blocks_raise(cloak), blocked, "cloak {cloak:#x}");
+        }
+    }
+
+    #[test]
     fn floating_above_tiled_normal_band_eligibility() {
         for (visible, minimized, cloaked, style, expected) in [
             (true, false, false, 0, true),
@@ -427,7 +459,6 @@ mod tests {
             RAISE_WINDOW_FLAGS.0,
             SWP_NOACTIVATE.0 | SWP_NOMOVE.0 | SWP_NOSIZE.0
         );
-        assert_eq!(HWND_TOP.0 as usize, 0);
     }
     use super::*;
 

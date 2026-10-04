@@ -1132,14 +1132,6 @@ impl Config {
         bindings.retain(|_, cmd| !DEPRECATED_HOTKEY_COMMANDS.contains(&cmd.as_str()));
     }
 
-    pub(crate) fn warn_about_ineffective_floating_above_tiled(&self) {
-        if self.behavior.floating_above_tiled && !self.behavior.track_focus_changes {
-            tracing::warn!(
-                "floating_above_tiled has no effect without focus tracking; enable track_focus_changes"
-            );
-        }
-    }
-
     /// Load configuration from standard locations.
     ///
     /// Tries the following locations in order:
@@ -1165,6 +1157,14 @@ impl Config {
     /// Validate configuration values, clamping out-of-range fields and returning warnings.
     pub fn validate(&mut self) -> Vec<ConfigWarning> {
         let mut warnings = Vec::new();
+
+        if self.behavior.floating_above_tiled && !self.behavior.track_focus_changes {
+            warnings.push(ConfigWarning {
+                field: "behavior.floating_above_tiled".to_string(),
+                message: "floating_above_tiled has no effect without focus tracking; enable track_focus_changes"
+                    .to_string(),
+            });
+        }
 
         // animation durations clamped to a sane ceiling so a typo can't
         // make the WM feel frozen.

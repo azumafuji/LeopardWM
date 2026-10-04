@@ -2168,32 +2168,42 @@ impl AppState {
         self.recently_restored_managed_windows.contains_key(&hwnd)
     }
 
-    pub(crate) fn floating_raise_order(
+    fn floating_raise_workspace(
         &self,
         hwnd: u64,
-        normal_z_order: &[u64],
-        native_fullscreen: bool,
-    ) -> Vec<u64> {
+    ) -> Option<(leopardwm_platform_win32::MonitorId, &Workspace)> {
         if !self.config.behavior.floating_above_tiled || self.overview_open || self.paused {
-            return Vec::new();
+            return None;
         }
-        let Some((monitor, index)) = self.find_window_workspace(hwnd) else {
-            return Vec::new();
-        };
+        let (monitor, index) = self.find_window_workspace(hwnd)?;
         if index != self.active_workspace_idx(monitor) {
-            return Vec::new();
+            return None;
         }
         let workspaces = &self.workspaces[&monitor];
         let workspace = &workspaces[index];
         if workspace.is_floating(hwnd)
             || workspace.is_minimized(hwnd)
-            || native_fullscreen
             || workspaces.iter().any(Workspace::is_fullscreen)
             || self
                 .application_fullscreen
                 .values()
                 .any(|session| session.monitor_id == monitor)
         {
+            return None;
+        }
+        Some((monitor, workspace))
+    }
+
+    pub(crate) fn floating_raise_order(
+        &self,
+        hwnd: u64,
+        normal_z_order: &[u64],
+        native_fullscreen: bool,
+    ) -> Vec<u64> {
+        let Some((_, workspace)) = self.floating_raise_workspace(hwnd) else {
+            return Vec::new();
+        };
+        if native_fullscreen {
             return Vec::new();
         }
         let Some(focused_position) = normal_z_order.iter().position(|&id| id == hwnd) else {
@@ -2214,37 +2224,29 @@ impl AppState {
     }
 
     fn raise_floating_above_tiled(&self, hwnd: u64) {
-        if !self.config.behavior.floating_above_tiled || self.overview_open || self.paused {
-            return;
-        }
         #[cfg(not(test))]
         {
             if leopardwm_platform_win32::get_foreground_window() != Some(hwnd) {
                 return;
             }
-            let Some((monitor_id, index)) = self.find_window_workspace(hwnd) else {
+            let Some((monitor_id, _)) = self.floating_raise_workspace(hwnd) else {
                 return;
             };
-            if index != self.active_workspace_idx(monitor_id)
-                || self.workspaces[&monitor_id][index].is_floating(hwnd)
-            {
-                return;
-            }
             let Some(monitor) = self.monitors.get(&monitor_id) else {
                 return;
             };
-            let visible_z_order = leopardwm_platform_win32::visible_window_z_order();
-            let native_fullscreen = visible_z_order.iter().any(|&id| {
-                let (chrome, dwm) = self.application_fullscreen_geometry(id);
-                detect_application_fullscreen(
-                    [monitor],
-                    chrome,
-                    dwm,
-                    leopardwm_platform_win32::is_window_maximized(id),
-                )
-                .is_some()
-            });
-            let normal_z_order: Vec<_> = visible_z_order
+            let (chrome, dwm) = self.application_fullscreen_geometry(hwnd);
+            let native_fullscreen = detect_application_fullscreen(
+                [monitor],
+                chrome,
+                dwm,
+                leopardwm_platform_win32::is_window_maximized(hwnd),
+            )
+            .is_some();
+            if native_fullscreen {
+                return;
+            }
+            let normal_z_order: Vec<_> = leopardwm_platform_win32::visible_window_z_order()
                 .into_iter()
                 .filter(|&id| leopardwm_platform_win32::can_raise_normal_window(id))
                 .collect();
