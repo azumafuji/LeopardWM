@@ -6,6 +6,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Features
 
+- **A documented Yasb configuration shows all nine workspaces on a selected monitor and switches them on click.** The built-in Custom widget polls the existing CLI for active/occupied indicators and workspace-name tooltips; no plugin is required. (#127)
 - **One binding each can now cycle through all width or height presets, wrapping at the end.** `cycle_width` and `cycle_height` are unbound by default, with CLI commands `lwm cycle-width` and `lwm cycle-height`. (#70)
 - **The only active tiled column can now stay centered when it fits in the viewport.** Enable `center_single_column = true` under `[layout]` or Settings → Layout → Center single column; it is off by default. (#86)
 - **Side scroll wheels and other wheel-based swipes can now be turned off without disabling native touchpad swipes.** Set `wheel_swipes = false` under `[gestures]` or turn off Settings → Gestures → Wheel-based swipes; it is on by default. (#107)

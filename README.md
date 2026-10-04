@@ -332,6 +332,14 @@ legacy event set (`workspace_changed`, `focused_window_changed`, `layout_changed
 use 1-based indices and transfer focus to the named monitor; snapshot indices are
 0-based. Full schemas and sample clients are in `agent_docs/ipc-events.md`.
 
+### Yasb workspace buttons
+
+Show all nine workspaces on a selected monitor and switch by clicking a button in
+[Yasb](https://github.com/amnweb/yasb), using its built-in Custom widget and the
+existing CLI. See the [complete Yasb configuration and styling recipe](docs/yasb.md).
+It includes active/occupied indicators and workspace-name tooltips; updates are
+polled every five seconds rather than streamed. No plugin or IPC change is required.
+
 ### Troubleshooting
 
 ```bash

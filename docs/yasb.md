@@ -1,0 +1,210 @@
+# Yasb workspace buttons
+
+[Yasb](https://github.com/amnweb/yasb) can show and switch LeopardWM workspaces with its built-in Custom widget. This recipe adds nine clickable buttons for **one explicitly selected monitor**, using the existing CLI. It does not install a plugin or change LeopardWM's IPC protocol.
+
+Use a matching LeopardWM CLI and daemon with `lwm query workspaces` support (introduced in 0.2.10), and put `lwm.exe` on the PATH inherited by Yasb. Yasb's GlazeWM and komorebi widgets speak those managers' own protocols; pointing them at LeopardWM will not work.
+
+## 1. Save the query adapter
+
+Create `%APPDATA%\yasb\leopardwm-workspaces.ps1` with the following content. It converts the CLI's newline-delimited snapshot into the single JSON value Yasb expects. Only a successfully completed query is displayed; an unavailable daemon, unsupported query, or missing monitor hides the buttons instead of displaying stale state.
+
+```powershell
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$Monitor
+)
+
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+try {
+    $lines = @(& lwm query workspaces 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'lwm query workspaces failed' }
+    $frames = @($lines | ForEach-Object { $_ | ConvertFrom-Json })
+    if ($frames.Count -lt 2 -or
+        $frames[0].type -ne 'workspace_snapshot_begin' -or
+        $frames[-1].type -ne 'workspace_snapshot_end' -or
+        $frames[0].revision -ne $frames[-1].revision) {
+        throw 'Incomplete workspace snapshot'
+    }
+    $records = @($frames | Where-Object {
+        $_.type -eq 'workspace_snapshot_chunk'
+    } | ForEach-Object { $_.records } | Where-Object {
+        $_.monitor_device_name -eq $Monitor
+    })
+    $display = @($records | Where-Object { $_.kind -eq 'monitor' })
+    $workspaces = @($records | Where-Object {
+        $_.kind -eq 'workspace'
+    } | Sort-Object workspace_index)
+    if ($display.Count -ne 1 -or $workspaces.Count -ne 9) {
+        throw 'Target monitor is absent or its workspace list is incomplete'
+    }
+    $items = @($workspaces | ForEach-Object {
+        $index = $_.workspace_index
+        $number = $index + 1
+        $count = @($records | Where-Object {
+            $_.kind -eq 'window' -and $_.workspace_index -eq $index
+        }).Count
+        $label = "$number"
+        if ($count -gt 0) { $label += '*' }
+        if ($index -eq $display[0].active_workspace_index) {
+            $label = "[$label]"
+        }
+        $name = if ($_.name) { $_.name } else { "Workspace $number" }
+        [pscustomobject]@{
+            label = $label
+            tooltip = "$name - $count managed windows on $Monitor"
+        }
+    })
+    ConvertTo-Json -InputObject $items -Compress
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    'null'
+    exit 1
+}
+```
+
+The CLI checks the snapshot transaction and exits unsuccessfully on incomplete, mismatched, or error frames. The adapter checks completion before rendering, then derives occupancy from `window` records; it does not treat `query workspaces` as one JSON object or parse a partial snapshot. Minimized windows, inactive tabs, and floating windows count as occupied. Sticky windows count only in their reported owning workspace; hidden scratchpads do not count.
+
+## 2. Add the widgets to `config.yaml`
+
+Merge these entries into your existing top-level `widgets:` mapping. The YAML anchors share the common Custom widget settings; each button has its own label, tooltip, and click command.
+
+This example targets `\\.\DISPLAY1`. To find the current device names, inspect the `monitor` records from `lwm query workspaces` in a terminal. Replace `\\.\DISPLAY1` in the shared `run_cmd` **and all nine click commands** with your target's exact `monitor_device_name`. Display numbers are not persistent hardware identities; recheck them after changing display topology.
+
+```yaml
+widgets:
+  lwm_1: &lwm_widget
+    type: "yasb.custom.CustomWidget"
+    options: &lwm_options
+      label: "{data[0][label]}"
+      label_placeholder: "..."
+      class_name: "leopardwm-workspaces"
+      tooltip: true
+      tooltip_label: "{data[0][tooltip]}"
+      exec_options:
+        run_cmd: 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command & $env:APPDATA/yasb/leopardwm-workspaces.ps1 -Monitor \\.\DISPLAY1'
+        run_interval: 5000
+        run_once: false
+        return_format: "json"
+        hide_empty: true
+        use_shell: false
+        encoding: "utf-8"
+      callbacks:
+        on_left: 'exec lwm workspace 1 --monitor \\.\DISPLAY1'
+        on_middle: "do_nothing"
+        on_right: "do_nothing"
+  lwm_2:
+    <<: *lwm_widget
+    options:
+      <<: *lwm_options
+      label: "{data[1][label]}"
+      tooltip_label: "{data[1][tooltip]}"
+      callbacks: {on_left: 'exec lwm workspace 2 --monitor \\.\DISPLAY1', on_middle: "do_nothing", on_right: "do_nothing"}
+  lwm_3:
+    <<: *lwm_widget
+    options:
+      <<: *lwm_options
+      label: "{data[2][label]}"
+      tooltip_label: "{data[2][tooltip]}"
+      callbacks: {on_left: 'exec lwm workspace 3 --monitor \\.\DISPLAY1', on_middle: "do_nothing", on_right: "do_nothing"}
+  lwm_4:
+    <<: *lwm_widget
+    options:
+      <<: *lwm_options
+      label: "{data[3][label]}"
+      tooltip_label: "{data[3][tooltip]}"
+      callbacks: {on_left: 'exec lwm workspace 4 --monitor \\.\DISPLAY1', on_middle: "do_nothing", on_right: "do_nothing"}
+  lwm_5:
+    <<: *lwm_widget
+    options:
+      <<: *lwm_options
+      label: "{data[4][label]}"
+      tooltip_label: "{data[4][tooltip]}"
+      callbacks: {on_left: 'exec lwm workspace 5 --monitor \\.\DISPLAY1', on_middle: "do_nothing", on_right: "do_nothing"}
+  lwm_6:
+    <<: *lwm_widget
+    options:
+      <<: *lwm_options
+      label: "{data[5][label]}"
+      tooltip_label: "{data[5][tooltip]}"
+      callbacks: {on_left: 'exec lwm workspace 6 --monitor \\.\DISPLAY1', on_middle: "do_nothing", on_right: "do_nothing"}
+  lwm_7:
+    <<: *lwm_widget
+    options:
+      <<: *lwm_options
+      label: "{data[6][label]}"
+      tooltip_label: "{data[6][tooltip]}"
+      callbacks: {on_left: 'exec lwm workspace 7 --monitor \\.\DISPLAY1', on_middle: "do_nothing", on_right: "do_nothing"}
+  lwm_8:
+    <<: *lwm_widget
+    options:
+      <<: *lwm_options
+      label: "{data[7][label]}"
+      tooltip_label: "{data[7][tooltip]}"
+      callbacks: {on_left: 'exec lwm workspace 8 --monitor \\.\DISPLAY1', on_middle: "do_nothing", on_right: "do_nothing"}
+  lwm_9:
+    <<: *lwm_widget
+    options:
+      <<: *lwm_options
+      label: "{data[8][label]}"
+      tooltip_label: "{data[8][tooltip]}"
+      callbacks: {on_left: 'exec lwm workspace 9 --monitor \\.\DISPLAY1', on_middle: "do_nothing", on_right: "do_nothing"}
+```
+
+In the selected bar's existing `widgets.left`, `widgets.center`, or `widgets.right` list, add the names in order. For example, the relevant part of an existing bar becomes:
+
+```yaml
+bars:
+  status-bar:
+    # Keep this bar's existing screen, alignment, size, and other settings.
+    widgets:
+      left: ["lwm_1", "lwm_2", "lwm_3", "lwm_4", "lwm_5", "lwm_6", "lwm_7", "lwm_8", "lwm_9"]
+      center: []
+      right: []
+```
+
+Keep your other widget names in those lists. Do not add a second top-level `widgets:` or `bars:` key to an existing config.
+
+## 3. Add styling
+
+Append to your Yasb `styles.css`:
+
+```css
+.leopardwm-workspaces .widget-container {
+    padding: 0 2px;
+}
+.leopardwm-workspaces .label {
+    padding: 0 5px;
+    color: #cdd6f4;
+    font-weight: bold;
+}
+.leopardwm-workspaces .label:hover {
+    color: #89b4fa;
+}
+```
+
+A strip might read `[1*] 2 3* 4 5 6 7 8 9`: brackets indicate the active workspace **on the selected monitor**, and `*` indicates at least one managed window. Hover shows the configured workspace name (or its number) and window count. Clicking a button selects that workspace on the explicit monitor, even if another monitor currently has focus. Command numbers are one-based; snapshot indices are zero-based. The click deliberately transfers focus to the target monitor.
+
+## Trade-offs and troubleshooting
+
+- This is a **polling recipe**, not a native Yasb integration. Each of the nine Custom widgets independently queries every five seconds (nine queries per interval per bar). Labels can lag a click or other change by up to an interval during normal operation, and buttons can briefly reflect different snapshots. Increase `run_interval` on the shared options to reduce polling. A first-class Yasb widget consuming `lwm subscribe --events workspace_state` would avoid repeated queries and update the strip atomically.
+- Custom widgets have one callback set per widget and cannot turn a returned JSON array into independently clickable buttons. Nine static widgets provide direct switching without a plugin. They do not provide GlazeWM/komorebi's dynamic active/occupied CSS classes or application icons; the text markers provide that state instead.
+- **Do not use `lwm subscribe` as `run_cmd`.** Yasb's Custom worker reads stdout to EOF and then parses one JSON value. A subscription never finishes normally, and `query workspaces` emits multiple JSON frames, so both need an appropriate adapter. `run_interval: 0` does not enable streaming.
+- The command uses PowerShell's `-Command & $env:APPDATA/...` with `use_shell: false`, not a quoted `-File` path: Yasb currently splits `run_cmd` on spaces before starting the process. This keeps the script path usable even when APPDATA contains spaces. `-ExecutionPolicy Bypass` applies only to this PowerShell process; it does not change the persisted execution policy. Organizational policy may still block scripts.
+- On failures the adapter prints `null`, which `hide_empty: true` hides. Yasb discards command stderr. Run the adapter manually to see its error: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:APPDATA\yasb\leopardwm-workspaces.ps1" -Monitor '\\.\DISPLAY1'`. Check that Yasb inherited the correct PATH and that the CLI and daemon support this query. Command/query timeouts can delay updates beyond the normal interval; Custom has no subprocess timeout of its own.
+- For multiple monitors, use separate widget names and a separate bar assignment per target, changing the monitor in both query and click commands. Do not reuse this DISPLAY1 strip on every monitor expecting Yasb to retarget it automatically. Reusing it still controls DISPLAY1.
+
+The adapter and YAML command arguments have been checked offline with synthetic CLI snapshots, including missing/offline state and a script path containing spaces. A live Yasb/LeopardWM run has **not** been verified.
+
+## Upstream references
+
+Checked against Yasb's current documentation and `main` source:
+
+- [Custom widget configuration](https://github.com/amnweb/yasb/wiki/%28Widget%29-Custom): JSON label templates, `exec_options`, and command callbacks.
+- [Custom widget implementation](https://github.com/amnweb/yasb/blob/main/src/core/widgets/yasb/custom.py) and [validation schema](https://github.com/amnweb/yasb/blob/main/src/core/validation/widgets/yasb/custom.py): stdout-to-EOF reading, JSON parsing, command splitting, and supported configuration fields.
+- [Bar configuration](https://github.com/amnweb/yasb/wiki/Configuration) and [base widget](https://github.com/amnweb/yasb/blob/main/src/core/widgets/base.py): widget lists, callback parsing, and CSS selectors.
+- [GlazeWM workspace widget](https://github.com/amnweb/yasb/blob/main/src/core/widgets/glazewm/workspaces.py) and [client](https://github.com/amnweb/yasb/blob/main/src/core/widgets/services/glazewm/client.py): WebSocket queries/subscriptions and workspace focus commands.
+- [Komorebi workspace widget](https://github.com/amnweb/yasb/blob/main/src/core/widgets/komorebi/workspaces.py), [event listener](https://github.com/amnweb/yasb/blob/main/src/core/widgets/services/komorebi/event_listener.py), and [client](https://github.com/amnweb/yasb/blob/main/src/core/widgets/services/komorebi/client.py): named-pipe state notifications, `komorebic state`, and targeted switching.
+
+For LeopardWM's snapshot fields, compatibility, and ownership rules, see the [IPC workspace-state contract](../agent_docs/ipc-events.md#complete-workspace-state). The polling adapter above supersedes that document's older Custom-widget subscription sketch, which is incompatible with Yasb's stdout-to-EOF worker.
