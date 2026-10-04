@@ -56,6 +56,9 @@ static HOOK_BINDS: std::sync::Mutex<Vec<HotkeyBind>> = std::sync::Mutex::new(Vec
 /// physical press and swallow auto-repeat, tracking each key independently so a
 /// second matched key held at the same time can't reset the first.
 static HOOK_HELD: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+// A hotkey consumed over the overview owns its repeats until key-up, even
+// if modifiers change and the next repeat would otherwise reach WM_KEYDOWN.
+static HOOK_OVERVIEW_HELD: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 /// Which F13–F24 keys any bind uses as a modifier (union of `fn_mods` across
 /// all binds). Keys in this mask are swallowed and tracked rather than passed
 /// through, so they act purely as modifiers and never reach the foreground app.
@@ -235,6 +238,26 @@ fn decide(
     Action::Pass
 }
 
+fn retain_overview_press(
+    msg: KeyMsg,
+    vk: u32,
+    action: Action,
+    overview_visible: bool,
+    owned_keys: &mut Vec<u32>,
+) -> Action {
+    if msg == KeyMsg::Up {
+        owned_keys.retain(|&key| key != vk);
+    } else if msg == KeyMsg::Down {
+        if owned_keys.contains(&vk) {
+            return Action::Swallow;
+        }
+        if overview_visible && matches!(action, Action::SwallowHotkey { .. }) {
+            owned_keys.push(vk);
+        }
+    }
+    action
+}
+
 /// Set whether the installed hook captures a single Settings recorder chord.
 pub fn set_recording(enabled: bool) {
     HOOK_RECORDING.store(enabled, Ordering::SeqCst);
@@ -281,6 +304,10 @@ impl Drop for KeyboardHookHandle {
         let mut held = HOOK_HELD.lock().unwrap_or_else(recover_poisoned_mutex);
         held.clear();
         drop(held);
+        HOOK_OVERVIEW_HELD
+            .lock()
+            .unwrap_or_else(recover_poisoned_mutex)
+            .clear();
         let mut mask = HOOK_FN_MOD_MASK
             .lock()
             .unwrap_or_else(recover_poisoned_mutex);
@@ -574,6 +601,23 @@ unsafe fn keyboard_ll_hook_inner(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> 
 }
 
 unsafe fn apply_action(action: Action, ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let msg = match wparam.0 as u32 {
+        WM_KEYDOWN | WM_SYSKEYDOWN => KeyMsg::Down,
+        WM_KEYUP | WM_SYSKEYUP => KeyMsg::Up,
+        _ => KeyMsg::Other,
+    };
+    let vk = (*(lparam.0 as *const KBDLLHOOKSTRUCT)).vkCode;
+    let overview_visible =
+        matches!(action, Action::SwallowHotkey { .. }) && crate::overview::is_visible();
+    let action = retain_overview_press(
+        msg,
+        vk,
+        action,
+        overview_visible,
+        &mut HOOK_OVERVIEW_HELD
+            .lock()
+            .unwrap_or_else(recover_poisoned_mutex),
+    );
     match action {
         Action::Pass | Action::RecordingControl => CallNextHookEx(None, ncode, wparam, lparam),
         Action::Swallow => LRESULT(1),
@@ -661,6 +705,100 @@ mod tests {
             win: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn overview_hotkey_press_owns_repeats_until_release() {
+        let modifiers = win_ctrl();
+        let binds = [bind(modifiers, 0x25), bind(Modifiers::alt(), 0x25)];
+        let mut owned = Vec::new();
+        let first = decide(
+            KeyMsg::Down,
+            0x25,
+            modifiers,
+            false,
+            &binds,
+            0,
+            0,
+            0,
+            true,
+            false,
+            None,
+        );
+        assert!(matches!(
+            retain_overview_press(KeyMsg::Down, 0x25, first, true, &mut owned),
+            Action::SwallowHotkey { emit: true, .. }
+        ));
+        for held in [modifiers, Modifiers::default(), Modifiers::alt()] {
+            let repeat = decide(
+                KeyMsg::Down,
+                0x25,
+                held,
+                false,
+                &binds,
+                0,
+                0,
+                0,
+                false,
+                false,
+                None,
+            );
+            assert!(matches!(
+                retain_overview_press(KeyMsg::Down, 0x25, repeat, true, &mut owned),
+                Action::Swallow
+                    | Action::SwallowHotkey {
+                        emit: false,
+                        start_menu_mask: false,
+                        ..
+                    }
+            ));
+        }
+        assert_eq!(
+            retain_overview_press(KeyMsg::Down, 0x25, Action::Pass, false, &mut owned),
+            Action::Swallow,
+            "closing the overview does not hand off a held press"
+        );
+        assert_eq!(
+            retain_overview_press(KeyMsg::Down, 0x27, Action::Pass, true, &mut owned),
+            Action::Pass,
+            "unrelated arrows still reach the window"
+        );
+        assert_eq!(
+            retain_overview_press(KeyMsg::Up, 0x25, Action::Pass, true, &mut owned),
+            Action::Pass
+        );
+        assert_eq!(
+            retain_overview_press(KeyMsg::Down, 0x25, Action::Pass, true, &mut owned),
+            Action::Pass,
+            "a fresh bare arrow works after release"
+        );
+        assert!(matches!(
+            retain_overview_press(KeyMsg::Down, 0x25, first, true, &mut owned),
+            Action::SwallowHotkey { emit: true, .. }
+        ));
+    }
+
+    #[test]
+    fn closed_overview_does_not_change_hotkey_repeat_policy() {
+        let mut owned = Vec::new();
+        let action = Action::SwallowHotkey {
+            event: HotkeyEvent { id: 123 },
+            emit: true,
+            start_menu_mask: false,
+        };
+        assert_eq!(
+            retain_overview_press(KeyMsg::Down, 0x25, action, false, &mut owned),
+            action
+        );
+        assert_eq!(
+            retain_overview_press(KeyMsg::Down, 0x25, Action::Pass, false, &mut owned),
+            Action::Pass
+        );
+        assert_eq!(
+            retain_overview_press(KeyMsg::Down, 0x25, Action::Pass, true, &mut owned),
+            Action::Pass,
+            "unmatched input is never claimed on open"
+        );
     }
 
     #[test]

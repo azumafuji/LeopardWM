@@ -1993,7 +1993,7 @@ async fn handle_hotkey_event(
             } else {
                 let is_resize = matches!(cmd, IpcCommand::Resize { .. });
                 let mut state = ctx.state.lock().await;
-                let response = state.handle_command(cmd);
+                let response = state.handle_hotkey_command(cmd);
                 if let IpcResponse::Error { message } = response {
                     warn!("Hotkey command failed: {}", message);
                 }

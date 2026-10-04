@@ -11,8 +11,8 @@
 use crate::state::AppState;
 use leopardwm_core_layout::{Rect, Visibility, Workspace};
 use leopardwm_platform_win32::overview::{
-    OverviewCard, OverviewModel, OverviewOverlay, OverviewRow, DEFAULT_ACCENT_BGR, PANEL_INNER_PAD,
-    SELECT_PAD, VIEWPORT_RING_PAD,
+    OverviewCard, OverviewDirection, OverviewModel, OverviewOverlay, OverviewRow,
+    DEFAULT_ACCENT_BGR, PANEL_INNER_PAD, SELECT_PAD, VIEWPORT_RING_PAD,
 };
 use tracing::{info, warn};
 
@@ -149,7 +149,36 @@ fn inset_card(r: &Rect) -> Rect {
     Rect::new(r.x + ix, r.y + iy, r.width - 2 * ix, r.height - 2 * iy)
 }
 
+fn overview_direction(command: &leopardwm_ipc::IpcCommand) -> Option<OverviewDirection> {
+    use leopardwm_ipc::IpcCommand;
+
+    match command {
+        IpcCommand::FocusLeft => Some(OverviewDirection::Left),
+        IpcCommand::FocusRight => Some(OverviewDirection::Right),
+        IpcCommand::FocusUp => Some(OverviewDirection::Up),
+        IpcCommand::FocusDown => Some(OverviewDirection::Down),
+        _ => None,
+    }
+}
+
 impl AppState {
+    pub(crate) fn handle_hotkey_command(
+        &mut self,
+        command: leopardwm_ipc::IpcCommand,
+    ) -> leopardwm_ipc::IpcResponse {
+        use leopardwm_ipc::IpcResponse;
+
+        if self.overview_open {
+            if let Some(direction) = overview_direction(&command) {
+                if let Some(overlay) = &self.overview_overlay {
+                    overlay.navigate(direction);
+                }
+                return IpcResponse::Ok;
+            }
+        }
+        self.handle_command(command)
+    }
+
     /// Build the overview display model for the focused monitor.
     ///
     /// Returns the overlay window rect (the monitor's work area) plus the
@@ -626,6 +655,76 @@ mod tests {
         for &wid in wids {
             ws.insert_window(wid, None).unwrap();
         }
+    }
+
+    #[test]
+    fn directional_hotkeys_route_exclusively_only_while_overview_is_open() {
+        for (binding, action, direction, start, destination) in [
+            (
+                "Ctrl+Alt+A",
+                "focus_left",
+                OverviewDirection::Left,
+                201,
+                101,
+            ),
+            ("F13+D", "focus_right", OverviewDirection::Right, 101, 201),
+            ("Win+K", "focus_up", OverviewDirection::Up, 102, 101),
+            ("Alt+J", "focus_down", OverviewDirection::Down, 101, 102),
+        ] {
+            let mut state = test_state();
+            let ws = state.ensure_workspace_exists(1, 0).unwrap();
+            ws.insert_window(101, None).unwrap();
+            ws.insert_window_in_column(102, 0).unwrap();
+            ws.insert_window(201, None).unwrap();
+            ws.focus_window(start).unwrap();
+            state.config.hotkeys.bindings.clear();
+            state
+                .config
+                .hotkeys
+                .bindings
+                .insert(binding.into(), action.into());
+            let resolved = crate::hotkey_resolution::resolve_hotkeys(&state.config.hotkeys);
+            assert!(resolved.issues.is_empty());
+            let command = resolved.bindings[0].command.clone();
+            assert_eq!(overview_direction(&command), Some(direction));
+
+            state.overview_open = true;
+            assert!(matches!(
+                state.handle_hotkey_command(command.clone()),
+                leopardwm_ipc::IpcResponse::Ok
+            ));
+            assert_eq!(
+                state.workspaces[&1][0].focused_window(),
+                Some(start),
+                "{binding} must not also focus the real workspace"
+            );
+            assert!(state.overview_open);
+
+            state.overview_open = false;
+            assert!(matches!(
+                state.handle_hotkey_command(command),
+                leopardwm_ipc::IpcResponse::Ok
+            ));
+            assert_eq!(
+                state.workspaces[&1][0].focused_window(),
+                Some(destination),
+                "{binding} keeps its normal action when closed"
+            );
+        }
+    }
+
+    #[test]
+    fn other_hotkey_actions_keep_their_normal_overview_behavior() {
+        let mut state = test_state();
+        add_windows(&mut state, 0, &[101, 102]);
+        state.workspaces.get_mut(&1).unwrap()[0]
+            .focus_window(101)
+            .unwrap();
+        state.overview_open = true;
+        state.handle_hotkey_command(leopardwm_ipc::IpcCommand::FocusNext);
+        assert_eq!(state.workspaces[&1][0].focused_window(), Some(102));
+        state.handle_hotkey_command(leopardwm_ipc::IpcCommand::ToggleOverview);
+        assert!(!state.overview_open);
     }
 
     #[test]

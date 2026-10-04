@@ -56,6 +56,29 @@ pub enum OverviewEvent {
     Dismissed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverviewDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl OverviewDirection {
+    fn key(self) -> u16 {
+        match self {
+            Self::Left => VK_LEFT.0,
+            Self::Right => VK_RIGHT.0,
+            Self::Up => VK_UP.0,
+            Self::Down => VK_DOWN.0,
+        }
+    }
+}
+
+pub(crate) fn is_visible() -> bool {
+    state().visible
+}
+
 /// One placeholder window card. Rects are overlay client coordinates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverviewCard {
@@ -236,6 +259,8 @@ const WM_QUIT_OVERVIEW_THREAD: u32 = WM_USER + 5;
 /// Posted (cross-thread) to start the zoom-animation timer: `SetTimer`
 /// must run on the overlay's own thread so WM_TIMER lands in its queue.
 const WM_OVERVIEW_START_ANIM: u32 = WM_USER + 6;
+
+const WM_OVERVIEW_NAVIGATE: u32 = WM_USER + 7;
 
 /// WM_TIMER id for the zoom-animation driver.
 const ANIM_TIMER_ID: usize = 1;
@@ -1284,6 +1309,17 @@ impl OverviewOverlay {
         sync_mask();
     }
 
+    pub fn navigate(&self, direction: OverviewDirection) {
+        unsafe {
+            let _ = PostMessageW(
+                Some(self.hwnd),
+                WM_OVERVIEW_NAVIGATE,
+                WPARAM(usize::from(direction.key())),
+                LPARAM(0),
+            );
+        }
+    }
+
     /// Replace the displayed model in place (overlay stays visible).
     /// Strict no-op while the window is hidden or a close animation is
     /// in flight (see [`apply_model_update`]).
@@ -2102,6 +2138,12 @@ unsafe extern "system" fn overview_wnd_proc(
         }
         WM_PAINT => {
             paint_frame(hwnd);
+            LRESULT(0)
+        }
+        WM_OVERVIEW_NAVIGATE => {
+            if state().visible {
+                handle_key_down(hwnd, wparam.0 as u16);
+            }
             LRESULT(0)
         }
         WM_KEYDOWN => {
@@ -3810,6 +3852,41 @@ unsafe fn draw_card_compact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directional_navigation_uses_arrow_selection_rules() {
+        let mut model = glide_model(0);
+        model.rows[0].cards[0].rect = Rect::new(0, 0, 100, 100);
+        let mut right = model.rows[0].cards[0].clone();
+        right.window_id = 8;
+        right.rect.x = 200;
+        model.rows[0].cards.push(right);
+        let mut row = model.rows[0].clone();
+        row.workspace_index = 2;
+        row.is_active = false;
+        for card in &mut row.cards {
+            card.window_id += 10;
+            card.rect.y = 200;
+        }
+        model.rows.push(row);
+        for translated in [false, true] {
+            let mut s = overlay_state(model.clone());
+            s.selected = Some((0, 0));
+            for (direction, arrow, expected) in [
+                (OverviewDirection::Right, VK_RIGHT.0, 8),
+                (OverviewDirection::Down, VK_DOWN.0, 18),
+                (OverviewDirection::Left, VK_LEFT.0, 17),
+                (OverviewDirection::Up, VK_UP.0, 7),
+            ] {
+                assert!(s.move_selection(if translated { direction.key() } else { arrow }));
+                assert_eq!(s.selection_window_id(), Some(expected));
+                assert!(s.visible);
+            }
+            assert!(!s.move_selection(VK_LEFT.0));
+            assert!(!s.move_selection(VK_UP.0));
+            assert_eq!(s.selection_window_id(), Some(7));
+        }
+    }
 
     #[test]
     fn test_thumb_body_titled_card_insets_below_title_strip() {
