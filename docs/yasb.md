@@ -6,7 +6,7 @@ Use a matching LeopardWM CLI and daemon with `lwm query workspaces` support (int
 
 ## 1. Save the query adapter
 
-Create `%APPDATA%\yasb\leopardwm-workspaces.ps1` with the following content. It converts the CLI's newline-delimited snapshot into the single JSON value Yasb expects. Only a successfully completed query is displayed; an unavailable daemon, unsupported query, or missing monitor hides the buttons instead of displaying stale state.
+Create `%APPDATA%\yasb\leopardwm-workspaces.ps1` with the following content. It converts the CLI's newline-delimited snapshot into the single JSON value Yasb expects. Only a successfully completed query is displayed as workspace state. If the adapter runs but the daemon is unavailable, the query is unsupported, or the monitor is missing, it returns nine `?` labels with a "LeopardWM unavailable" tooltip instead of stale workspace state. This deliberately keeps the buttons visible; it does not rely on Yasb hiding empty output.
 
 ```powershell
 param(
@@ -59,7 +59,13 @@ try {
     ConvertTo-Json -InputObject $items -Compress
 } catch {
     [Console]::Error.WriteLine($_.Exception.Message)
-    'null'
+    $unavailable = @(1..9 | ForEach-Object {
+        [pscustomobject]@{
+            label = '?'
+            tooltip = "LeopardWM unavailable on $Monitor"
+        }
+    })
+    ConvertTo-Json -InputObject $unavailable -Compress
     exit 1
 }
 ```
@@ -87,7 +93,7 @@ widgets:
         run_interval: 5000
         run_once: false
         return_format: "json"
-        hide_empty: true
+        hide_empty: false
         use_shell: false
         encoding: "utf-8"
       callbacks:
@@ -192,7 +198,7 @@ A strip might read `[1*] 2 3* 4 5 6 7 8 9`: brackets indicate the active workspa
 - Custom widgets have one callback set per widget and cannot turn a returned JSON array into independently clickable buttons. Nine static widgets provide direct switching without a plugin. They do not provide GlazeWM/komorebi's dynamic active/occupied CSS classes or application icons; the text markers provide that state instead.
 - **Do not use `lwm subscribe` as `run_cmd`.** Yasb's Custom worker reads stdout to EOF and then parses one JSON value. A subscription never finishes normally, and `query workspaces` emits multiple JSON frames, so both need an appropriate adapter. `run_interval: 0` does not enable streaming.
 - The command uses PowerShell's `-Command & $env:APPDATA/...` with `use_shell: false`, not a quoted `-File` path: Yasb currently splits `run_cmd` on spaces before starting the process. This keeps the script path usable even when APPDATA contains spaces. `-ExecutionPolicy Bypass` applies only to this PowerShell process; it does not change the persisted execution policy. Organizational policy may still block scripts.
-- On failures the adapter prints `null`, which `hide_empty: true` hides. Yasb discards command stderr. Run the adapter manually to see its error: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:APPDATA\yasb\leopardwm-workspaces.ps1" -Monitor '\\.\DISPLAY1'`. Check that Yasb inherited the correct PATH and that the CLI and daemon support this query. Command/query timeouts can delay updates beyond the normal interval; Custom has no subprocess timeout of its own.
+- On caught failures the adapter prints a valid nine-element JSON array of `?` labels and "LeopardWM unavailable" tooltips, writes a diagnostic to stderr, and exits 1. Yasb's [`CustomWorker.run`](https://github.com/amnweb/yasb/blob/main/src/core/widgets/yasb/custom.py) parses stdout with `json.loads` and emits the result without checking the process exit code; stderr is discarded. `_handle_exec_data` replaces the previous data, then `_update_label` formats the labels. Empty stdout becomes `None`, and JSON `null` also becomes `None`; with these indexed templates, formatting fails before the `hide_empty` check and the exception handler displays the literal template instead of hiding the button. The adapter therefore supplies renderable failure data, with `hide_empty: false`. If PowerShell or the script cannot start at all, or no worker result arrives, this fallback cannot run: Yasb may retain its startup placeholder or previous label, so those labels are not a liveness guarantee. Run the adapter manually to see its error: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:APPDATA\yasb\leopardwm-workspaces.ps1" -Monitor '\\.\DISPLAY1'`. Check that Yasb inherited the correct PATH and that the CLI and daemon support this query. Command/query timeouts can delay updates beyond the normal interval; Custom has no subprocess timeout of its own.
 - For multiple monitors, use separate widget names and a separate bar assignment per target, changing the monitor in both query and click commands. Do not reuse this DISPLAY1 strip on every monitor expecting Yasb to retarget it automatically. Reusing it still controls DISPLAY1.
 
 The adapter and YAML command arguments have been checked offline with synthetic CLI snapshots, including missing/offline state and a script path containing spaces. A live Yasb/LeopardWM run has **not** been verified.
