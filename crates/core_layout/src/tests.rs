@@ -4451,6 +4451,76 @@ mod tests {
     }
 
     #[test]
+    fn test_cycle_height_wrap_progresses_after_sibling_cap() {
+        let cases: &[(u64, &[f64], &[f64])] = &[
+            (
+                8,
+                &[0.333, 0.5, 0.667],
+                &[0.333, 0.5, 0.65, 0.333, 0.5, 0.65, 0.333],
+            ),
+            (
+                4,
+                &[0.333, 0.5, 0.667, 0.9],
+                &[0.333, 0.5, 0.667, 0.85, 0.333, 0.5, 0.667, 0.85, 0.333],
+            ),
+            (
+                2,
+                &[0.25, 0.5, 1.0],
+                &[0.95, 0.25, 0.5, 0.95, 0.25, 0.5, 0.95, 0.25],
+            ),
+        ];
+        let mut failures = Vec::new();
+        for &(windows, presets, expected_weights) in cases {
+            let mut ws = Workspace::with_gaps(0, 0);
+            ws.insert_window(1, Some(800)).unwrap();
+            for window in 2..=windows {
+                ws.insert_window_in_column(window, 0).unwrap();
+            }
+            ws.set_focus(0, 0).unwrap();
+            for (step, &expected) in expected_weights.iter().enumerate() {
+                ws.cycle_height(presets);
+                let actual = ws.columns()[0].height_weights()[0];
+                if (actual - expected).abs() >= 1e-9 {
+                    failures.push(format!(
+                        "windows={windows}, step={step}: expected {expected}, got {actual}"
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn test_cycle_height_up_still_stops_at_sibling_cap() {
+        let cases: &[(u64, &[f64], usize, f64)] = &[
+            (8, &[0.333, 0.5, 0.667], 3, 0.65),
+            (4, &[0.333, 0.5, 0.667, 0.9], 4, 0.85),
+            (2, &[0.25, 0.5, 1.0], 1, 0.95),
+        ];
+        for &(windows, presets, steps, cap) in cases {
+            let mut ws = Workspace::with_gaps(0, 0);
+            ws.insert_window(1, Some(800)).unwrap();
+            for window in 2..=windows {
+                ws.insert_window_in_column(window, 0).unwrap();
+            }
+            ws.set_focus(0, 0).unwrap();
+            for _ in 0..steps {
+                ws.cycle_height_up(presets);
+            }
+            let capped = ws.columns()[0].height_weights().to_vec();
+            assert!((capped[0] - cap).abs() < 1e-9, "windows={windows}");
+            for _ in 0..3 {
+                ws.cycle_height_up(presets);
+                assert_eq!(
+                    ws.columns()[0].height_weights(),
+                    capped,
+                    "windows={windows}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_cycle_height_wrap_noop_cases() {
         let mut ws = Workspace::with_gaps(0, 0);
         ws.insert_window(1, Some(800)).unwrap();

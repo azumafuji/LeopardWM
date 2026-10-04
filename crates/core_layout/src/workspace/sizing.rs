@@ -548,8 +548,15 @@ impl Workspace {
         col.ensure_height_weights();
         let current_weight = col.height_weights[win_idx];
 
+        let wrapping = matches!(cycle, PresetCycle::Wrap);
         if let Some(frac) = cycle_preset(presets, current_weight, cycle) {
             col.set_height_weight(win_idx, frac);
+            if wrapping && frac > current_weight && col.height_weights[win_idx] <= current_weight {
+                // A larger preset can clamp back to the sibling ceiling instead of advancing.
+                if let Some(smallest) = cycle_preset(presets, f64::INFINITY, PresetCycle::Wrap) {
+                    col.set_height_weight(win_idx, smallest);
+                }
+            }
         }
     }
 
