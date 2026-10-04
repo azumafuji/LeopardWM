@@ -1473,12 +1473,14 @@ impl OverviewOverlay {
         if !is_input_session_current(generation) {
             return;
         }
-        if !state().complete_window_move(model, wid, generation) {
+        let Some(repaint) = state().complete_window_move(model, wid, generation) else {
             return;
+        };
+        if repaint {
+            sync_thumbnails(self.hwnd);
+            render_overlay(self.hwnd);
+            sync_mask();
         }
-        sync_thumbnails(self.hwnd);
-        render_overlay(self.hwnd);
-        sync_mask();
         unsafe {
             if let Err(error) = PostMessageW(
                 Some(self.hwnd),
@@ -2100,15 +2102,21 @@ impl OverviewState {
             .map(OverviewEvent::ActivateWindow)
     }
 
-    fn complete_window_move(&mut self, model: OverviewModel, wid: u64, generation: u32) -> bool {
+    fn complete_window_move(
+        &mut self,
+        model: OverviewModel,
+        wid: u64,
+        generation: u32,
+    ) -> Option<bool> {
         if self.input_generation != Some(generation) || is_closing_state(self) || !self.pending_move
         {
-            return false;
+            return None;
         }
-        apply_model_update(self, model);
+        let previous_selection = self.selected;
+        let model_changed = apply_model_update(self, model);
         self.selected = locate_card(&self.model, wid).or(self.selected);
         self.pending_move = false;
-        true
+        Some(model_changed || self.selected != previous_selection)
     }
 
     fn handle_input(&mut self, vk: u16) -> OverviewInputResult {
@@ -4286,7 +4294,7 @@ mod tests {
                 let mut escape = Some(VK_ESCAPE.0);
                 assert_eq!(s.next_input(&mut escape), Some(OverviewInputResult::Close));
             }
-            assert_eq!(s.complete_window_move(model, 7, 1), !cancel);
+            assert_eq!(s.complete_window_move(model, 7, 1).is_some(), !cancel);
             assert_eq!(
                 s.next_deferred_input(),
                 if cancel {
@@ -4296,7 +4304,7 @@ mod tests {
                 }
             );
             assert_eq!(s.next_deferred_input(), None);
-            assert!(!s.complete_window_move(s.model.clone(), 7, 1));
+            assert!(!s.complete_window_move(s.model.clone(), 7, 1).is_some());
         }
     }
 
@@ -4315,6 +4323,35 @@ mod tests {
     }
 
     #[test]
+    fn move_completion_repaints_only_model_or_selection_changes() {
+        for (model_changed, selection_changed, repaint) in [
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+        ] {
+            let mut s = three_card_state();
+            assert!(matches!(
+                s.handle_input(OVERVIEW_MOVE_UP),
+                OverviewInputResult::Event(_)
+            ));
+            if selection_changed {
+                s.selected = Some((0, 1));
+            }
+            let mut completion = s.model.clone();
+            if model_changed {
+                completion.rows[0].cards[0].title = "Updated title".into();
+            }
+            assert_eq!(s.complete_window_move(completion, 7, 1), Some(repaint));
+            assert!(!s.pending_move);
+            assert_eq!(s.selection_window_id(), Some(7));
+            assert_eq!(
+                s.handle_input(VK_RETURN.0),
+                OverviewInputResult::Event(OverviewEvent::ActivateWindow(7))
+            );
+        }
+    }
+
+    #[test]
     fn completion_replay_uses_newer_model_membership() {
         let mut s = three_card_state();
         assert!(matches!(
@@ -4325,7 +4362,7 @@ mod tests {
         assert_eq!(s.handle_input(VK_RETURN.0), OverviewInputResult::Consumed);
         let mut completion = s.model.clone();
         completion.rows[0].workspace_index = 1;
-        assert!(s.complete_window_move(completion.clone(), 7, 1));
+        assert!(s.complete_window_move(completion.clone(), 7, 1).is_some());
         let mut newer = completion;
         newer.rows[0].cards.remove(1);
         assert!(apply_model_update(&mut s, newer));
@@ -4368,7 +4405,7 @@ mod tests {
                 );
             }
             assert_eq!(s.handle_input(VK_RETURN.0), OverviewInputResult::Consumed);
-            assert!(s.complete_window_move(s.model.clone(), 7, 1));
+            assert!(s.complete_window_move(s.model.clone(), 7, 1).is_some());
             let mut input = Some(VK_LEFT.0);
             let mut replayed = Vec::new();
             while let Some(result) = s.next_input(&mut input) {
@@ -4387,7 +4424,7 @@ mod tests {
                         OverviewInputResult::Consumed
                     ]
                 );
-                assert!(s.complete_window_move(s.model.clone(), 8, 1));
+                assert!(s.complete_window_move(s.model.clone(), 8, 1).is_some());
                 while let Some(result) = s.next_input(&mut input) {
                     replayed.push(result);
                 }
@@ -4452,7 +4489,7 @@ mod tests {
                 let moved = refreshed.rows[0].cards.remove(0);
                 refreshed.rows[1].cards.insert(0, moved);
             }
-            assert!(s.complete_window_move(refreshed, 7, 1));
+            assert!(s.complete_window_move(refreshed, 7, 1).is_some());
             assert_eq!(s.next_deferred_input(), Some(OverviewInputResult::Repaint));
             assert_eq!(
                 s.next_deferred_input(),
@@ -4485,7 +4522,9 @@ mod tests {
         session.release();
         assert_eq!(s.handle_input(VK_ESCAPE.0), OverviewInputResult::Close);
         assert!(!session.is_current(generation));
-        assert!(!s.complete_window_move(glide_model(1), 7, generation));
+        assert!(!s
+            .complete_window_move(glide_model(1), 7, generation)
+            .is_some());
         assert_eq!(s.model, before);
         assert_eq!(s.selection_window_id(), Some(7));
         assert_eq!(s.next_deferred_input(), None);
@@ -4525,11 +4564,11 @@ mod tests {
         let before = s.model.clone();
         assert!(!session.is_current(old));
         assert!(session.is_current(new));
-        assert!(!s.complete_window_move(glide_model(1), 7, old));
+        assert!(!s.complete_window_move(glide_model(1), 7, old).is_some());
         assert_eq!(s.model, before);
         assert_eq!(s.selection_window_id(), Some(8));
         assert_eq!(s.next_deferred_input(), None);
-        assert!(s.complete_window_move(before, 8, new));
+        assert!(s.complete_window_move(before, 8, new).is_some());
         assert_eq!(
             s.next_deferred_input(),
             Some(OverviewInputResult::Event(OverviewEvent::ActivateWindow(8)))
@@ -4559,7 +4598,7 @@ mod tests {
         ] {
             assert_eq!(s.handle_input(key), OverviewInputResult::Consumed);
         }
-        assert!(s.complete_window_move(s.model.clone(), 7, 1));
+        assert!(s.complete_window_move(s.model.clone(), 7, 1).is_some());
         assert_eq!(s.next_deferred_input(), Some(OverviewInputResult::Repaint));
         assert_eq!(
             s.next_deferred_input(),
@@ -4570,7 +4609,7 @@ mod tests {
             }))
         );
         assert_eq!(s.next_deferred_input(), None);
-        assert!(s.complete_window_move(s.model.clone(), 8, 1));
+        assert!(s.complete_window_move(s.model.clone(), 8, 1).is_some());
         assert_eq!(
             s.next_deferred_input(),
             Some(OverviewInputResult::Event(OverviewEvent::ActivateWindow(8)))
