@@ -12853,28 +12853,42 @@ fn test_new_window_monitor_reload_preserves_members_and_changes_next_admission()
 }
 
 #[test]
-fn test_new_window_monitor_enumeration_policy() {
+fn test_new_window_monitor_enumeration_preserves_discovered_placement() {
     for action in [
         crate::config::WindowAction::Tile,
         crate::config::WindowAction::Float,
     ] {
-        let mut config = test_config();
-
-        config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
-        config.window_rules = vec![crate::config::WindowRule {
-            match_class: Some("TestWindowClass".to_string()),
-            action,
-            ..Default::default()
-        }];
-        let mut state = new_window_monitor_state(config);
-        state.focused_monitor = 1;
-        let mut info = make_test_window_info(100);
-        info.rect = Rect::new(2200, 100, 800, 600);
-        state.injected_enumerated_windows = Some(vec![info]);
-        assert_eq!(state.enumerate_and_add_windows().unwrap(), 1);
-        state.apply_layout().unwrap();
-        assert_eq!(state.find_window_workspace(100), Some((1, 0)));
-        assert!(state.monitors[&1].contains_rect_center(&state.last_placed_layout_rects[&100]));
+        for open_on_workspace in [None, Some(4)] {
+            for rect in [
+                Rect::new(2200, 100, 800, 600),
+                Rect::new(2000, -100, 2400, 1800),
+            ] {
+                let mut config = test_config();
+                config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+                config.window_rules = vec![crate::config::WindowRule {
+                    match_class: Some("TestWindowClass".to_string()),
+                    action,
+                    open_on_workspace,
+                    ..Default::default()
+                }];
+                let mut state = new_window_monitor_state(config);
+                state.focused_monitor = 1;
+                state.ensure_workspace_exists(2, 2);
+                state.active_workspace.insert(2, 2);
+                let mut info = make_test_window_info(100);
+                info.rect = rect;
+                state.injected_enumerated_windows = Some(vec![info]);
+                assert_eq!(state.enumerate_and_add_windows().unwrap(), 1);
+                assert_eq!(state.find_window_workspace(100), Some((2, 2)));
+                state.apply_layout().unwrap();
+                let placed = state.last_placed_layout_rects[&100];
+                if action == crate::config::WindowAction::Float {
+                    assert_eq!(placed, rect);
+                } else {
+                    assert!(state.monitors[&2].contains_rect_center(&placed));
+                }
+            }
+        }
     }
 }
 

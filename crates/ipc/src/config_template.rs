@@ -65,8 +65,9 @@ center_single_column = false
 # Automatically focus new windows when they appear
 focus_new_windows = true
 
-# New windows use the "opening" monitor (default), or the "focused" monitor.
-# Workspace rules select the workspace index on that monitor.
+# Windows opening while LeopardWM runs use "opening" (default) or "focused".
+# Already-open windows discovered at startup or reload/rescan keep their placement.
+# Workspace rules select the workspace index on that monitor for live openings.
 # Sticky windows keep their existing placement.
 new_window_monitor = "opening"
 

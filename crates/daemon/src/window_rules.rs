@@ -193,7 +193,6 @@ impl AppState {
                 .map(|rule| rule.action)
                 .unwrap_or(config::WindowAction::Tile);
             let rule_matched = matched.is_some();
-            let sticky = matched.is_some_and(|rule| rule.sticky);
 
             if action == config::WindowAction::Ignore {
                 debug!(
@@ -206,19 +205,18 @@ impl AppState {
             // Windows restored from the persisted snapshot are already managed
             // (placed by restore_workspace_structure before this enumerate) and
             // get skipped below.
-            let opening_monitor = find_monitor_for_rect(&monitors, &win_info.rect)
+            let monitor_id = find_monitor_for_rect(&monitors, &win_info.rect)
                 .map(|m| m.id)
                 .unwrap_or(self.focused_monitor);
-            let preferred_monitor = self.preferred_new_window_monitor(sticky);
-            let monitor_id = preferred_monitor.unwrap_or(opening_monitor);
 
             // Get floating rect before borrowing workspace mutably (to avoid borrow conflict)
             let floating_rect = if action == config::WindowAction::Float {
-                Some(self.floating_rect_for_admission(
-                    &win_info,
+                Some(self.get_floating_rect_from_rules(
+                    &win_info.class_name,
+                    &win_info.title,
                     &executable,
-                    monitor_id,
-                    preferred_monitor.is_some(),
+                    &win_info.rect,
+                    Some(monitor_id),
                 ))
             } else {
                 None
