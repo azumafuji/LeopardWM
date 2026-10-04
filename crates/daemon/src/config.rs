@@ -742,6 +742,10 @@ pub struct GestureConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
+    /// Detect swipes delivered as injected wheel events by touchpad or mouse drivers.
+    #[serde(default = "default_true")]
+    pub wheel_swipes: bool,
+
     /// Use native Precision Touchpad Raw Input for three-finger swipes.
     /// Takes effect on daemon restart; the wheel hook remains the fallback.
     #[serde(default, skip_serializing_if = "is_false_bool")]
@@ -831,6 +835,7 @@ impl Default for GestureConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            wheel_swipes: true,
             raw_input: false,
             swipe_left: default_swipe_left(),
             swipe_right: default_swipe_right(),
@@ -2517,6 +2522,34 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|w| w.field == "gestures.diagnostic_capture_secs"));
+    }
+
+    #[test]
+    fn wheel_swipes_setting_defaults_on_and_round_trips() {
+        for source in ["", "[gestures]\nenabled = true\n"] {
+            let config: Config = toml::from_str(source).unwrap();
+            assert_eq!(
+                serde_json::to_value(&config).unwrap()["gestures"]["wheel_swipes"],
+                true
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(Config::default()).unwrap()["gestures"]["wheel_swipes"],
+            true
+        );
+        for enabled in [false, true] {
+            let config: Config =
+                toml::from_str(&format!("[gestures]\nwheel_swipes = {enabled}\n")).unwrap();
+            let saved = toml::to_string(&config).unwrap();
+            let restored: Config = toml::from_str(&saved).unwrap();
+            let json = serde_json::to_value(&restored).unwrap();
+            assert_eq!(json["gestures"]["wheel_swipes"], enabled);
+            let from_settings: Config = serde_json::from_value(json).unwrap();
+            assert_eq!(
+                serde_json::to_value(from_settings).unwrap()["gestures"]["wheel_swipes"],
+                enabled
+            );
+        }
     }
 
     #[test]

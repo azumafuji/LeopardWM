@@ -116,6 +116,7 @@ focus_follows_mouse = false
 [hotkeys]
 {hotkeys}
 [gestures]
+# wheel_swipes = true  # Disable wheel-based swipes without disabling modifier+wheel or native swipes.
 # raw_input = false  # Opt in to native Precision Touchpad swipes; restart required.
 # Requires Windows three- and four-finger touchpad gestures set to Nothing.
 # Touchpad gesture support

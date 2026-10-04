@@ -416,6 +416,7 @@ static GESTURE_SENDER: std::sync::Mutex<Option<mpsc::Sender<GestureEvent>>> =
 /// Initialized to `None`; `register_gestures()` sets it to `Some(...)`.
 static GESTURE_STATE: std::sync::Mutex<Option<GestureAccumState>> = std::sync::Mutex::new(None);
 static RAW_GESTURES_ACTIVE: AtomicBool = AtomicBool::new(false);
+static WHEEL_SWIPES_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// Handle for gesture detection.
 ///
@@ -485,6 +486,12 @@ pub fn set_scroll_modifier(modifier_str: &str) {
         modifier_str,
         flags
     );
+}
+
+/// Enable or disable wheel-based swipes without changing modifier navigation
+/// or native Precision Touchpad input. Takes effect without re-registering hooks.
+pub fn set_wheel_swipes(enabled: bool) {
+    WHEEL_SWIPES_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 /// Register a low-level mouse hook for gesture detection via wheel events.
@@ -739,8 +746,8 @@ fn emit_wheel_diagnostics_active(
     }
 }
 
-fn wheel_swipe_candidate(flags: u32, native_active: bool) -> bool {
-    flags & LLMHF_INJECTED != 0 && !native_active
+fn wheel_swipe_candidate(flags: u32, native_active: bool, wheel_swipes: bool) -> bool {
+    wheel_swipes && flags & LLMHF_INJECTED != 0 && !native_active
 }
 
 /// Low-level mouse hook callback for gesture detection.
@@ -767,6 +774,7 @@ unsafe extern "system" fn gesture_mouse_hook_proc(
             let swipe_candidate = wheel_swipe_candidate(
                 mouse_struct.flags,
                 RAW_GESTURES_ACTIVE.load(Ordering::Acquire),
+                WHEEL_SWIPES_ENABLED.load(Ordering::Relaxed),
             );
 
             let mut state_guard = GESTURE_STATE.lock().unwrap_or_else(recover_poisoned_mutex);
@@ -853,9 +861,9 @@ mod tests {
 
     #[test]
     fn native_backend_prevents_duplicate_wheel_swipes() {
-        assert!(wheel_swipe_candidate(LLMHF_INJECTED, false));
-        assert!(!wheel_swipe_candidate(LLMHF_INJECTED, true));
-        assert!(!wheel_swipe_candidate(0, false));
+        assert!(wheel_swipe_candidate(LLMHF_INJECTED, false, true));
+        assert!(!wheel_swipe_candidate(LLMHF_INJECTED, true, true));
+        assert!(!wheel_swipe_candidate(0, false, true));
     }
 
     static DIAGNOSTIC_GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -891,6 +899,52 @@ mod tests {
             flags,
             mods_held,
             swipe_candidate: flags & LLMHF_INJECTED != 0,
+        }
+    }
+
+    #[test]
+    fn wheel_swipes_switch_preserves_passthrough_and_modifier_navigation() {
+        for axis in [WheelAxis::Horizontal, WheelAxis::Vertical] {
+            for delta in [-120, 120] {
+                for enabled in [false, true] {
+                    let mut engine = WheelGestureEngine::new();
+                    let candidate = wheel_swipe_candidate(LLMHF_INJECTED, false, enabled);
+                    assert_eq!(candidate, enabled);
+                    for index in 0..3 {
+                        let result = engine.process(WheelGestureInput {
+                            swipe_candidate: candidate,
+                            ..input(index * 10, axis, delta, false, LLMHF_INJECTED)
+                        });
+                        let expected = if enabled && index == 2 {
+                            Some(match (axis, delta > 0) {
+                                (WheelAxis::Horizontal, false) => GestureEvent::SwipeLeft,
+                                (WheelAxis::Horizontal, true) => GestureEvent::SwipeRight,
+                                (WheelAxis::Vertical, false) => GestureEvent::SwipeUp,
+                                (WheelAxis::Vertical, true) => GestureEvent::SwipeDown,
+                            })
+                        } else {
+                            None
+                        };
+                        assert_eq!(result.event, expected);
+                        assert!(!result.consume);
+                        if !enabled {
+                            assert_eq!(result.trace.classifier, Some(ClassifierKind::Reject));
+                        }
+                    }
+                }
+            }
+        }
+        let mut engine = WheelGestureEngine::new();
+        for (now_ms, delta, expected) in [
+            (0, 120, GestureEvent::ScrollUp),
+            (100, -120, GestureEvent::ScrollDown),
+        ] {
+            let result = engine.process(WheelGestureInput {
+                swipe_candidate: wheel_swipe_candidate(LLMHF_INJECTED, false, false),
+                ..input(now_ms, WheelAxis::Vertical, delta, true, LLMHF_INJECTED)
+            });
+            assert_eq!(result.event, Some(expected));
+            assert!(result.consume);
         }
     }
 

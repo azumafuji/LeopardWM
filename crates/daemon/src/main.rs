@@ -1432,6 +1432,7 @@ fn setup_gestures(
     let (handle, registration_error, raw_input_error) = if config.gestures.enabled {
         // Set scroll modifier before registering the hook
         leopardwm_platform_win32::set_scroll_modifier(&config.hotkeys.scroll_modifier);
+        leopardwm_platform_win32::set_wheel_swipes(config.gestures.wheel_swipes);
 
         match register_gestures_with_raw_input(config.gestures.raw_input) {
             Ok((handle, gesture_receiver, raw_input_error)) => {

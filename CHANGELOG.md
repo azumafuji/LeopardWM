@@ -7,6 +7,7 @@ All notable changes to LeopardWM will be documented in this file.
 ### Features
 
 - **The only active tiled column can now stay centered when it fits in the viewport.** Enable `center_single_column = true` under `[layout]` or Settings → Layout → Center single column; it is off by default. (#86)
+- **Side scroll wheels and other wheel-based swipes can now be turned off without disabling native touchpad swipes.** Set `wheel_swipes = false` under `[gestures]` or turn off Settings → Gestures → Wheel-based swipes; it is on by default. (#107)
 
 ### Fixes
 

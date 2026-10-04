@@ -182,6 +182,7 @@ impl AppState {
 
         // Update scroll modifier for the gesture hook
         leopardwm_platform_win32::set_scroll_modifier(&self.config.hotkeys.scroll_modifier);
+        leopardwm_platform_win32::set_wheel_swipes(self.config.gestures.wheel_swipes);
 
         self.refresh_high_contrast();
 

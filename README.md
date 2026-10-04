@@ -350,8 +350,18 @@ they are inactive.
 Set the Windows three- and four-finger touchpad gestures to Nothing under
 Settings > Bluetooth & devices > Touchpad, or Windows will consume the swipe.
 The existing mouse hook still handles modifier-plus-scroll; if native
-registration or device capability checks fail, wheel-based swipes remain active.
+registration or device capability checks fail, wheel-based swipes remain active
+when `wheel_swipes` is enabled.
 Raw Input compatibility varies by device.
+
+`wheel_swipes = true` under `[gestures]` is the default. Set it to `false` (or turn
+off Settings > Gestures > Wheel-based swipes) to stop injected wheel events from
+navigating windows, including mouse side wheels such as the MX Master. This
+applies live on config reload; wheel events still reach the application, and
+modifier-plus-wheel navigation is unchanged. Non-Precision touchpads that send
+swipes as wheel events lose those swipes with it off. Precision Touchpads can
+keep native swipes with `raw_input = true`. `enabled = false` still disables all
+gesture support.
 
 Failed physical gestures are diagnosed with an opt-in, short capture — not by leaving general logging at TRACE. Capture is **default off**; turning it on does not change gesture behavior.
 

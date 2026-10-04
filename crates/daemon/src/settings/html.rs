@@ -1247,6 +1247,10 @@ input[type="range"]::-webkit-slider-thumb {
             <label class="toggle"><input type="checkbox" id="gestures-enabled"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
+            <div class="field-info"><div class="field-label">Wheel-based swipes</div><div class="field-desc">Detect swipes from touchpad drivers and mouse side wheels. When off, Precision Touchpads can keep swipes through the native option below.</div></div>
+            <label class="toggle"><input type="checkbox" id="gestures-wheel_swipes"><span class="track"></span><span class="thumb"></span></label>
+          </div>
+          <div class="field">
             <div class="field-info"><div class="field-label">Native three-finger swipes</div><div class="field-desc">Use Precision Touchpad Raw Input. Set Windows three- and four-finger touchpad gestures to Nothing. Experimental; restart LeopardWM after changing.</div></div>
             <label class="toggle"><input type="checkbox" id="gestures-raw_input"><span class="track"></span><span class="thumb"></span></label>
           </div>
@@ -1606,6 +1610,7 @@ function init(cfg) {
   if (cfg.window_rules) { cfg.window_rules.forEach(function(r) { addRuleRow(r); }); }
 
   setChecked('gestures-enabled', cfg.gestures.enabled);
+  setChecked('gestures-wheel_swipes', cfg.gestures.wheel_swipes !== false);
   setChecked('gestures-raw_input', cfg.gestures.raw_input === true);
   setCb('cb-gestures-swipe_left', cfg.gestures.swipe_left, true);
   setCb('cb-gestures-swipe_right', cfg.gestures.swipe_right, true);
@@ -2240,6 +2245,7 @@ function readConfig() {
     window_rules: readRules(),
     gestures: {
       enabled: checked('gestures-enabled'),
+      wheel_swipes: checked('gestures-wheel_swipes'),
       raw_input: checked('gestures-raw_input'),
       swipe_left: cbVal('cb-gestures-swipe_left'), swipe_right: cbVal('cb-gestures-swipe_right'),
       swipe_up: cbVal('cb-gestures-swipe_up'), swipe_down: cbVal('cb-gestures-swipe_down'),
@@ -2472,6 +2478,14 @@ mod tests {
         assert!(SETTINGS_HTML
             .contains("setChecked('gestures-raw_input', cfg.gestures.raw_input === true)"));
         assert!(SETTINGS_HTML.contains("raw_input: checked('gestures-raw_input')"));
+    }
+
+    #[test]
+    fn wheel_swipes_settings_control_loads_and_saves() {
+        assert!(SETTINGS_HTML.contains("type=\"checkbox\" id=\"gestures-wheel_swipes\""));
+        assert!(SETTINGS_HTML
+            .contains("setChecked('gestures-wheel_swipes', cfg.gestures.wheel_swipes !== false)"));
+        assert!(SETTINGS_HTML.contains("wheel_swipes: checked('gestures-wheel_swipes')"));
     }
 
     #[test]
