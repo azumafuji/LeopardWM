@@ -74,6 +74,7 @@ focus_new_windows = true
 new_window_monitor = "opening"
 
 # Track focus changes from Windows (sync with Alt-Tab, etc.)
+# Changes to focus tracking hooks take effect the next time LeopardWM starts.
 track_focus_changes = true
 
 # Log level: trace, debug, info, warn, error
@@ -101,7 +102,8 @@ focus_follows_mouse = false
 # Keep visible floating and sticky floating windows above tiled windows without
 # activating them. Relative ordering only, not native topmost; skipped during
 # fullscreen and overview. Default false.
-# Requires track_focus_changes = true (the default).
+# Requires track_focus_changes = true (the default). Restart LeopardWM after
+# changing that setting; turning it off also stops re-raises immediately on reload.
 # floating_above_tiled = false
 
 # Where newly opened windows go: "new_column" (default, own column to the

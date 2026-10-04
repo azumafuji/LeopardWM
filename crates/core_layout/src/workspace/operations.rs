@@ -229,9 +229,9 @@ impl Workspace {
             if self.focused_column > index {
                 self.focused_column -= 1;
             }
-            // Single-column centering needs a viewport; defer its bounds repair
+            // Outside fullscreen, centering needs a viewport; defer bounds repair
             // to reveal/reconcile so removal preserves the animation's start.
-            if !self.center_single_column {
+            if !self.center_single_column || self.fullscreen_window.is_some() {
                 let max_scroll = self.total_width().max(0) as f64;
                 self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
             }

@@ -304,7 +304,7 @@ lwm toggle-ignore                      # session-only ignore for the OS foregrou
 
 Set `floating_above_tiled = true` under `[behavior]` or enable **Settings → Behavior → Keep floating windows above tiled windows** (off by default) to keep visible managed floating and sticky floating windows above tiled windows when a tiled window receives focus. This only changes relative ordering in the normal Z-order band: floating windows keep their order among themselves, do not become native topmost, and never take focus or move/resize. App-owned topmost and unmanaged windows are not modified. Minimized windows, inactive workspaces, and other monitors are excluded; fullscreen on that monitor and overview suspend re-raising.
 
-`floating_above_tiled` works only when `track_focus_changes = true` (the default).
+`floating_above_tiled` works only when `track_focus_changes = true` (the default). Restart LeopardWM after changing `track_focus_changes`, since focus tracking hooks are configured at startup. Turning tracking off also stops floating re-raises immediately on reload.
 
 Disabling the option simply stops re-raising. There is no daemon-owned Z-order state to restore on disable, ignore, release, or shutdown.
 
@@ -460,6 +460,8 @@ Failed physical gestures are diagnosed with an opt-in, short capture — not by 
 7. Set `diagnostic_capture_secs = 0` afterward so the next restart does not rearm capture and overwrite the report. Default-off does not truncate an existing file; a new capture replaces it.
 
 ## Config & Runtime Paths
+
+`track_focus_changes` under `[behavior]` synchronizes managed focus with Windows focus changes such as Alt-Tab. It defaults to `true`; changes to focus tracking hooks take effect the next time LeopardWM starts, not on config reload or Settings save.
 
 > **Note:** Crate names and on-disk paths still use `leopardwm` internally. A full crate rename is future work.
 

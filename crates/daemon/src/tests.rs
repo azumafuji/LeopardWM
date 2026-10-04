@@ -19353,6 +19353,7 @@ fn test_floating_above_tiled_selection_table() {
 fn test_floating_above_tiled_suppression_table() {
     for case in [
         "off",
+        "focus tracking off",
         "overview",
         "paused",
         "native fullscreen",
@@ -19364,6 +19365,7 @@ fn test_floating_above_tiled_suppression_table() {
         let mut state = floating_above_tiled_state();
         match case {
             "off" => state.config.behavior.floating_above_tiled = false,
+            "focus tracking off" => state.config.behavior.track_focus_changes = false,
             "overview" => state.overview_open = true,
             "paused" => state.paused = true,
             "application fullscreen" | "other monitor fullscreen" => {

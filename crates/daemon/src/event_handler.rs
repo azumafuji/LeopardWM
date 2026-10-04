@@ -2170,7 +2170,11 @@ impl AppState {
         &self,
         hwnd: u64,
     ) -> Option<(leopardwm_platform_win32::MonitorId, &Workspace)> {
-        if !self.config.behavior.floating_above_tiled || self.overview_open || self.paused {
+        if !self.config.behavior.floating_above_tiled
+            || !self.config.behavior.track_focus_changes
+            || self.overview_open
+            || self.paused
+        {
             return None;
         }
         let (monitor, index) = self.find_window_workspace(hwnd)?;

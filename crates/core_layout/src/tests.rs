@@ -341,6 +341,22 @@ mod tests {
     }
 
     #[test]
+    fn test_center_single_column_remove_column_clamps_during_fullscreen() {
+        let viewport = Rect::new(0, 0, 1000, 600);
+        let mut ws = Workspace::with_gaps(10, 20);
+        ws.set_center_single_column(true);
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.ensure_focused_visible(viewport.width);
+        assert_eq!(ws.scroll_offset(), -280.0);
+        ws.insert_window(2, Some(800)).unwrap();
+        ws.set_focus(0, 0).unwrap();
+        assert!(ws.toggle_fullscreen());
+        assert!(ws.remove_column(1).is_some());
+        assert!(ws.is_fullscreen());
+        assert_eq!(ws.scroll_offset(), 0.0);
+    }
+
+    #[test]
     fn test_center_single_column_default_off_scroll_geometry() {
         let viewport = Rect::new(0, 0, 1000, 600);
         let mut default = Workspace::with_gaps(10, 20);
