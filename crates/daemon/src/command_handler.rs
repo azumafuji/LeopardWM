@@ -15,7 +15,7 @@ use leopardwm_platform_win32::{
     monitor_to_right, ManageBlock, MonitorId, MonitorInfo,
 };
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// How a command interacts with a workspace that is currently fullscreen.
 enum FullscreenPolicy {
@@ -672,7 +672,10 @@ impl AppState {
     /// Handle `IpcCommand::Reload`.
     fn handle_reload(&mut self) -> IpcResponse {
         match Config::load() {
-            Ok(new_config) => {
+            Ok(mut new_config) => {
+                for warning in new_config.validate() {
+                    warn!("Config: {} - {}", warning.field, warning.message);
+                }
                 self.apply_config(new_config);
                 if let Err(e) = self.apply_layout() {
                     return IpcResponse::error(format!("Failed to apply layout: {}", e));

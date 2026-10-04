@@ -174,6 +174,39 @@ fn test_application_fullscreen_geometry_rejects_expected_tile_with_insets() {
 }
 
 #[test]
+fn test_floating_above_tiled_distinguishes_monitor_sized_tile_from_fullscreen() {
+    for (tile_width, fullscreen) in [(1920, false), (960, true)] {
+        let mut config = test_config();
+        config.behavior.floating_above_tiled = true;
+        config.layout.gap = 0;
+        config.layout.outer_gap_left = 0;
+        config.layout.outer_gap_right = 0;
+        config.layout.outer_gap_top = 0;
+        config.layout.outer_gap_bottom = 0;
+        let mut monitors = test_monitors();
+        monitors[0].work_area = monitors[0].rect;
+        let monitor_rect = monitors[0].rect;
+        let mut state = AppState::new_with_config(config, monitors);
+        state.paused = false;
+        let workspace = state.focused_workspace_mut().unwrap();
+        workspace.insert_window(0, Some(tile_width)).unwrap();
+        workspace
+            .add_floating(200, Rect::new(10, 10, 300, 300))
+            .unwrap();
+        assert_eq!(
+            state.compute_window_layout_rect(0),
+            Some(Rect::new(0, 0, tile_width, 1080))
+        );
+        let observed = state.observe_application_fullscreen(0, Some(monitor_rect), None, false);
+        assert_eq!(observed.is_some(), fullscreen, "tile width {tile_width}");
+        assert_eq!(
+            state.floating_raise_order(0, &[0, 200], observed.is_some()),
+            if fullscreen { vec![] } else { vec![200] }
+        );
+    }
+}
+
+#[test]
 fn test_application_fullscreen_uses_live_layout_target_before_last_placement() {
     use crate::event_handler::application_fullscreen_expected_layout_rect;
 
@@ -10264,10 +10297,9 @@ fn test_cmd_refresh() {
 
 #[test]
 fn test_cmd_reload() {
-    let expected_gap = Config::load()
-        .expect("configuration should load")
-        .layout
-        .gap;
+    let mut expected_config = Config::load().expect("configuration should load");
+    expected_config.validate();
+    let expected_gap = expected_config.layout.gap;
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     // Developer machines may have a real config. Start with a different value
     // so this proves reload applied the effective config, even if it is default.

@@ -18,6 +18,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
+- **Reloading configuration now validates it just like startup.** `lwm reload` and Settings save clamp out-of-range values and log configuration warnings instead of applying unchecked values.
 - **Pausing tiling or releasing all windows now restores hidden taskbar buttons.** Resuming re-applies the configured taskbar policy.
 - **Showing all taskbar buttons now also applies to background windows and windows leaving fullscreen on an inactive workspace.** Those event paths no longer hide buttons independently of the selected policy.
 - **Windows in columns scrolled off the left edge no longer show a sliver on screen when the app resizes itself.** Wider windows stay anchored outside the viewport, and off-screen resizes missed during placement are checked again once placement settles.

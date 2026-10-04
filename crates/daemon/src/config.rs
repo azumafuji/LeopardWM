@@ -3249,6 +3249,35 @@ mod tests {
     }
 
     #[test]
+    fn test_file_reload_validation_reports_floating_dependency_and_clamps() {
+        let dir = std::env::temp_dir().join(format!(
+            "leopardwm_test_floating_reload_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        fs::write(
+            &path,
+            "[behavior]\nfloating_above_tiled = true\ntrack_focus_changes = false\n[layout]\ngap = -1\n",
+        )
+        .unwrap();
+        let mut loaded = Config::load_from_path(&path).unwrap();
+        let warnings = loaded.validate();
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|w| w.field == "behavior.floating_above_tiled")
+                .count(),
+            1
+        );
+        assert!(warnings.iter().any(|w| w.field == "layout.gap"));
+        assert_eq!(loaded.layout.gap, 0);
+        assert!(loaded.behavior.floating_above_tiled);
+        assert!(!loaded.behavior.track_focus_changes);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn test_config_save_roundtrip() {
         let dir = std::env::temp_dir().join("leopardwm_test_save_roundtrip");
         let _ = fs::remove_dir_all(&dir);

@@ -2229,20 +2229,18 @@ impl AppState {
             if leopardwm_platform_win32::get_foreground_window() != Some(hwnd) {
                 return;
             }
-            let Some((monitor_id, _)) = self.floating_raise_workspace(hwnd) else {
+            if self.floating_raise_workspace(hwnd).is_none() {
                 return;
-            };
-            let Some(monitor) = self.monitors.get(&monitor_id) else {
-                return;
-            };
+            }
             let (chrome, dwm) = self.application_fullscreen_geometry(hwnd);
-            let native_fullscreen = detect_application_fullscreen(
-                [monitor],
-                chrome,
-                dwm,
-                leopardwm_platform_win32::is_window_maximized(hwnd),
-            )
-            .is_some();
+            let native_fullscreen = self
+                .observe_application_fullscreen(
+                    hwnd,
+                    chrome,
+                    dwm,
+                    leopardwm_platform_win32::is_window_maximized(hwnd),
+                )
+                .is_some();
             if native_fullscreen {
                 return;
             }

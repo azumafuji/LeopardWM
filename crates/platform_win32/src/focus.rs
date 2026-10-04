@@ -312,6 +312,7 @@ pub fn set_foreground_window(hwnd: WindowId) -> Result<bool, Win32Error> {
     }
 }
 
+// Raises reject every cloak reason; enumeration retains its shell-only admission mask.
 fn dwm_cloak_blocks_raise(cloaked: u32) -> bool {
     cloaked != 0
 }
