@@ -893,26 +893,31 @@ mod tests {
             emit: true,
             start_menu_mask: false,
         };
-        let mut queued = Vec::new();
-        for (vk, action, mapped) in [(0x48, hotkey, Some(navigate)), (0x0D, Action::Pass, None)] {
-            match route_overview_action(true, vk, action, true, mapped) {
-                Action::SwallowOverview { input, .. } => queued.push(input),
-                other => panic!("overview input escaped the ordered queue: {other:?}"),
+        for mapped in [
+            navigate,
+            OverviewAction::MoveUp,
+            OverviewAction::MoveDown,
+            OverviewAction::Noop,
+        ] {
+            let mut queued = Vec::new();
+            for (vk, action, metadata) in [(0x48, hotkey, Some(mapped)), (0x0D, Action::Pass, None)]
+            {
+                match route_overview_action(true, vk, action, true, metadata) {
+                    Action::SwallowOverview { input, .. } => queued.push(input),
+                    other => panic!("overview input escaped the ordered queue: {other:?}"),
+                }
             }
+            assert_eq!(
+                queued,
+                [OverviewInput::Action(mapped), OverviewInput::Key(0x0D)]
+            );
+            assert_eq!(
+                route_overview_action(true, 0x48, hotkey, false, Some(mapped)),
+                hotkey,
+                "hidden, closing, or non-foreground overview keeps normal command dispatch"
+            );
         }
-        assert_eq!(
-            queued,
-            [OverviewInput::Action(navigate), OverviewInput::Key(0x0D)]
-        );
-        assert_eq!(
-            queued.iter().map(|input| input.key()).collect::<Vec<_>>(),
-            [0x27, 0x0D]
-        );
-        assert_eq!(
-            route_overview_action(true, 0x48, hotkey, false, Some(navigate)),
-            hotkey,
-            "hidden, closing, or non-foreground overview keeps normal command dispatch"
-        );
+        assert_eq!(OverviewInput::Action(navigate).key(), 0x27);
         assert_eq!(
             route_overview_action(true, 0x48, hotkey, true, None),
             hotkey

@@ -73,7 +73,18 @@ pub(crate) fn resolve_hotkeys(config: &HotkeyConfig) -> ResolvedHotkeys {
             continue;
         }
         let overview_action = crate::overview::overview_direction(&command)
-            .map(leopardwm_platform_win32::overview::OverviewAction::Navigate);
+            .map(leopardwm_platform_win32::overview::OverviewAction::Navigate)
+            .or_else(|| {
+                use leopardwm_platform_win32::overview::OverviewAction;
+                match command {
+                    IpcCommand::MoveWindowUp => Some(OverviewAction::MoveUp),
+                    IpcCommand::MoveWindowDown => Some(OverviewAction::MoveDown),
+                    IpcCommand::MoveWindowLeft | IpcCommand::MoveWindowRight => {
+                        Some(OverviewAction::Noop)
+                    }
+                    _ => None,
+                }
+            });
         indexes.insert(id, bindings.len());
         bindings.push(ResolvedHotkey {
             binding: binding.clone(),
@@ -125,6 +136,42 @@ mod tests {
                 .map(|(binding, action)| ((*binding).into(), (*action).into()))
                 .collect(),
             ..HotkeyConfig::default()
+        }
+    }
+
+    #[test]
+    fn move_bindings_keep_normal_commands_and_carry_overview_actions() {
+        use leopardwm_platform_win32::overview::OverviewAction;
+        for (action, command, overview) in [
+            (
+                "move_window_up",
+                IpcCommand::MoveWindowUp,
+                OverviewAction::MoveUp,
+            ),
+            (
+                "move_window_down",
+                IpcCommand::MoveWindowDown,
+                OverviewAction::MoveDown,
+            ),
+            (
+                "move_window_left",
+                IpcCommand::MoveWindowLeft,
+                OverviewAction::Noop,
+            ),
+            (
+                "move_window_right",
+                IpcCommand::MoveWindowRight,
+                OverviewAction::Noop,
+            ),
+        ] {
+            let resolved = resolve_hotkeys(&config_with(&[("Ctrl+Alt+H", action)]));
+            assert!(resolved.issues.is_empty());
+            assert_eq!(resolved.bindings.len(), 1);
+            let entry = &resolved.bindings[0];
+            assert_eq!(entry.command, command);
+            assert_eq!(entry.hook_binding.overview_action, Some(overview));
+            assert_eq!(entry.hook_binding.vk, 0x48);
+            assert!(entry.executable);
         }
     }
 

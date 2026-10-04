@@ -1440,6 +1440,30 @@ impl AppState {
             }
         };
 
+        self.move_window_to_workspace(monitor, current_idx, focused_hwnd, index, true)
+    }
+
+    pub(crate) fn move_window_to_workspace(
+        &mut self,
+        monitor: MonitorId,
+        current_idx: usize,
+        focused_hwnd: u64,
+        index: u8,
+        sync_focus: bool,
+    ) -> IpcResponse {
+        if !(1..=9).contains(&index) {
+            return IpcResponse::error("Workspace index must be 1-9");
+        }
+        let idx = usize::from(index - 1);
+        if idx == current_idx
+            || !self
+                .workspaces
+                .get(&monitor)
+                .and_then(|v| v.get(current_idx))
+                .is_some_and(|ws| ws.contains_window(focused_hwnd))
+        {
+            return IpcResponse::Ok;
+        }
         let snapshot = self.snapshot_layout();
 
         // Ensure target workspace exists (lazy creation)
@@ -1610,14 +1634,14 @@ impl AppState {
             self.move_origins.remove(&focused_hwnd);
         }
 
-        // Target workspace is not active — hide the moved window
-        // (capture-on-hide first for the overview's snapshot mode).
-        if self.config.overview.render == crate::config::OverviewRender::Snapshot {
-            let _ = leopardwm_platform_win32::snapshot::snapshot_capture(focused_hwnd);
-        }
-        if !self.is_application_fullscreen(focused_hwnd) {
-            #[cfg(not(test))]
-            let _ = leopardwm_platform_win32::move_window_offscreen(focused_hwnd);
+        if idx != self.active_workspace_idx(monitor) {
+            if self.config.overview.render == crate::config::OverviewRender::Snapshot {
+                let _ = leopardwm_platform_win32::snapshot::snapshot_capture(focused_hwnd);
+            }
+            if !self.is_application_fullscreen(focused_hwnd) {
+                #[cfg(not(test))]
+                let _ = leopardwm_platform_win32::move_window_offscreen(focused_hwnd);
+            }
         }
 
         // Ensure the source workspace scrolls to show its new focused window
@@ -1631,13 +1655,20 @@ impl AppState {
         }
 
         self.start_layout_transition(snapshot);
+        if !sync_focus {
+            if let Some(transition) = &mut self.layout_transition {
+                transition.suppress_landing_focus_resync = true;
+            } else if self.is_animating() {
+                self.pending_suppress_landing_focus_resync = true;
+            }
+        }
         if let Err(e) = self.apply_layout() {
             return IpcResponse::error(format!("Failed to apply layout: {}", e));
         }
-        // The moved window now lives on an inactive workspace; cloak it so its
-        // taskbar button goes too.
         self.sync_taskbar_buttons();
-        self.sync_foreground_window();
+        if sync_focus {
+            self.sync_foreground_window();
+        }
         info!("Moved window {} to workspace {}", focused_hwnd, index);
         IpcResponse::Ok
     }

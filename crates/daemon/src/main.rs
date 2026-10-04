@@ -3011,6 +3011,12 @@ async fn handle_overview_event(
                 warn!("Overview workspace switch failed: {}", message);
             }
         }
+        OverviewEvent::MoveWindow { window_id, forward } => {
+            let mut s = ctx.state.lock().await;
+            if let IpcResponse::Error { message } = s.move_overview_window(window_id, forward) {
+                warn!("Overview window move failed: {}", message);
+            }
+        }
         OverviewEvent::CloseWindow(wid) => {
             if let Err(e) = leopardwm_platform_win32::close_window(wid) {
                 warn!("close_window from overview failed: {}", e);

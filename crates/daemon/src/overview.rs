@@ -162,11 +162,68 @@ pub(crate) fn overview_direction(command: &leopardwm_ipc::IpcCommand) -> Option<
 }
 
 impl AppState {
+    pub(crate) fn move_overview_window(
+        &mut self,
+        wid: u64,
+        forward: bool,
+    ) -> leopardwm_ipc::IpcResponse {
+        let response = self.transfer_overview_window(wid, forward);
+        if self.overview_open {
+            match self.build_overview_model_with_selection(Some(wid)) {
+                Some((_, model)) => {
+                    if let Some(overlay) = &self.overview_overlay {
+                        overlay.complete_window_move(model, wid);
+                    }
+                }
+                None => self.hide_overview(),
+            }
+        }
+        response
+    }
+
+    fn transfer_overview_window(&mut self, wid: u64, forward: bool) -> leopardwm_ipc::IpcResponse {
+        use leopardwm_ipc::IpcResponse;
+
+        if !self.overview_open || self.sticky_windows.contains(&wid) {
+            return IpcResponse::Ok;
+        }
+        let Some((monitor, source)) = self.find_window_workspace(wid) else {
+            return IpcResponse::Ok;
+        };
+        if monitor != self.focused_monitor {
+            return IpcResponse::Ok;
+        }
+        #[cfg(not(test))]
+        if !leopardwm_platform_win32::is_window_valid(wid) {
+            return IpcResponse::Ok;
+        }
+        let destination = if forward {
+            source.checked_add(1).filter(|&idx| idx < 9)
+        } else {
+            source.checked_sub(1)
+        };
+        let Some(destination) = destination else {
+            return IpcResponse::Ok;
+        };
+        self.move_window_to_workspace(monitor, source, wid, (destination + 1) as u8, false)
+    }
+
     /// Build the overview display model for the focused monitor.
     ///
     /// Returns the overlay window rect (the monitor's work area) plus the
     /// model, or `None` when every workspace on the monitor is empty.
     pub(crate) fn build_overview_model(&mut self) -> Option<(Rect, OverviewModel)> {
+        let selection = self
+            .overview_overlay
+            .as_ref()
+            .and_then(OverviewOverlay::selected_window_id);
+        self.build_overview_model_with_selection(selection)
+    }
+
+    fn build_overview_model_with_selection(
+        &mut self,
+        selection: Option<u64>,
+    ) -> Option<(Rect, OverviewModel)> {
         let monitor = self.focused_monitor;
         let work_area = self.monitors.get(&monitor)?.work_area;
         let ws_vec = self.workspaces.get(&monitor)?;
@@ -212,7 +269,11 @@ impl AppState {
             let ws = &ws_vec[ws_idx];
             let geom = &geoms[slot];
             let is_active = ws_idx == active_idx;
-            let selected_wid = if is_active { focused_wid } else { None };
+            let selected_wid = match selection {
+                Some(wid) => ws.contains_window(wid).then_some(wid),
+                None if is_active => focused_wid,
+                None => None,
+            };
             // Vertical symmetry: the 1px panel frame is stroked INSIDE
             // the panel's bottom edge (the active accent ring sits
             // OUTSIDE) while the top boundary is the label band's
@@ -226,9 +287,9 @@ impl AppState {
             );
             let (mut cards, viewport, content_w) =
                 self.overview_cards_for(ws, work_area, strip, selected_wid, is_active);
-            // The active row always carries a selection: fall back to its
-            // first card when the focused window isn't represented.
-            if is_active && !cards.iter().any(|c| c.selected) {
+            // Initial selection falls back to the active row's first card
+            // when the focused window isn't represented.
+            if selection.is_none() && is_active && !cards.iter().any(|c| c.selected) {
                 if let Some(first) = cards.first_mut() {
                     first.selected = true;
                 }
@@ -312,8 +373,8 @@ impl AppState {
     /// Every rect goes through ONE uniform [`StripTransform`] — same
     /// scale, same offset — so relative geometry is exact.
     ///
-    /// A fullscreen workspace collapses to ONE viewport-sized card for
-    /// the fullscreen window instead of the underlying strip layout.
+    /// A fullscreen workspace collapses to ONE viewport-sized card unless
+    /// selection follows another window moved into its underlying strip.
     fn overview_cards_for(
         &self,
         ws: &Workspace,
@@ -330,7 +391,8 @@ impl AppState {
 
         let fullscreen = ws
             .fullscreen_window_id()
-            .filter(|&wid| ws.contains_window(wid) && !ws.is_minimized(wid));
+            .filter(|&wid| ws.contains_window(wid) && !ws.is_minimized(wid))
+            .filter(|&wid| selected_wid.is_none_or(|selected| selected == wid));
         let sources: Vec<(u64, Rect, Option<usize>)> = if let Some(fs_wid) = fullscreen {
             // The fullscreen window covers the whole viewport.
             vec![(fs_wid, viewport_region, None)]
@@ -685,6 +747,207 @@ mod tests {
                 Some(destination),
                 "{binding} keeps its normal command even if daemon overview state is stale"
             );
+        }
+    }
+
+    #[test]
+    fn overview_selected_window_transfer_preserves_membership_and_foreground() {
+        for mode in [
+            "tiled",
+            "floating",
+            "stacked",
+            "tabbed",
+            "fullscreen",
+            "destination_fullscreen",
+        ] {
+            for (source, forward, destination) in [(2, false, 1), (2, true, 3), (1, false, 0)] {
+                let mut state = test_state();
+                state.paused = false;
+                add_windows(&mut state, 0, &[101]);
+                if mode == "floating" {
+                    state
+                        .ensure_workspace_exists(1, source)
+                        .unwrap()
+                        .add_floating(201, Rect::new(40, 50, 300, 400))
+                        .unwrap();
+                } else {
+                    add_windows(&mut state, source, &[201]);
+                }
+                if matches!(mode, "stacked" | "tabbed") {
+                    let ws = &mut state.workspaces.get_mut(&1).unwrap()[source];
+                    ws.insert_window_in_column(202, 0).unwrap();
+                    if mode == "tabbed" {
+                        ws.toggle_focused_column_tabbed_mode();
+                    }
+                }
+                if mode == "fullscreen" {
+                    state.workspaces.get_mut(&1).unwrap()[source].toggle_fullscreen();
+                }
+                if mode == "destination_fullscreen" {
+                    add_windows(&mut state, destination, &[301]);
+                    state.workspaces.get_mut(&1).unwrap()[destination].toggle_fullscreen();
+                }
+                state.overview_open = true;
+                state.previous_focused_hwnd = Some(101);
+                assert!(
+                    matches!(
+                        state.move_overview_window(201, forward),
+                        leopardwm_ipc::IpcResponse::Ok
+                    ),
+                    "{mode}"
+                );
+                state.tick_animations(1000);
+                let suppress = state.pending_suppress_landing_focus_resync;
+                state.apply_layout().unwrap();
+                state.finish_animation_landing_focus_resync(suppress);
+                assert!(state.overview_open);
+                assert_eq!(state.focused_monitor, 1);
+                assert_eq!(state.active_workspace_idx(1), 0);
+                assert_eq!(
+                    state.previous_focused_hwnd,
+                    Some(101),
+                    "must not steal foreground"
+                );
+                assert_eq!(
+                    state.workspaces[&1][0].focused_window(),
+                    Some(if destination == 0 && mode != "floating" {
+                        201
+                    } else {
+                        101
+                    })
+                );
+                assert_eq!(state.find_window_workspace(201), Some((1, destination)));
+                if destination != 0 {
+                    assert!(
+                        !state.last_placed_layout_rects.contains_key(&201),
+                        "inactive windows must not enter the visible placement plan"
+                    );
+                }
+                assert_eq!(
+                    state.workspaces[&1]
+                        .iter()
+                        .filter(|ws| ws.contains_window(201))
+                        .count(),
+                    1
+                );
+                assert!(!state.workspaces[&1][source].contains_window(201));
+                assert_eq!(
+                    state.workspaces[&1][source].contains_window(202),
+                    matches!(mode, "stacked" | "tabbed")
+                );
+                assert_eq!(state.workspaces[&1][source].fullscreen_window_id(), None);
+                if mode == "floating" {
+                    assert!(state.workspaces[&1][destination].is_floating(201));
+                    assert_eq!(
+                        state.workspaces[&1][destination]
+                            .floating_windows()
+                            .iter()
+                            .find(|f| f.id == 201)
+                            .unwrap()
+                            .rect,
+                        Rect::new(40, 50, 300, 400)
+                    );
+                }
+                if mode == "destination_fullscreen" {
+                    assert_eq!(
+                        state.workspaces[&1][destination].fullscreen_window_id(),
+                        Some(301)
+                    );
+                }
+                let (_, model) = state
+                    .build_overview_model_with_selection(Some(201))
+                    .unwrap();
+                let selected: Vec<_> = model
+                    .rows
+                    .iter()
+                    .flat_map(|row| {
+                        row.cards
+                            .iter()
+                            .filter(|card| card.selected)
+                            .map(move |card| (row.workspace_index, card.window_id))
+                    })
+                    .collect();
+                assert_eq!(selected, vec![(destination, 201)], "{mode}");
+                assert_eq!(
+                    model
+                        .rows
+                        .iter()
+                        .flat_map(|row| &row.cards)
+                        .filter(|c| c.window_id == 201)
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    model.rows.iter().any(|row| row.workspace_index == source),
+                    matches!(mode, "stacked" | "tabbed")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn overview_move_from_active_workspace_does_not_move_its_focused_window() {
+        let mut state = test_state();
+        state.paused = false;
+        add_windows(&mut state, 0, &[101, 201]);
+        state.workspaces.get_mut(&1).unwrap()[0]
+            .focus_window(101)
+            .unwrap();
+        state.previous_focused_hwnd = Some(101);
+        state.overview_open = true;
+        state.workspaces.get_mut(&1).unwrap()[0].set_all_column_widths(400);
+        state.apply_layout().unwrap();
+        assert!(state.last_placed_layout_rects.contains_key(&201));
+        assert!(matches!(
+            state.move_overview_window(201, true),
+            leopardwm_ipc::IpcResponse::Ok
+        ));
+        state.tick_animations(1000);
+        let suppress = state.pending_suppress_landing_focus_resync;
+        state.apply_layout().unwrap();
+        state.finish_animation_landing_focus_resync(suppress);
+        assert_eq!(state.find_window_workspace(101), Some((1, 0)));
+        assert_eq!(state.find_window_workspace(201), Some((1, 1)));
+        assert_eq!(state.workspaces[&1][0].focused_window(), Some(101));
+        assert_eq!(state.previous_focused_hwnd, Some(101));
+        assert_eq!(state.active_workspace_idx(1), 0);
+        assert!(!state.last_placed_layout_rects.contains_key(&201));
+        assert!(state.overview_open);
+    }
+
+    #[test]
+    fn overview_selected_window_transfer_noops_for_ineligible_or_stale_actions() {
+        for reason in ["first", "last", "closed", "sticky", "dismissed"] {
+            let mut state = test_state();
+            let source = if reason == "last" { 8 } else { 0 };
+            add_windows(&mut state, source, &[201, 101]);
+            state.overview_open = reason != "dismissed";
+            state.previous_focused_hwnd = Some(201);
+            if reason == "closed" {
+                state.workspaces.get_mut(&1).unwrap()[source]
+                    .remove_window(201)
+                    .unwrap();
+            }
+            if reason == "sticky" {
+                state.sticky_windows.insert(201);
+            }
+            let before: Vec<_> = state.workspaces[&1]
+                .iter()
+                .map(Workspace::all_window_ids)
+                .collect();
+            assert!(matches!(
+                state.move_overview_window(201, reason != "first"),
+                leopardwm_ipc::IpcResponse::Ok
+            ));
+            assert_eq!(
+                state.workspaces[&1]
+                    .iter()
+                    .map(Workspace::all_window_ids)
+                    .collect::<Vec<_>>(),
+                before,
+                "{reason}"
+            );
+            assert_eq!(state.previous_focused_hwnd, Some(201));
         }
     }
 
