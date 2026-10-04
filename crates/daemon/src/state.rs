@@ -824,6 +824,8 @@ pub(crate) struct AppState {
     /// synthetic HWND never reaches `SetWindowPos`.
     #[cfg(test)]
     pub(crate) injected_native_offscreen_enabled: bool,
+    #[cfg(test)]
+    pub(crate) inactive_workspace_park_requests: Vec<u64>,
     /// Stale HWNDs consumed by the next prune that actually runs. Empty is a
     /// no-op; a throttled or same-HWND focus leaves the list pending.
     #[cfg(test)]
@@ -1272,6 +1274,8 @@ impl AppState {
             injected_event_time_ms: None,
             #[cfg(test)]
             injected_native_offscreen_enabled: false,
+            #[cfg(test)]
+            inactive_workspace_park_requests: Vec::new(),
             #[cfg(test)]
             injected_stale_hwnds: Vec::new(),
             #[cfg(test)]

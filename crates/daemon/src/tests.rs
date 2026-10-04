@@ -10107,9 +10107,14 @@ fn test_display_change_focus_follows_foreground_to_restored_inactive_workspace()
     let mut returned = two_monitors();
     returned[1].id = 99;
     state.injected_display_monitors = Some(returned);
+    state.inactive_workspace_park_requests.clear();
 
     state.handle_window_event(WindowEvent::DisplayChange);
 
+    assert!(
+        !state.inactive_workspace_park_requests.contains(&100),
+        "adopted foreground must never be parked before layout application"
+    );
     assert_eq!(state.focused_monitor, 99);
     assert_eq!(state.active_workspace_idx(99), 1);
     assert_eq!(

@@ -3723,9 +3723,7 @@ impl AppState {
                 self.reconcile_monitors(new_monitors);
                 self.reconcile_application_fullscreen_sessions();
 
-                // Correct stale minimized flags, then park restored inactive
-                // workspace windows that apply_layout will not place.
-                self.prepare_inactive_workspace_windows();
+                self.resync_minimized_from_os();
 
                 // Topology changes can move the foreground window without a focus event.
                 #[cfg(test)]
@@ -3747,7 +3745,6 @@ impl AppState {
                     Some((hwnd, monitor_id, ws_idx))
                 });
                 if let Some((hwnd, monitor_id, ws_idx)) = managed_foreground {
-                    // Mirror adopt_managed_replacement_without_stealing_focus without scrolling.
                     self.follow_workspace_without_stealing_focus(monitor_id, ws_idx, None);
                     if let Some(ref mut transition) = self.layout_transition {
                         transition.suppress_landing_focus_resync = true;
@@ -3766,6 +3763,9 @@ impl AppState {
                     }
                     self.previous_focused_hwnd = Some(hwnd);
                 }
+
+                // Adopt foreground first so its workspace is not parked as inactive.
+                self.prepare_inactive_workspace_windows();
 
                 // Re-apply layout with updated monitor configuration
                 self.display_change_apply_in_progress = true;
