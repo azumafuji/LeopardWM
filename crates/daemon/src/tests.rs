@@ -10006,6 +10006,152 @@ fn test_reconcile_remove_monitor() {
     assert!(!state.workspaces.contains_key(&2));
 }
 
+fn display_change_focus_state() -> AppState {
+    let mut state = AppState::new_with_config(test_config(), two_monitors());
+    let primary = &mut state.workspaces.get_mut(&1).unwrap()[0];
+    for hwnd in 10..=12 {
+        primary.insert_window(hwnd, Some(600)).unwrap();
+    }
+    primary.set_scroll_offset(250.0);
+    let secondary = &mut state.workspaces.get_mut(&2).unwrap()[0];
+    secondary.insert_window(100, Some(500)).unwrap();
+    secondary.insert_window(200, Some(650)).unwrap();
+    secondary.focus_window(100).unwrap();
+    state.focused_monitor = 2;
+    state.previous_focused_hwnd = Some(100);
+    state.injected_foreground_hwnd = Some(Some(100));
+    state.injected_foreground_is_valid = Some(true);
+    state.injected_display_monitors = Some(test_monitors());
+    state
+}
+
+#[test]
+fn test_display_change_focus_follows_foreground_on_monitor_removal_without_scrolling() {
+    let mut reconciled = display_change_focus_state();
+    reconciled.reconcile_monitors(test_monitors());
+    let reconciled_scroll = reconciled.workspaces[&1][0].scroll_offset();
+    let mut state = display_change_focus_state();
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert_eq!(state.focused_monitor, 1);
+    assert_eq!(
+        state.focused_workspace().unwrap().focused_window(),
+        Some(100)
+    );
+    assert_eq!(state.previous_focused_hwnd, Some(100));
+    assert_eq!(state.workspaces[&1][0].scroll_offset(), reconciled_scroll);
+    state.workspaces.get_mut(&1).unwrap()[0].tick_animation(10_000);
+    assert_eq!(state.workspaces[&1][0].scroll_offset(), reconciled_scroll);
+    assert_eq!(state.last_border_show_hwnd.load(Ordering::Relaxed), 100);
+}
+
+#[test]
+fn test_display_change_focus_follows_unchanged_foreground_on_monitor_return() {
+    let mut state = display_change_focus_state();
+    state.handle_window_event(WindowEvent::DisplayChange);
+    let mut returned = two_monitors();
+    returned[1].id = 99;
+    state.injected_display_monitors = Some(returned);
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert_eq!(state.focused_monitor, 99);
+    assert_eq!(
+        state.focused_workspace().unwrap().focused_window(),
+        Some(100)
+    );
+    assert_eq!(state.previous_focused_hwnd, Some(100));
+    assert!(!state.workspaces[&1][0].contains_window(100));
+}
+
+#[test]
+fn test_display_change_focus_follows_foreground_to_restored_inactive_workspace() {
+    let mut state = display_change_focus_state();
+    let foreground_workspace = state.workspaces[&2][0].clone();
+    state.workspaces.get_mut(&2).unwrap()[0] =
+        AppState::new_with_config(test_config(), test_monitors()).workspaces[&1][0].clone();
+    state
+        .workspaces
+        .get_mut(&2)
+        .unwrap()
+        .push(foreground_workspace);
+    state.handle_window_event(WindowEvent::DisplayChange);
+    let mut returned = two_monitors();
+    returned[1].id = 99;
+    state.injected_display_monitors = Some(returned);
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert_eq!(state.focused_monitor, 99);
+    assert_eq!(state.active_workspace_idx(99), 1);
+    assert_eq!(
+        state.focused_workspace().unwrap().focused_window(),
+        Some(100)
+    );
+}
+
+#[test]
+fn test_display_change_focus_tracks_floating_foreground_without_changing_tiled_focus() {
+    let mut state = display_change_focus_state();
+    state.workspaces.get_mut(&2).unwrap()[0]
+        .add_floating(300, Rect::new(2000, 100, 500, 400))
+        .unwrap();
+    state.injected_foreground_hwnd = Some(Some(300));
+    state.handle_window_event(WindowEvent::DisplayChange);
+    assert_eq!(state.focused_monitor, 1);
+    assert_eq!(state.previous_focused_hwnd, Some(300));
+    assert_eq!(
+        state.focused_workspace().unwrap().focused_window(),
+        Some(200)
+    );
+    assert_eq!(state.last_border_show_hwnd.load(Ordering::Relaxed), 300);
+
+    let mut returned = two_monitors();
+    returned[1].id = 99;
+    state.injected_display_monitors = Some(returned);
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert_eq!(state.focused_monitor, 99);
+    assert_eq!(state.previous_focused_hwnd, Some(300));
+    assert_eq!(
+        state.focused_workspace().unwrap().focused_window(),
+        Some(100)
+    );
+    assert!(state.focused_workspace().unwrap().is_floating(300));
+}
+
+#[test]
+fn test_display_change_focus_unchanged_for_unmanaged_or_absent_foreground() {
+    for foreground in [Some(999), None] {
+        let mut state = display_change_focus_state();
+        state.injected_foreground_hwnd = Some(foreground);
+        state.injected_foreground_is_valid = Some(foreground.is_some());
+        state.previous_focused_hwnd = Some(999);
+        state.handle_window_event(WindowEvent::DisplayChange);
+
+        assert_eq!(state.focused_monitor, 1);
+        assert_eq!(
+            state.focused_workspace().unwrap().focused_window(),
+            Some(200)
+        );
+        assert_eq!(state.previous_focused_hwnd, Some(999));
+
+        let mut returned = two_monitors();
+        returned[1].id = 99;
+        state.injected_display_monitors = Some(returned);
+        state.handle_window_event(WindowEvent::DisplayChange);
+
+        assert_eq!(state.focused_monitor, 1);
+        assert_eq!(
+            state.focused_workspace().unwrap().focused_window(),
+            Some(12)
+        );
+        assert_eq!(state.previous_focused_hwnd, Some(999));
+        assert_eq!(state.active_workspace_idx(99), 0);
+    }
+}
+
 #[test]
 fn test_reconcile_restores_stashed_layout_on_monitor_return() {
     // A monitor that disconnects and reconnects with a NEW HMONITOR but the same

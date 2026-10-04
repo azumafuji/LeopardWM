@@ -20,6 +20,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
+- **Disconnecting or reconnecting a monitor now keeps LeopardWM's focus on the window that actually has it.** Focus no longer points to a different window or none until the next click.
 - **Reloading configuration now validates it just like startup.** `lwm reload` and Settings save clamp out-of-range values and log configuration warnings instead of applying unchecked values.
 - **Pausing tiling or releasing all windows now restores hidden taskbar buttons.** Resuming re-applies the configured taskbar policy.
 - **Showing all taskbar buttons now also applies to background windows and windows leaving fullscreen on an inactive workspace.** Those event paths no longer hide buttons independently of the selected policy.

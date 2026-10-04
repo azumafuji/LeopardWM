@@ -3723,6 +3723,32 @@ impl AppState {
                 self.reconcile_monitors(new_monitors);
                 self.reconcile_application_fullscreen_sessions();
 
+                // Topology changes can move the foreground window without a focus event.
+                #[cfg(test)]
+                let foreground = self.injected_foreground_hwnd.flatten();
+                #[cfg(not(test))]
+                let foreground = leopardwm_platform_win32::get_foreground_window();
+                let managed_foreground = foreground.and_then(|hwnd| {
+                    self.find_window_workspace(hwnd)
+                        .map(|(monitor_id, ws_idx)| (hwnd, monitor_id, ws_idx))
+                });
+                if let Some((hwnd, monitor_id, ws_idx)) = managed_foreground {
+                    self.follow_workspace_without_stealing_focus(monitor_id, ws_idx, None);
+                    if let Some(workspace) = self
+                        .workspaces
+                        .get_mut(&monitor_id)
+                        .and_then(|v| v.get_mut(ws_idx))
+                    {
+                        if let Err(e) = workspace.focus_window(hwnd) {
+                            debug!(
+                                "Failed to focus window {} after display change: {}",
+                                hwnd, e
+                            );
+                        }
+                    }
+                    self.previous_focused_hwnd = Some(hwnd);
+                }
+
                 // Correct stale minimized flags, then park restored inactive
                 // workspace windows that apply_layout will not place.
                 self.prepare_inactive_workspace_windows();
@@ -3733,6 +3759,9 @@ impl AppState {
                 self.display_change_apply_in_progress = false;
                 if let Err(e) = result {
                     warn!("Failed to apply layout after display change: {}", e);
+                }
+                if let Some((hwnd, _, _)) = managed_foreground {
+                    self.show_border(hwnd);
                 }
                 self.sync_taskbar_buttons();
             }
