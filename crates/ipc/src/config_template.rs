@@ -96,6 +96,12 @@ focus_follows_mouse = false
 # per-frame SetWindowPos path.
 # swap_chain_ghost_animation = false
 
+# Keep visible floating and sticky floating windows above tiled windows without
+# activating them. Relative ordering only, not native topmost; skipped during
+# fullscreen and overview. Default false.
+# Requires track_focus_changes = true (the default).
+# floating_above_tiled = false
+
 # Where newly opened windows go: "new_column" (default, own column to the
 # right) or "in_column" (stacked into the focused column).
 # new_window_placement = "new_column"

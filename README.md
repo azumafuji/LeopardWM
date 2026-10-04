@@ -282,6 +282,12 @@ lwm toggle-sticky                      # pin / unpin focused window on every wor
 lwm toggle-ignore                      # session-only ignore for the OS foreground window
 ```
 
+Set `floating_above_tiled = true` under `[behavior]` or enable **Settings → Behavior → Keep floating windows above tiled windows** (off by default) to keep visible managed floating and sticky floating windows above tiled windows when a tiled window receives focus. This only changes relative ordering in the normal Z-order band: floating windows keep their order among themselves, do not become native topmost, and never take focus or move/resize. App-owned topmost and unmanaged windows are not modified. Minimized windows, inactive workspaces, and other monitors are excluded; fullscreen on that monitor and overview suspend re-raising.
+
+`floating_above_tiled` works only when `track_focus_changes = true` (the default).
+
+Disabling the option simply stops re-raising. There is no daemon-owned Z-order state to restore on disable, ignore, release, or shutdown.
+
 Set `skip_empty_workspaces = true` under `[behavior]` or enable **Settings → Behavior → Skip empty workspaces** (off by default) to skip empty slots on the same monitor. This applies to `workspace_next` / `workspace_prev` and to `focus_down` / `focus_up` when `workspace_edge_wrap` switches workspaces, wrapping 1 ↔ 9. If no other occupied workspace exists, they do nothing.
 
 Tiled, floating, and minimized managed windows count as occupancy; sticky windows do not. Explicit numbered selection, all move-to-workspace commands (including edge-wrap moves), overview, and horizontal focus are unchanged. Closing or moving away the last window does not automatically switch workspaces.

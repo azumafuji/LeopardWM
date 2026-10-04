@@ -452,7 +452,8 @@ impl AppState {
                 self.on_window_destroyed_or_hidden(hwnd, Some(event_time_ms))
             }
             WindowEvent::Focused(hwnd, event_time_ms) => {
-                self.on_window_focused(hwnd, event_time_ms)
+                self.on_window_focused(hwnd, event_time_ms);
+                self.raise_floating_above_tiled(hwnd);
             }
             WindowEvent::Minimized(hwnd, os_event_time_ms) => {
                 self.on_window_minimized_from_event(hwnd, os_event_time_ms)
@@ -2165,6 +2166,102 @@ impl AppState {
     fn is_recently_restored_managed_window(&mut self, hwnd: u64) -> bool {
         self.prune_recently_restored_managed_windows();
         self.recently_restored_managed_windows.contains_key(&hwnd)
+    }
+
+    pub(crate) fn floating_raise_order(
+        &self,
+        hwnd: u64,
+        normal_z_order: &[u64],
+        native_fullscreen: bool,
+    ) -> Vec<u64> {
+        if !self.config.behavior.floating_above_tiled || self.overview_open || self.paused {
+            return Vec::new();
+        }
+        let Some((monitor, index)) = self.find_window_workspace(hwnd) else {
+            return Vec::new();
+        };
+        if index != self.active_workspace_idx(monitor) {
+            return Vec::new();
+        }
+        let workspaces = &self.workspaces[&monitor];
+        let workspace = &workspaces[index];
+        if workspace.is_floating(hwnd)
+            || workspace.is_minimized(hwnd)
+            || native_fullscreen
+            || workspaces.iter().any(Workspace::is_fullscreen)
+            || self
+                .application_fullscreen
+                .values()
+                .any(|session| session.monitor_id == monitor)
+        {
+            return Vec::new();
+        }
+        let Some(focused_position) = normal_z_order.iter().position(|&id| id == hwnd) else {
+            return Vec::new();
+        };
+        let floating: Vec<_> = normal_z_order
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| workspace.is_floating(**id) && !workspace.is_minimized(**id))
+            .collect();
+        if floating
+            .iter()
+            .all(|(position, _)| *position < focused_position)
+        {
+            return Vec::new();
+        }
+        floating.into_iter().rev().map(|(_, &id)| id).collect()
+    }
+
+    fn raise_floating_above_tiled(&self, hwnd: u64) {
+        if !self.config.behavior.floating_above_tiled || self.overview_open || self.paused {
+            return;
+        }
+        #[cfg(not(test))]
+        {
+            if leopardwm_platform_win32::get_foreground_window() != Some(hwnd) {
+                return;
+            }
+            let Some((monitor_id, index)) = self.find_window_workspace(hwnd) else {
+                return;
+            };
+            if index != self.active_workspace_idx(monitor_id)
+                || self.workspaces[&monitor_id][index].is_floating(hwnd)
+            {
+                return;
+            }
+            let Some(monitor) = self.monitors.get(&monitor_id) else {
+                return;
+            };
+            let visible_z_order = leopardwm_platform_win32::visible_window_z_order();
+            let native_fullscreen = visible_z_order.iter().any(|&id| {
+                let (chrome, dwm) = self.application_fullscreen_geometry(id);
+                detect_application_fullscreen(
+                    [monitor],
+                    chrome,
+                    dwm,
+                    leopardwm_platform_win32::is_window_maximized(id),
+                )
+                .is_some()
+            });
+            let normal_z_order: Vec<_> = visible_z_order
+                .into_iter()
+                .filter(|&id| leopardwm_platform_win32::can_raise_normal_window(id))
+                .collect();
+            for id in self.floating_raise_order(hwnd, &normal_z_order, native_fullscreen) {
+                if leopardwm_platform_win32::get_foreground_window() != Some(hwnd) {
+                    break;
+                }
+                if let Err(error) = leopardwm_platform_win32::raise_normal_window_no_activate(id) {
+                    warn!(
+                        "Could not raise floating window {} without activation: {}",
+                        id, error
+                    );
+                }
+            }
+        }
+        #[cfg(test)]
+        let _ = hwnd;
     }
 
     fn on_window_focused(&mut self, hwnd: u64, event_time_ms: u32) {

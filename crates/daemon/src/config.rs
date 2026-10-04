@@ -431,6 +431,9 @@ pub struct BehaviorConfig {
     #[serde(default = "default_true")]
     pub swap_chain_ghost_animation: bool,
 
+    #[serde(default)]
+    pub floating_above_tiled: bool,
+
     /// Where newly opened windows go: their own new column (default) or
     /// stacked into the focused column.
     #[serde(default)]
@@ -500,6 +503,7 @@ impl Default for BehaviorConfig {
             check_for_updates: true,
             tab_close_action: TabCloseAction::default(),
             swap_chain_ghost_animation: true,
+            floating_above_tiled: false,
             new_window_placement: NewWindowPlacement::default(),
             taskbar_buttons: TaskbarButtons::default(),
             workspace_edge_wrap: false,
@@ -1126,6 +1130,14 @@ impl Config {
         }
         // Remove bindings for deprecated commands
         bindings.retain(|_, cmd| !DEPRECATED_HOTKEY_COMMANDS.contains(&cmd.as_str()));
+    }
+
+    pub(crate) fn warn_about_ineffective_floating_above_tiled(&self) {
+        if self.behavior.floating_above_tiled && !self.behavior.track_focus_changes {
+            tracing::warn!(
+                "floating_above_tiled has no effect without focus tracking; enable track_focus_changes"
+            );
+        }
     }
 
     /// Load configuration from standard locations.

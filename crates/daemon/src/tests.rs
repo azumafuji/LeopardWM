@@ -19200,3 +19200,183 @@ async fn test_taskbar_buttons_paused_tray_selection_keeps_buttons_shown_until_re
     assert!(commands.contains(&(700, false)), "{commands:?}");
     assert!(commands.contains(&(300, true)), "{commands:?}");
 }
+
+#[test]
+fn test_floating_above_tiled_config_round_trip() {
+    assert!(!Config::default().behavior.floating_above_tiled);
+    let omitted: Config = toml::from_str("[behavior]\ntrack_focus_changes = false").unwrap();
+    assert!(!omitted.behavior.floating_above_tiled);
+    for enabled in [false, true] {
+        let from_settings: Config = serde_json::from_value(serde_json::json!({
+            "behavior": {"floating_above_tiled": enabled}
+        }))
+        .unwrap();
+        let saved = toml::to_string_pretty(&from_settings).unwrap();
+        let reloaded: Config = toml::from_str(&saved).unwrap();
+        assert_eq!(reloaded.behavior.floating_above_tiled, enabled);
+        assert_eq!(
+            serde_json::to_value(reloaded).unwrap()["behavior"]["floating_above_tiled"],
+            enabled
+        );
+    }
+}
+
+fn floating_above_tiled_state() -> AppState {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = false;
+    state.config.behavior.floating_above_tiled = true;
+    let workspace = &mut state.workspaces.get_mut(&1).unwrap()[0];
+    workspace.insert_window(100, None).unwrap();
+    workspace
+        .add_floating(200, Rect::new(10, 10, 300, 300))
+        .unwrap();
+    workspace
+        .add_floating(300, Rect::new(20, 20, 300, 300))
+        .unwrap();
+    workspace.set_floating_pinned(300, true);
+    state.sticky_windows.insert(300);
+    state.workspaces.get_mut(&1).unwrap().push(Workspace::new());
+    state.workspaces.get_mut(&1).unwrap()[1]
+        .add_floating(400, Rect::new(30, 30, 300, 300))
+        .unwrap();
+    let mut other = Workspace::new();
+    other.insert_window(600, None).unwrap();
+    other
+        .add_floating(500, Rect::new(2000, 30, 300, 300))
+        .unwrap();
+    state.workspaces.insert(2, vec![other]);
+    state
+}
+
+#[test]
+fn test_floating_above_tiled_selection_table() {
+    for (name, focused, order, expected) in [
+        (
+            "active tiled focus",
+            100,
+            vec![900, 100, 200, 300, 400, 500],
+            vec![300, 200],
+        ),
+        ("floating focus", 200, vec![200, 100, 300], vec![]),
+        ("sticky floating focus", 300, vec![300, 100, 200], vec![]),
+        ("unmanaged focus", 900, vec![900, 100, 200, 300], vec![]),
+        (
+            "inactive workspace focus",
+            400,
+            vec![400, 100, 200, 300],
+            vec![],
+        ),
+        (
+            "other monitor focus",
+            600,
+            vec![600, 100, 200, 300, 500],
+            vec![500],
+        ),
+        (
+            "hidden or native minimized floats absent",
+            100,
+            vec![100, 400, 500],
+            vec![],
+        ),
+        ("no native foreground entry", 100, vec![200, 300], vec![]),
+    ] {
+        let state = floating_above_tiled_state();
+        assert_eq!(
+            state.floating_raise_order(focused, &order, false),
+            expected,
+            "{name}"
+        );
+    }
+    let mut state = floating_above_tiled_state();
+    assert_eq!(
+        state.floating_raise_order(100, &[100, 300], false),
+        vec![300]
+    );
+    state.workspaces.get_mut(&1).unwrap()[0].mark_minimized(100);
+    assert!(state
+        .floating_raise_order(100, &[100, 200, 300], false)
+        .is_empty());
+    state.workspaces.get_mut(&1).unwrap()[1]
+        .insert_window(700, None)
+        .unwrap();
+    assert!(state
+        .floating_raise_order(700, &[700, 100, 200, 300], false)
+        .is_empty());
+}
+
+#[test]
+fn test_floating_above_tiled_suppression_table() {
+    for case in [
+        "off",
+        "overview",
+        "paused",
+        "native fullscreen",
+        "application fullscreen",
+        "LeopardWM fullscreen",
+        "inactive fullscreen",
+        "other monitor fullscreen",
+    ] {
+        let mut state = floating_above_tiled_state();
+        match case {
+            "off" => state.config.behavior.floating_above_tiled = false,
+            "overview" => state.overview_open = true,
+            "paused" => state.paused = true,
+            "application fullscreen" | "other monitor fullscreen" => {
+                state.application_fullscreen.insert(
+                    900,
+                    crate::state::ApplicationFullscreenState {
+                        monitor_id: if case == "other monitor fullscreen" {
+                            2
+                        } else {
+                            1
+                        },
+                        rect: Rect::new(0, 0, 1920, 1080),
+                    },
+                );
+            }
+            "LeopardWM fullscreen" => {
+                state.workspaces.get_mut(&1).unwrap()[0].toggle_fullscreen();
+            }
+            "inactive fullscreen" => {
+                let ws = &mut state.workspaces.get_mut(&1).unwrap()[1];
+                ws.insert_window(700, None).unwrap();
+                ws.toggle_fullscreen();
+            }
+            _ => {}
+        }
+        let expected = if case == "other monitor fullscreen" {
+            vec![300, 200]
+        } else {
+            vec![]
+        };
+        assert_eq!(
+            state.floating_raise_order(100, &[100, 200, 300], case == "native fullscreen"),
+            expected,
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn test_floating_above_tiled_order_and_repeated_focus_are_idempotent() {
+    let state = floating_above_tiled_state();
+    for mut order in [
+        vec![100, 200, 300],
+        vec![300, 100, 200],
+        vec![200, 100, 300],
+    ] {
+        let original_floats: Vec<_> = order.iter().copied().filter(|id| *id != 100).collect();
+        let raises = state.floating_raise_order(100, &order, false);
+        assert_eq!(
+            raises,
+            original_floats.iter().rev().copied().collect::<Vec<_>>()
+        );
+        for id in raises {
+            order.retain(|&current| current != id);
+            order.insert(0, id);
+        }
+        assert_eq!(&order[..2], original_floats);
+        assert_eq!(order[2], 100);
+        assert!(state.floating_raise_order(100, &order, false).is_empty());
+    }
+}

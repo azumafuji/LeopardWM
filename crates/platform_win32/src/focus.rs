@@ -6,9 +6,10 @@ use leopardwm_core_layout::WindowId;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic,
-    IsWindow, PostMessageW, SetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOP,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE,
+    BringWindowToTop, GetForegroundWindow, GetTopWindow, GetWindow, GetWindowLongW, GetWindowRect,
+    GetWindowThreadProcessId, IsIconic, IsWindow, PostMessageW, SetCursorPos, SetForegroundWindow,
+    SetWindowPos, ShowWindow, GWL_EXSTYLE, GW_HWNDNEXT, HWND_TOP, SET_WINDOW_POS_FLAGS,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, SW_SHOWNOACTIVATE, WS_EX_TOPMOST,
 };
 
 /// The current OS foreground window as a `WindowId`, if any. This is
@@ -310,23 +311,67 @@ pub fn set_foreground_window(hwnd: WindowId) -> Result<bool, Win32Error> {
     }
 }
 
-/// Raise a window within the normal z-order band without activating it.
+/// Visible, non-minimized top-level windows, ordered from top to bottom.
+pub fn visible_window_z_order() -> Vec<WindowId> {
+    let mut windows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut next = unsafe { GetTopWindow(None).ok() };
+    while let Some(hwnd) = next.filter(|hwnd| !hwnd.is_invalid()) {
+        let id = hwnd.0 as WindowId;
+        if !seen.insert(id) {
+            break;
+        }
+        if crate::is_window_visible(id)
+            && !unsafe { IsIconic(hwnd).as_bool() }
+            && !crate::is_window_shell_cloaked(id)
+            && !crate::is_placement_cloaked(id)
+            && !crate::is_placement_parked(id)
+        {
+            windows.push(id);
+        }
+        next = unsafe { GetWindow(hwnd, GW_HWNDNEXT).ok() };
+    }
+    windows
+}
+
+fn normal_window_can_raise(visible: bool, minimized: bool, cloaked: bool, ex_style: u32) -> bool {
+    visible && !minimized && !cloaked && ex_style & WS_EX_TOPMOST.0 == 0
+}
+
+pub fn can_raise_normal_window(window_id: WindowId) -> bool {
+    let Ok(hwnd) = window_id_to_hwnd(window_id) else {
+        return false;
+    };
+    unsafe {
+        normal_window_can_raise(
+            IsWindow(Some(hwnd)).as_bool() && crate::is_window_visible(window_id),
+            IsIconic(hwnd).as_bool(),
+            crate::is_window_shell_cloaked(window_id)
+                || crate::is_placement_cloaked(window_id)
+                || crate::is_placement_parked(window_id),
+            GetWindowLongW(hwnd, GWL_EXSTYLE) as u32,
+        )
+    }
+}
+
+pub fn raise_normal_window_no_activate(window_id: WindowId) -> Result<(), Win32Error> {
+    if !can_raise_normal_window(window_id) {
+        return Ok(());
+    }
+    raise_window_no_activate(window_id)
+}
+
+const RAISE_WINDOW_FLAGS: SET_WINDOW_POS_FLAGS =
+    SET_WINDOW_POS_FLAGS(SWP_NOMOVE.0 | SWP_NOSIZE.0 | SWP_NOACTIVATE.0);
+
+/// Raise a window within its existing z-order band without activating it.
 pub fn raise_window_no_activate(window_id: WindowId) -> Result<(), Win32Error> {
     let hwnd = window_id_to_hwnd(window_id)?;
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() {
             return Err(Win32Error::WindowNotFound(window_id));
         }
-        SetWindowPos(
-            hwnd,
-            Some(HWND_TOP),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        )
-        .map_err(|e| {
+        SetWindowPos(hwnd, Some(HWND_TOP), 0, 0, 0, 0, RAISE_WINDOW_FLAGS).map_err(|e| {
             Win32Error::SetPositionFailed(format!(
                 "Failed to raise window {} without activation: {}",
                 window_id, e
@@ -358,6 +403,32 @@ pub fn close_window(hwnd: WindowId) -> Result<(), Win32Error> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn floating_above_tiled_normal_band_eligibility() {
+        for (visible, minimized, cloaked, style, expected) in [
+            (true, false, false, 0, true),
+            (false, false, false, 0, false),
+            (true, true, false, 0, false),
+            (true, false, true, 0, false),
+            (true, false, false, WS_EX_TOPMOST.0, false),
+            (true, false, false, WS_EX_TOPMOST.0 | 0x80, false),
+        ] {
+            assert_eq!(
+                normal_window_can_raise(visible, minimized, cloaked, style),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn floating_above_tiled_raise_flags_preserve_focus_and_geometry() {
+        assert_eq!(
+            RAISE_WINDOW_FLAGS.0,
+            SWP_NOACTIVATE.0 | SWP_NOMOVE.0 | SWP_NOSIZE.0
+        );
+        assert_eq!(HWND_TOP.0 as usize, 0);
+    }
     use super::*;
 
     /// Stand-in for one admitted target window: alive, identity-matching,

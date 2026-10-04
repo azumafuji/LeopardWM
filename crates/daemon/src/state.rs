@@ -1044,6 +1044,7 @@ impl AppState {
     pub(crate) fn new_with_config(config: Config, monitors: Vec<MonitorInfo>) -> Self {
         use crate::helpers::ScaledLayoutParams;
 
+        config.warn_about_ineffective_floating_above_tiled();
         let animations_enabled = leopardwm_platform_win32::are_animations_enabled();
         let on_battery_or_saver = leopardwm_platform_win32::is_on_battery_or_power_saver();
         let initial_reduce_motion = crate::transitions::reduce_motion_enabled(

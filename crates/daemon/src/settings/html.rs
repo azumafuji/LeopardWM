@@ -1123,6 +1123,10 @@ input[type="range"]::-webkit-slider-thumb {
             <label class="toggle"><input type="checkbox" id="behavior-swap_chain_ghost_animation"><span class="track"></span><span class="thumb"></span></label>
           </div>
           <div class="field">
+            <div class="field-info"><div class="field-label">Keep floating windows above tiled windows</div><div class="field-desc">Keep visible floating and sticky floating windows above tiled windows without changing focus. Disabled during fullscreen and overview. Requires Track focus changes to be enabled (the default).</div></div>
+            <label class="toggle"><input type="checkbox" id="behavior-floating_above_tiled"><span class="track"></span><span class="thumb"></span></label>
+          </div>
+          <div class="field">
             <div class="field-info"><div class="field-label">Taskbar buttons</div><div class="field-desc">Choose which windows keep their taskbar buttons. Inactive workspaces are per monitor; floating and minimized windows keep theirs on the active workspace.</div></div>
             <div class="combobox" id="cb-behavior-taskbar_buttons">
               <button class="combobox-trigger" type="button"><span class="combobox-text">Hide off-screen</span><svg class="combobox-chevron" viewBox="0 0 12 12"><path d="M2.15 4.65a.5.5 0 01.7 0L6 7.79l3.15-3.14a.5.5 0 11.7.7l-3.5 3.5a.5.5 0 01-.7 0l-3.5-3.5a.5.5 0 010-.7z"/></svg></button>
@@ -1608,6 +1612,7 @@ function init(cfg) {
   setChecked('behavior-fullscreen_follows_focus', cfg.behavior.fullscreen_follows_focus !== false);
   setChecked('behavior-disable_snap_layouts', cfg.behavior.disable_snap_layouts !== false);
   setChecked('behavior-swap_chain_ghost_animation', cfg.behavior.swap_chain_ghost_animation === true);
+  setChecked('behavior-floating_above_tiled', cfg.behavior.floating_above_tiled === true);
   setCb('cb-behavior-taskbar_buttons', cfg.behavior.taskbar_buttons || 'hide_offscreen');
   setCb('cb-behavior-log_level', cfg.behavior.log_level);
   setCb('cb-behavior-tab_close_action', cfg.behavior.tab_close_action || 'close_window');
@@ -2258,6 +2263,7 @@ function readConfig() {
       fullscreen_follows_focus: checked('behavior-fullscreen_follows_focus'),
       disable_snap_layouts: checked('behavior-disable_snap_layouts'),
       swap_chain_ghost_animation: checked('behavior-swap_chain_ghost_animation'),
+      floating_above_tiled: checked('behavior-floating_above_tiled'),
       taskbar_buttons: cbVal('cb-behavior-taskbar_buttons'),
       log_level: cbVal('cb-behavior-log_level'),
       tab_close_action: cbVal('cb-behavior-tab_close_action'),
