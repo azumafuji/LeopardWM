@@ -3753,10 +3753,8 @@ impl AppState {
                     {
                         return None;
                     }
-                    if let Some(session) = self.observe_current_application_fullscreen(hwnd) {
-                        self.application_fullscreen.insert(hwnd, session);
-                    }
-                    if self.is_application_fullscreen(hwnd)
+                    if self.observe_current_application_fullscreen(hwnd).is_some()
+                        || self.is_application_fullscreen(hwnd)
                         || self.application_fullscreen.iter().any(|(&other, session)| {
                             other != hwnd && session.monitor_id == monitor_id
                         })

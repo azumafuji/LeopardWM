@@ -10292,6 +10292,28 @@ fn test_display_change_focus_does_not_adopt_untracked_application_fullscreen() {
     assert!(!leopardwm_platform_win32::is_window_visible(
         fullscreen.id()
     ));
+
+    state.application_fullscreen.clear();
+    state.workspaces.get_mut(&1).unwrap()[1]
+        .remove_window(fullscreen.id())
+        .unwrap();
+    let active = &mut state.workspaces.get_mut(&1).unwrap()[0];
+    active.insert_window(fullscreen.id(), Some(600)).unwrap();
+    active.focus_window(100).unwrap();
+    assert!(!state.is_application_fullscreen(fullscreen.id()));
+
+    state.handle_window_event(WindowEvent::DisplayChange);
+
+    assert!(
+        !state.is_application_fullscreen(fullscreen.id()),
+        "active-workspace observation must not bypass fullscreen-entry lifecycle cleanup"
+    );
+    assert_eq!(state.previous_focused_hwnd, Some(100));
+    assert_eq!(
+        state.focused_workspace().unwrap().focused_window(),
+        Some(100)
+    );
+    assert!(display_change_focus_events(&mut events).is_empty());
 }
 
 #[test]
