@@ -88,7 +88,9 @@ mod menu_ids {
     pub const TOGGLE_ACTIVE_BORDER: &str = "toggle_active_border";
     pub const TOGGLE_FOCUS_NEW_WINDOWS: &str = "toggle_focus_new_windows";
     pub const TOGGLE_FOCUS_FOLLOWS_MOUSE: &str = "toggle_focus_follows_mouse";
-    pub const TOGGLE_HIDE_OFFSCREEN_TASKBAR: &str = "toggle_hide_offscreen_taskbar";
+    pub const TASKBAR_HIDE_OFFSCREEN: &str = "taskbar_hide_offscreen";
+    pub const TASKBAR_HIDE_INACTIVE_WORKSPACES: &str = "taskbar_hide_inactive_workspaces";
+    pub const TASKBAR_SHOW_ALL: &str = "taskbar_show_all";
     pub const TOGGLE_AUTO_START: &str = "toggle_auto_start";
     pub const CENTERING_CENTER: &str = "centering_center";
     pub const CENTERING_JUST_IN_VIEW: &str = "centering_just_in_view";
@@ -125,8 +127,7 @@ pub enum TrayEvent {
     ToggleFocusNewWindows,
     /// User toggled "Focus Follows Mouse" check item.
     ToggleFocusFollowsMouse,
-    /// User toggled "Hide off-screen taskbar buttons" check item.
-    ToggleHideOffscreenTaskbar,
+    SetTaskbarButtons(crate::config::TaskbarButtons),
     /// User toggled "Start with Windows" check item.
     ToggleAutoStart,
     /// User selected "Center" centering mode.
@@ -149,6 +150,9 @@ pub const CENTERING_JUST_IN_VIEW: u8 = 1;
 pub const CENTERING_ON_OVERFLOW: u8 = 2;
 pub const PLACEMENT_NEW_COLUMN: u8 = 0;
 pub const PLACEMENT_IN_COLUMN: u8 = 1;
+pub const TASKBAR_HIDE_OFFSCREEN: u8 = 0;
+pub const TASKBAR_HIDE_INACTIVE_WORKSPACES: u8 = 1;
+pub const TASKBAR_SHOW_ALL: u8 = 2;
 
 /// Shared state between the caller and the message-loop thread.
 ///
@@ -161,7 +165,7 @@ struct SharedState {
     active_border: AtomicBool,
     focus_new_windows: AtomicBool,
     focus_follows_mouse: AtomicBool,
-    hide_offscreen_taskbar: AtomicBool,
+    taskbar_buttons: AtomicU8,
     auto_start: AtomicBool,
     centering_mode: AtomicU8,
     placement_mode: AtomicU8,
@@ -175,7 +179,9 @@ struct TrayItems {
     active_border_item: CheckMenuItem,
     focus_new_windows_item: CheckMenuItem,
     focus_follows_mouse_item: CheckMenuItem,
-    hide_offscreen_taskbar_item: CheckMenuItem,
+    taskbar_hide_offscreen_item: CheckMenuItem,
+    taskbar_hide_inactive_workspaces_item: CheckMenuItem,
+    taskbar_show_all_item: CheckMenuItem,
     auto_start_item: CheckMenuItem,
     centering_center_item: CheckMenuItem,
     centering_just_in_view_item: CheckMenuItem,
@@ -190,7 +196,7 @@ pub struct QuickToggleState {
     pub active_border: bool,
     pub focus_new_windows: bool,
     pub focus_follows_mouse: bool,
-    pub hide_offscreen_taskbar: bool,
+    pub taskbar_buttons: u8,
     pub auto_start: bool,
     /// 0 = Center, 1 = JustInView, 2 = OnOverflow
     pub centering_mode: u8,
@@ -231,7 +237,7 @@ impl TrayManager {
             active_border: AtomicBool::new(initial.active_border),
             focus_new_windows: AtomicBool::new(initial.focus_new_windows),
             focus_follows_mouse: AtomicBool::new(initial.focus_follows_mouse),
-            hide_offscreen_taskbar: AtomicBool::new(initial.hide_offscreen_taskbar),
+            taskbar_buttons: AtomicU8::new(initial.taskbar_buttons),
             auto_start: AtomicBool::new(initial.auto_start),
             centering_mode: AtomicU8::new(initial.centering_mode),
             placement_mode: AtomicU8::new(initial.placement_mode),
@@ -317,8 +323,8 @@ impl TrayManager {
             .focus_follows_mouse
             .store(toggles.focus_follows_mouse, Ordering::Relaxed);
         self.shared
-            .hide_offscreen_taskbar
-            .store(toggles.hide_offscreen_taskbar, Ordering::Relaxed);
+            .taskbar_buttons
+            .store(toggles.taskbar_buttons, Ordering::Relaxed);
         self.shared
             .auto_start
             .store(toggles.auto_start, Ordering::Relaxed);
@@ -514,9 +520,16 @@ fn run_tray_thread(
                         items
                             .focus_follows_mouse_item
                             .set_checked(shared.focus_follows_mouse.load(Ordering::Relaxed));
+                        let tb = shared.taskbar_buttons.load(Ordering::Relaxed);
                         items
-                            .hide_offscreen_taskbar_item
-                            .set_checked(shared.hide_offscreen_taskbar.load(Ordering::Relaxed));
+                            .taskbar_hide_offscreen_item
+                            .set_checked(tb == TASKBAR_HIDE_OFFSCREEN);
+                        items
+                            .taskbar_hide_inactive_workspaces_item
+                            .set_checked(tb == TASKBAR_HIDE_INACTIVE_WORKSPACES);
+                        items
+                            .taskbar_show_all_item
+                            .set_checked(tb == TASKBAR_SHOW_ALL);
                         items
                             .auto_start_item
                             .set_checked(shared.auto_start.load(Ordering::Relaxed));
@@ -618,14 +631,38 @@ fn build_tray(initial: &QuickToggleState) -> Result<(tray_icon::TrayIcon, TrayIt
     );
     append(&focus_follows_mouse_item)?;
 
-    let hide_offscreen_taskbar_item = CheckMenuItem::with_id(
-        menu_ids::TOGGLE_HIDE_OFFSCREEN_TASKBAR,
-        "Hide Off-Screen Taskbar Buttons",
+    let taskbar_sub = Submenu::new("Taskbar buttons", true);
+    let taskbar_hide_offscreen_item = CheckMenuItem::with_id(
+        menu_ids::TASKBAR_HIDE_OFFSCREEN,
+        "Hide off-screen",
         true,
-        initial.hide_offscreen_taskbar,
+        initial.taskbar_buttons == TASKBAR_HIDE_OFFSCREEN,
         None,
     );
-    append(&hide_offscreen_taskbar_item)?;
+    taskbar_sub
+        .append(&taskbar_hide_offscreen_item)
+        .map_err(|e| TrayError::Menu(e.to_string()))?;
+    let taskbar_hide_inactive_workspaces_item = CheckMenuItem::with_id(
+        menu_ids::TASKBAR_HIDE_INACTIVE_WORKSPACES,
+        "Hide inactive workspaces",
+        true,
+        initial.taskbar_buttons == TASKBAR_HIDE_INACTIVE_WORKSPACES,
+        None,
+    );
+    taskbar_sub
+        .append(&taskbar_hide_inactive_workspaces_item)
+        .map_err(|e| TrayError::Menu(e.to_string()))?;
+    let taskbar_show_all_item = CheckMenuItem::with_id(
+        menu_ids::TASKBAR_SHOW_ALL,
+        "Show all",
+        true,
+        initial.taskbar_buttons == TASKBAR_SHOW_ALL,
+        None,
+    );
+    taskbar_sub
+        .append(&taskbar_show_all_item)
+        .map_err(|e| TrayError::Menu(e.to_string()))?;
+    append(&taskbar_sub)?;
 
     let auto_start_item = CheckMenuItem::with_id(
         menu_ids::TOGGLE_AUTO_START,
@@ -768,7 +805,9 @@ fn build_tray(initial: &QuickToggleState) -> Result<(tray_icon::TrayIcon, TrayIt
         active_border_item,
         focus_new_windows_item,
         focus_follows_mouse_item,
-        hide_offscreen_taskbar_item,
+        taskbar_hide_offscreen_item,
+        taskbar_hide_inactive_workspaces_item,
+        taskbar_show_all_item,
         auto_start_item,
         centering_center_item,
         centering_just_in_view_item,
@@ -818,7 +857,15 @@ fn map_menu_id_to_event(menu_id: &str) -> Option<TrayEvent> {
         menu_ids::TOGGLE_ACTIVE_BORDER => Some(TrayEvent::ToggleActiveBorder),
         menu_ids::TOGGLE_FOCUS_NEW_WINDOWS => Some(TrayEvent::ToggleFocusNewWindows),
         menu_ids::TOGGLE_FOCUS_FOLLOWS_MOUSE => Some(TrayEvent::ToggleFocusFollowsMouse),
-        menu_ids::TOGGLE_HIDE_OFFSCREEN_TASKBAR => Some(TrayEvent::ToggleHideOffscreenTaskbar),
+        menu_ids::TASKBAR_HIDE_OFFSCREEN => Some(TrayEvent::SetTaskbarButtons(
+            crate::config::TaskbarButtons::HideOffscreen,
+        )),
+        menu_ids::TASKBAR_HIDE_INACTIVE_WORKSPACES => Some(TrayEvent::SetTaskbarButtons(
+            crate::config::TaskbarButtons::HideInactiveWorkspaces,
+        )),
+        menu_ids::TASKBAR_SHOW_ALL => Some(TrayEvent::SetTaskbarButtons(
+            crate::config::TaskbarButtons::ShowAll,
+        )),
         menu_ids::TOGGLE_AUTO_START => Some(TrayEvent::ToggleAutoStart),
         menu_ids::CENTERING_CENTER => Some(TrayEvent::SetCenteringCenter),
         menu_ids::CENTERING_JUST_IN_VIEW => Some(TrayEvent::SetCenteringJustInView),
@@ -1002,6 +1049,24 @@ mod tests {
             map_menu_id_to_event(menu_ids::CENTERING_JUST_IN_VIEW),
             Some(TrayEvent::SetCenteringJustInView)
         ));
+        for (id, expected) in [
+            (
+                menu_ids::TASKBAR_HIDE_OFFSCREEN,
+                crate::config::TaskbarButtons::HideOffscreen,
+            ),
+            (
+                menu_ids::TASKBAR_HIDE_INACTIVE_WORKSPACES,
+                crate::config::TaskbarButtons::HideInactiveWorkspaces,
+            ),
+            (
+                menu_ids::TASKBAR_SHOW_ALL,
+                crate::config::TaskbarButtons::ShowAll,
+            ),
+        ] {
+            assert!(
+                matches!(map_menu_id_to_event(id), Some(TrayEvent::SetTaskbarButtons(mode)) if mode == expected)
+            );
+        }
         assert!(map_menu_id_to_event("unknown").is_none());
     }
 

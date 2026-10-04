@@ -371,9 +371,18 @@ pub enum TabCloseAction {
     Untab,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskbarButtons {
+    #[default]
+    HideOffscreen,
+    HideInactiveWorkspaces,
+    ShowAll,
+}
+
 /// Behavior-related configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, remote = "Self")]
 pub struct BehaviorConfig {
     /// Whether to focus new windows automatically.
     #[serde(default = "default_true")]
@@ -427,11 +436,11 @@ pub struct BehaviorConfig {
     #[serde(default)]
     pub new_window_placement: NewWindowPlacement,
 
-    /// Hide a window's taskbar button while it isn't visible in the current
-    /// view (on another workspace, or scrolled out of view). Floating and
-    /// minimized windows always keep their button.
-    #[serde(default = "default_true")]
-    pub hide_offscreen_taskbar_buttons: bool,
+    /// Taskbar button visibility policy. Inactive workspaces hide all buttons
+    /// unless ShowAll is selected. On the active workspace, HideOffscreen
+    /// keeps buttons for visible, floating, and minimized windows.
+    #[serde(default)]
+    pub taskbar_buttons: TaskbarButtons,
 
     /// Wrap vertical focus/move at a column's top or bottom edge into the
     /// adjacent workspace. When on, focus_up/focus_down at the edge switch to
@@ -492,12 +501,45 @@ impl Default for BehaviorConfig {
             tab_close_action: TabCloseAction::default(),
             swap_chain_ghost_animation: true,
             new_window_placement: NewWindowPlacement::default(),
-            hide_offscreen_taskbar_buttons: true,
+            taskbar_buttons: TaskbarButtons::default(),
             workspace_edge_wrap: false,
             mouse_follows_focus: false,
             fullscreen_follows_focus: true,
             skip_empty_workspaces: false,
         }
+    }
+}
+
+impl Serialize for BehaviorConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        Self::serialize(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BehaviorConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(fields) = value.as_object_mut() {
+            if let Some(legacy) = fields.remove("hide_offscreen_taskbar_buttons") {
+                if !fields.contains_key("taskbar_buttons") {
+                    let enabled = legacy.as_bool().ok_or_else(|| {
+                        serde::de::Error::custom("hide_offscreen_taskbar_buttons must be a boolean")
+                    })?;
+                    fields.insert(
+                        "taskbar_buttons".into(),
+                        serde_json::Value::String(
+                            if enabled {
+                                "hide_offscreen"
+                            } else {
+                                "show_all"
+                            }
+                            .into(),
+                        ),
+                    );
+                }
+            }
+        }
+        Self::deserialize(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -2919,15 +2961,70 @@ mod tests {
     }
 
     #[test]
-    fn test_hide_offscreen_taskbar_buttons_defaults_true_and_roundtrips() {
-        // Absent from config => true (serde default).
-        let absent: Config = toml::from_str("[behavior]\n").unwrap();
-        assert!(absent.behavior.hide_offscreen_taskbar_buttons);
-        // Explicit false round-trips through serialize/deserialize.
-        let mut config = Config::default();
-        config.behavior.hide_offscreen_taskbar_buttons = false;
-        let parsed: Config = toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
-        assert!(!parsed.behavior.hide_offscreen_taskbar_buttons);
+    fn test_taskbar_buttons_config_migration_and_precedence() {
+        use TaskbarButtons::*;
+        assert_eq!(Config::default().behavior.taskbar_buttons, HideOffscreen);
+        for (fields, expected) in [
+            ("", HideOffscreen),
+            ("hide_offscreen_taskbar_buttons = true", HideOffscreen),
+            ("hide_offscreen_taskbar_buttons = false", ShowAll),
+            ("taskbar_buttons = \"hide_offscreen\"", HideOffscreen),
+            ("taskbar_buttons = \"hide_inactive_workspaces\"", HideInactiveWorkspaces),
+            ("taskbar_buttons = \"show_all\"", ShowAll),
+            ("hide_offscreen_taskbar_buttons = true\ntaskbar_buttons = \"show_all\"", ShowAll),
+            ("hide_offscreen_taskbar_buttons = false\ntaskbar_buttons = \"hide_inactive_workspaces\"", HideInactiveWorkspaces),
+            ("taskbar_buttons = \"hide_offscreen\"\nhide_offscreen_taskbar_buttons = false", HideOffscreen),
+        ] {
+            let config: Config = toml::from_str(&format!("[behavior]\n{fields}\n")).unwrap();
+            assert_eq!(config.behavior.taskbar_buttons, expected, "{fields}");
+            let saved = toml::to_string_pretty(&config).unwrap();
+            let parsed: Config = toml::from_str(&saved).unwrap();
+            assert_eq!(parsed.behavior.taskbar_buttons, expected, "{fields}");
+            assert!(!saved.contains("hide_offscreen_taskbar_buttons"));
+        }
+        for fields in [
+            "taskbar_buttons = \"unknown\"",
+            "taskbar_buttons = true",
+            "hide_offscreen_taskbar_buttons = \"false\"",
+            "hide_offscreen_taskbar_buttons = true\ntaskbar_buttons = \"unknown\"",
+        ] {
+            assert!(
+                toml::from_str::<Config>(&format!("[behavior]\n{fields}\n")).is_err(),
+                "{fields}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_taskbar_buttons_settings_json_saves_only_canonical_key() {
+        for mode in ["hide_offscreen", "hide_inactive_workspaces", "show_all"] {
+            let config: Config = serde_json::from_value(serde_json::json!({
+                "behavior": {
+                    "taskbar_buttons": mode,
+                    "hide_offscreen_taskbar_buttons": false,
+                    "mouse_follows_focus": true,
+                    "log_level": "warn"
+                }
+            }))
+            .unwrap();
+            let saved: toml::Value =
+                toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+            assert_eq!(saved["behavior"]["taskbar_buttons"].as_str(), Some(mode));
+            assert!(!saved["behavior"]
+                .as_table()
+                .unwrap()
+                .contains_key("hide_offscreen_taskbar_buttons"));
+            assert_eq!(
+                saved["behavior"]["mouse_follows_focus"].as_bool(),
+                Some(true)
+            );
+            assert_eq!(saved["behavior"]["log_level"].as_str(), Some("warn"));
+            let loaded = serde_json::to_value(&config).unwrap();
+            assert_eq!(loaded["behavior"]["taskbar_buttons"], mode);
+            assert!(loaded["behavior"]
+                .get("hide_offscreen_taskbar_buttons")
+                .is_none());
+        }
     }
 
     // =========================================================================

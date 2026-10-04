@@ -261,6 +261,8 @@ stdout remains usable YAML.
 
 Enable **Settings → Layout → Center single column**, or set `center_single_column = true` under `[layout]`, to center the only active tiled column when it fits within the viewport’s outer gaps. It is off by default and applies with every `centering_mode` (`center`, `just_in_view`, or `on_overflow`), independently of `center_past_edges`. Minimized-only columns and floating windows do not count; wider columns keep the normal scrolling behavior.
 
+**Taskbar buttons** — Settings → Behavior → Taskbar buttons, or `taskbar_buttons` under `[behavior]`, offers `"hide_offscreen"` (default, hide buttons on inactive workspaces and for tiled windows scrolled out of view), `"hide_inactive_workspaces"` (keep every button on each monitor's active workspace, even when scrolled out of view), and `"show_all"`. Floating and minimized windows keep their buttons on the active workspace; inactive workspaces hide all buttons unless `"show_all"` is selected. Sticky windows follow the active workspace. Changes apply on config reload without changing window placement. Existing `hide_offscreen_taskbar_buttons = true` / `false` maps to `"hide_offscreen"` / `"show_all"`; when both keys are present, `taskbar_buttons` wins. Settings saves only the new key.
+
 ### Layout commands
 
 Most users drive the layout via hotkeys, but every hotkey has a CLI equivalent — useful for scripting or AutoHotkey integration.

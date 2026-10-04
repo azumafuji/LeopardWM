@@ -1127,7 +1127,7 @@ impl AppState {
                         // switched to.
                         #[cfg(not(test))]
                         let _ = leopardwm_platform_win32::move_window_offscreen(hwnd);
-                        leopardwm_platform_win32::taskbar::taskbar_hide(hwnd);
+                        self.sync_inactive_workspace_taskbar_button(hwnd);
                     }
                     if let Some(snapshot) = snapshot {
                         self.start_layout_transition(snapshot);
@@ -3167,7 +3167,7 @@ impl AppState {
             ApplicationFullscreenExitRoute::InactivePark => {
                 #[cfg(not(test))]
                 let _ = leopardwm_platform_win32::move_window_offscreen(hwnd);
-                leopardwm_platform_win32::taskbar::taskbar_hide(hwnd);
+                self.sync_inactive_workspace_taskbar_button(hwnd);
             }
             ApplicationFullscreenExitRoute::ActiveTiledApply => {
                 if let Err(e) = self.apply_layout() {

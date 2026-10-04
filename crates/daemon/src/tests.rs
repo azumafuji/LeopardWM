@@ -8146,6 +8146,144 @@ fn test_tear_off_event_order_does_not_leave_stale_focus_or_ghost() {
             || transition.ghosted_wids.contains(&300)));
 }
 
+fn taskbar_policy_state() -> AppState {
+    let mut state = AppState::new_with_config(test_config(), two_monitors());
+    state.ensure_workspace_exists(1, 2);
+    state.ensure_workspace_exists(2, 2);
+    state.active_workspace.insert(2, 1);
+    let active = &mut state.workspaces.get_mut(&1).unwrap()[0];
+    for wid in [100, 200, 300, 400, 500] {
+        active.insert_window(wid, Some(1000)).unwrap();
+    }
+    active.mark_minimized(500);
+    active
+        .add_floating(600, Rect::new(50, 50, 300, 200))
+        .unwrap();
+    active.focus_window(100).unwrap();
+    active.set_scroll_offset(0.0);
+    state.sticky_windows.insert(400);
+    let inactive = &mut state.workspaces.get_mut(&1).unwrap()[1];
+    inactive.insert_window(700, Some(1000)).unwrap();
+    inactive.insert_window(800, Some(1000)).unwrap();
+    inactive.mark_minimized(800);
+    inactive
+        .add_floating(900, Rect::new(50, 50, 300, 200))
+        .unwrap();
+    state.workspaces.get_mut(&2).unwrap()[1]
+        .insert_window(1000, Some(800))
+        .unwrap();
+    state.workspaces.get_mut(&2).unwrap()[0]
+        .insert_window(1100, Some(800))
+        .unwrap();
+    state
+}
+
+#[test]
+fn test_taskbar_buttons_classification_per_monitor() {
+    use config::TaskbarButtons::*;
+    for (mode, expected) in [
+        (
+            HideOffscreen,
+            [
+                (100, true),
+                (200, true),
+                (300, false),
+                (400, false),
+                (500, true),
+                (600, true),
+                (700, false),
+                (800, false),
+                (900, false),
+                (1000, true),
+                (1100, false),
+            ],
+        ),
+        (
+            HideInactiveWorkspaces,
+            [
+                (100, true),
+                (200, true),
+                (300, true),
+                (400, true),
+                (500, true),
+                (600, true),
+                (700, false),
+                (800, false),
+                (900, false),
+                (1000, true),
+                (1100, false),
+            ],
+        ),
+        (
+            ShowAll,
+            [
+                (100, true),
+                (200, true),
+                (300, true),
+                (400, true),
+                (500, true),
+                (600, true),
+                (700, true),
+                (800, true),
+                (900, true),
+                (1000, true),
+                (1100, true),
+            ],
+        ),
+    ] {
+        let mut state = taskbar_policy_state();
+        state.config.behavior.taskbar_buttons = mode;
+        let before = state.workspaces[&1][0].compute_placements(state.layout_viewport(1));
+        assert!(before
+            .iter()
+            .any(|p| p.window_id == 300
+                && p.visibility != leopardwm_core_layout::Visibility::Visible));
+        state.sync_taskbar_buttons();
+        let mut commands = state.take_recorded_taskbar_commands();
+        commands.sort_unstable();
+        assert_eq!(commands, expected, "{mode:?}");
+        let after = state.workspaces[&1][0].compute_placements(state.layout_viewport(1));
+        let geometry = |placements: Vec<leopardwm_core_layout::WindowPlacement>| {
+            placements
+                .into_iter()
+                .map(|p| (p.window_id, p.rect, p.visibility))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(geometry(after), geometry(before));
+    }
+}
+
+#[test]
+fn test_taskbar_buttons_reload_resyncs_show_and_hide() {
+    use config::TaskbarButtons::*;
+    let mut state = taskbar_policy_state();
+    for (mode, offscreen, inactive) in [
+        (HideOffscreen, false, false),
+        (HideInactiveWorkspaces, true, false),
+        (ShowAll, true, true),
+        (HideInactiveWorkspaces, true, false),
+        (HideOffscreen, false, false),
+    ] {
+        let mut config = state.config.clone();
+        config.behavior.taskbar_buttons = mode;
+        state.apply_config(config);
+        let commands = state.take_recorded_taskbar_commands();
+        assert!(
+            commands.contains(&(300, offscreen)),
+            "{mode:?}: {commands:?}"
+        );
+        assert!(
+            commands.contains(&(700, inactive)),
+            "{mode:?}: {commands:?}"
+        );
+        assert!(commands.contains(&(1000, true)), "{mode:?}: {commands:?}");
+        assert!(
+            commands.contains(&(1100, inactive)),
+            "{mode:?}: {commands:?}"
+        );
+    }
+}
+
 #[test]
 fn test_taskbar_button_action_leaves_application_fullscreen_untouched() {
     use crate::helpers::{taskbar_button_action, TaskbarButtonAction};
@@ -18842,3 +18980,57 @@ mod maximized_admission_regression;
 
 #[path = "display_change_regression.rs"]
 mod display_change_regression;
+
+#[test]
+fn test_taskbar_buttons_background_admission_respects_policy() {
+    use config::TaskbarButtons::*;
+    for (mode, show) in [
+        (HideOffscreen, false),
+        (HideInactiveWorkspaces, false),
+        (ShowAll, true),
+    ] {
+        let mut config = test_config();
+        config.behavior.taskbar_buttons = mode;
+        config.window_rules = vec![tile_open_on_workspace_rule("TaskbarBackground", 2)];
+        let mut state = AppState::new_with_config(config, test_monitors());
+        let mut window = make_test_window_info(100);
+        window.class_name = "TaskbarBackground".into();
+        state.injected_window_info.insert(100, window);
+        state.handle_window_event(WindowEvent::Created(100, 0));
+        assert_eq!(state.find_window_workspace(100), Some((1, 1)));
+        assert_eq!(state.active_workspace_idx(1), 0);
+        let commands = state.take_recorded_taskbar_commands();
+        assert!(commands.contains(&(100, show)), "{mode:?}: {commands:?}");
+        assert!(!commands.contains(&(100, !show)), "{mode:?}: {commands:?}");
+    }
+}
+
+#[test]
+fn test_taskbar_buttons_inactive_fullscreen_exit_respects_policy() {
+    use config::TaskbarButtons::*;
+    for (mode, show) in [
+        (HideOffscreen, false),
+        (HideInactiveWorkspaces, false),
+        (ShowAll, true),
+    ] {
+        let mut state = AppState::new_with_config(test_config(), test_monitors());
+        state.config.behavior.taskbar_buttons = mode;
+        state.ensure_workspace_exists(1, 2);
+        state.workspaces.get_mut(&1).unwrap()[1]
+            .insert_window(100, None)
+            .unwrap();
+        state.application_fullscreen.insert(
+            100,
+            crate::state::ApplicationFullscreenState {
+                monitor_id: 1,
+                rect: Rect::new(0, 0, 1920, 1080),
+            },
+        );
+        state.handle_window_event(WindowEvent::MovedOrResized(100));
+        assert!(!state.is_application_fullscreen(100));
+        assert_eq!(state.find_window_workspace(100), Some((1, 1)));
+        let commands = state.take_recorded_taskbar_commands();
+        assert!(commands.contains(&(100, show)), "{mode:?}: {commands:?}");
+        assert!(!commands.contains(&(100, !show)), "{mode:?}: {commands:?}");
+    }
+}

@@ -325,3 +325,39 @@ fn released_state_admits_created_windows_once_and_refreshes_while_paused() {
         IpcResponse::Ok
     ));
 }
+
+#[test]
+fn test_taskbar_buttons_pause_and_release_restore_hidden_buttons() {
+    for (release_all, already_paused) in [(true, false), (true, true), (false, false)] {
+        let mut state = managed_state();
+        state.paused = already_paused;
+        state.sync_taskbar_buttons();
+        assert!(state
+            .take_recorded_taskbar_commands()
+            .contains(&(30, false)));
+        if release_all {
+            assert!(matches!(
+                state.handle_command(IpcCommand::ReleaseAllWindows),
+                IpcResponse::Ok
+            ));
+        } else {
+            state.toggle_pause("test taskbar restoration").unwrap();
+        }
+        assert!(state.paused);
+        let commands = state.take_recorded_taskbar_commands();
+        for wid in [10, 20, 30] {
+            assert!(
+                commands.contains(&(wid, true)),
+                "release_all={release_all}: {commands:?}"
+            );
+            assert!(
+                !commands.contains(&(wid, false)),
+                "release_all={release_all}: {commands:?}"
+            );
+        }
+        state.toggle_pause("test taskbar policy resume").unwrap();
+        assert!(state
+            .take_recorded_taskbar_commands()
+            .contains(&(30, false)));
+    }
+}

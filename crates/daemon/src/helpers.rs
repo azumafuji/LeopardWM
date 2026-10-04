@@ -274,8 +274,6 @@ impl AppState {
             }
         }
 
-        // Apply a toggled hide_offscreen_taskbar_buttons setting live (restores
-        // all buttons when turned off, re-hides off-view ones when turned on).
         self.sync_taskbar_buttons();
 
         info!(
@@ -297,17 +295,9 @@ impl AppState {
         ids
     }
 
-    /// Keep a window's taskbar button iff it's actually visible in a viewport:
-    /// hidden when on an inactive workspace OR scrolled off-viewport on the
-    /// active one; shown when visible (and always for floating/minimized
-    /// windows, which the user still reaches via the taskbar). External windows
-    /// can't be hidden from the taskbar by cloaking or off-screen position, so
-    /// this drives `ITaskbarList` directly. Idempotent and change-gated in the
-    /// controller, so it's cheap to call after any layout/scroll change.
-    pub(crate) fn sync_taskbar_buttons(&self) {
-        use leopardwm_core_layout::Visibility;
+    fn apply_taskbar_button_action(&self, wid: u64, action: TaskbarButtonAction) {
         use leopardwm_platform_win32::taskbar::{taskbar_hide, taskbar_show};
-        let apply = |wid: u64, action: TaskbarButtonAction| match action {
+        match action {
             TaskbarButtonAction::Show => {
                 #[cfg(test)]
                 self.recorded_taskbar_commands
@@ -325,17 +315,32 @@ impl AppState {
                 taskbar_hide(wid);
             }
             TaskbarButtonAction::Unchanged => {}
-        };
+        }
+    }
+
+    pub(crate) fn restore_taskbar_buttons(&self) {
+        for wid in self.all_managed_window_ids() {
+            self.apply_taskbar_button_action(wid, TaskbarButtonAction::Show);
+        }
+    }
+
+    pub(crate) fn sync_inactive_workspace_taskbar_button(&self, wid: u64) {
+        let show = self.config.behavior.taskbar_buttons == config::TaskbarButtons::ShowAll;
+        self.apply_taskbar_button_action(wid, taskbar_button_action(false, show));
+    }
+
+    pub(crate) fn sync_taskbar_buttons(&self) {
+        use leopardwm_core_layout::Visibility;
         // Disabled: make sure no button stays hidden (restores any we hid before
         // the user turned the option off), then leave the taskbar alone.
-        if !self.config.behavior.hide_offscreen_taskbar_buttons {
+        if self.config.behavior.taskbar_buttons == config::TaskbarButtons::ShowAll {
             for ws_vec in self.workspaces.values() {
                 for workspace in ws_vec {
                     for wid in workspace.all_window_ids() {
                         if taskbar_button_action(self.is_application_fullscreen(wid), true)
                             == TaskbarButtonAction::Show
                         {
-                            apply(wid, TaskbarButtonAction::Show);
+                            self.apply_taskbar_button_action(wid, TaskbarButtonAction::Show);
                         }
                     }
                 }
@@ -348,16 +353,15 @@ impl AppState {
             for (idx, workspace) in ws_vec.iter().enumerate() {
                 if idx != active {
                     for wid in workspace.all_window_ids() {
-                        apply(
+                        self.apply_taskbar_button_action(
                             wid,
                             taskbar_button_action(self.is_application_fullscreen(wid), false),
                         );
                     }
                     continue;
                 }
-                // Active workspace: a tiled window keeps its button only while
-                // it's visible in the viewport; floating and minimized windows
-                // always keep theirs.
+                // HideOffscreen keeps visible, floating, and minimized buttons
+                // on the active workspace; HideInactiveWorkspaces keeps them all.
                 let visible: std::collections::HashSet<u64> = workspace
                     .compute_placements(viewport)
                     .iter()
@@ -365,10 +369,12 @@ impl AppState {
                     .map(|p| p.window_id)
                     .collect();
                 for wid in workspace.all_window_ids() {
-                    let keep = workspace.is_floating(wid)
+                    let keep = self.config.behavior.taskbar_buttons
+                        == config::TaskbarButtons::HideInactiveWorkspaces
+                        || workspace.is_floating(wid)
                         || workspace.is_minimized(wid)
                         || visible.contains(&wid);
-                    apply(
+                    self.apply_taskbar_button_action(
                         wid,
                         taskbar_button_action(self.is_application_fullscreen(wid), keep),
                     );
@@ -966,6 +972,7 @@ impl AppState {
             source
         );
         if self.paused {
+            self.restore_taskbar_buttons();
             // Restore WS_MAXIMIZEBOX so windows behave normally while paused
             self.restore_snap_for_all_windows();
             self.hide_border();

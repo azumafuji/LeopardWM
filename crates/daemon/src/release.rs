@@ -11,6 +11,8 @@ impl AppState {
     pub(crate) fn release_all_windows(&mut self) -> Result<()> {
         if !self.paused {
             self.toggle_pause("release all windows")?;
+        } else {
+            self.restore_taskbar_buttons();
         }
 
         self.hide_border();

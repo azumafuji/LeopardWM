@@ -6,6 +6,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Features
 
+- **Taskbar buttons can now stay visible for windows scrolled out of view on the active workspace.** Set `taskbar_buttons = "hide_inactive_workspaces"` under `[behavior]` or choose Settings → Behavior → Taskbar buttons → Hide inactive workspaces. The default, `"hide_offscreen"`, preserves the existing behavior; `"show_all"` keeps all buttons. The old `hide_offscreen_taskbar_buttons` key keeps working, with the new key taking precedence when both are present. (#105)
 - **New windows can now open on the focused monitor's active workspace instead of the monitor where Windows placed them.** Set `new_window_monitor = "focused"` under `[behavior]` or choose Settings → Behavior → New window monitor → Focused monitor; `"opening"` remains the default. Workspace-routing rules and sticky windows keep their existing placement. (#108)
 - **Relative workspace navigation can now skip empty workspaces on the same monitor.** Enable `skip_empty_workspaces = true` under `[behavior]` or Settings → Behavior → Skip empty workspaces; it is off by default. Previous/next workspace and edge-wrap vertical focus skip empty slots, counting floating and minimized windows but not sticky windows. Explicit workspace selection and window moves are unchanged. (#70)
 - **A documented Yasb configuration shows all nine workspaces on a selected monitor and switches them on click.** The built-in Custom widget polls the existing CLI for active/occupied indicators and workspace-name tooltips; no plugin is required. (#127)
@@ -15,6 +16,8 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
+- **Pausing tiling or releasing all windows now restores hidden taskbar buttons.** Resuming re-applies the configured taskbar policy.
+- **Showing all taskbar buttons now also applies to background windows and windows leaving fullscreen on an inactive workspace.** Those event paths no longer hide buttons independently of the selected policy.
 - **Windows in columns scrolled off the left edge no longer show a sliver on screen when the app resizes itself.** Wider windows stay anchored outside the viewport, and off-screen resizes missed during placement are checked again once placement settles.
 - **With `workspace_edge_wrap` on, vertical focus now leaves an empty workspace.** An empty workspace counts as a column edge, so `focus_up` and `focus_down` (including three-finger swipes mapped to them) move to the adjacent workspace instead of doing nothing. Moving windows up or down is unchanged. Contributed by @c3us-dev. (#133)
 - **With `track_focus_changes = false`, a window that is maximized when LeopardWM admits it now always waits for its restore to settle before it is tiled.** Whether it waited depended on thread timing.

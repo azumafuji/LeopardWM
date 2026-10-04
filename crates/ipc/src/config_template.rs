@@ -98,10 +98,11 @@ focus_follows_mouse = false
 # right) or "in_column" (stacked into the focused column).
 # new_window_placement = "new_column"
 
-# Hide a window's taskbar button while it isn't visible in the current view
-# (on another workspace, or scrolled out of view). Floating and minimized
-# windows always keep their button. Default true.
-# hide_offscreen_taskbar_buttons = true
+# Taskbar buttons: "hide_offscreen" (default, hide inactive workspaces and
+# scrolled-offscreen windows), "hide_inactive_workspaces" (keep every button
+# on each monitor's active workspace), or "show_all". Floating and minimized
+# windows keep their buttons on the active workspace in every mode.
+# taskbar_buttons = "hide_offscreen"
 
 # Wrap vertical focus/move at a column's top or bottom edge into the adjacent
 # workspace. When on, focus_up/focus_down at the edge switch workspaces and
