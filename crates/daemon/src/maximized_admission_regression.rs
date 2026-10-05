@@ -213,7 +213,7 @@ fn test_first_late_maximize_observes_fresh_app_fullscreen_before_restore() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    for first_zoom_sample in [true, false] {
+    for initially_zoomed in [true, false] {
         let owner = MaximizedOwner::spawn();
         let hwnd = owner.window_id;
         let last_input = Instant::now() - Duration::from_secs(1);
@@ -241,16 +241,22 @@ fn test_first_late_maximize_observes_fresh_app_fullscreen_before_restore() {
         );
         assert!(!state.is_application_fullscreen(hwnd));
         state.paused = false;
-        let mut queries = 0;
+        if initially_zoomed {
+            state.on_window_moved_or_resized_with_native_ops(
+                hwnd,
+                false,
+                || Some(0),
+                |_| panic!("user-initiated maximize must not restore"),
+                |_| true,
+            );
+            assert!(!state.is_application_fullscreen(hwnd));
+        }
         state.on_window_moved_or_resized_with_native_ops(
             hwnd,
             false,
             || Some(u32::try_from(last_input.elapsed().as_millis()).unwrap()),
             |_| panic!("fresh app fullscreen must not be restored into its tile"),
-            |_| {
-                queries += 1;
-                queries == 1 && first_zoom_sample
-            },
+            |_| false,
         );
         assert!(state.is_application_fullscreen(hwnd));
         assert_eq!(state.application_fullscreen[&hwnd].rect, chrome);

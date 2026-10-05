@@ -152,6 +152,37 @@ fn test_self_maximize_outside_admission_settle_window_is_allowed() {
 }
 
 #[test]
+fn test_expired_late_maximize_eligibility_skips_early_native_queries() {
+    let mut state = admit_unmaximized_for_late_maximize(Some(400));
+    state.window_managed_at.insert(
+        100,
+        Instant::now() - crate::event_handler::SNAPBACK_SETTLE_AFTER_CREATE,
+    );
+    state.applying_layout = true;
+    let queries = std::cell::Cell::new(0);
+    state.on_window_moved_or_resized_with_native_ops(
+        100,
+        false,
+        || panic!("expired eligibility must not sample input"),
+        |_| panic!("expired eligibility must not restore"),
+        |_| {
+            queries.set(queries.get() + 1);
+            false
+        },
+    );
+    assert_eq!(
+        queries.get(),
+        1,
+        "only the existing suppression query should run"
+    );
+    assert!(!state
+        .post_admission_maximize_restore_eligible
+        .contains_key(&100));
+    assert!(!state.pending_maximized_admission_restores.contains(&100));
+    assert!(state.deferred_moved_or_resized.contains(&100));
+}
+
+#[test]
 fn test_single_late_maximize_during_admission_suppression_restores() {
     for (applying_layout, display_change_pending) in [(false, false), (true, false), (false, true)]
     {
@@ -163,6 +194,7 @@ fn test_single_late_maximize_during_admission_suppression_restores() {
         state.applying_layout = applying_layout;
         state.display_change_pending = display_change_pending;
         let queued = std::cell::Cell::new(0);
+        let maximize_queries = std::cell::Cell::new(0);
         state.on_window_moved_or_resized_with_native_ops(
             100,
             false,
@@ -171,9 +203,13 @@ fn test_single_late_maximize_during_admission_suppression_restores() {
                 queued.set(queued.get() + 1);
                 Ok(true)
             },
-            |_| true,
+            |_| {
+                maximize_queries.set(maximize_queries.get() + 1);
+                true
+            },
         );
         assert_eq!(queued.get(), 1);
+        assert_eq!(maximize_queries.get(), 1);
         assert!(state.pending_maximized_admission_restores.contains(&100));
     }
 }

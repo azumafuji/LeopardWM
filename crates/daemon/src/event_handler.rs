@@ -3477,6 +3477,16 @@ impl AppState {
         if self.pending_maximized_admission_restores.contains(&hwnd) {
             return;
         }
+        if self
+            .post_admission_maximize_restore_eligible
+            .contains_key(&hwnd)
+            && !self
+                .window_managed_at
+                .get(&hwnd)
+                .is_some_and(|managed_at| managed_at.elapsed() < SNAPBACK_SETTLE_AFTER_CREATE)
+        {
+            self.post_admission_maximize_restore_eligible.remove(&hwnd);
+        }
         let managed_tiled = self
             .find_window_workspace(hwnd)
             .and_then(|(monitor_id, ws_idx)| {
@@ -3497,12 +3507,8 @@ impl AppState {
         {
             let native_maximized = is_maximized(hwnd);
             let (chrome_rect, dwm_rect) = self.application_fullscreen_geometry(hwnd);
-            let session = self.observe_application_fullscreen(
-                hwnd,
-                chrome_rect,
-                dwm_rect,
-                is_maximized(hwnd),
-            );
+            let session =
+                self.observe_application_fullscreen(hwnd, chrome_rect, dwm_rect, native_maximized);
             if session.is_some() {
                 self.post_admission_maximize_restore_eligible.remove(&hwnd);
             } else if native_maximized
