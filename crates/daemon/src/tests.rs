@@ -13966,6 +13966,79 @@ fn assert_workspace_switch_transition_direction(
 }
 
 #[test]
+fn test_workspace_switch_only_animates_visible_outgoing_tabs() {
+    use leopardwm_core_layout::Visibility;
+
+    for focus_following in [false, true] {
+        let mut state = AppState::new_with_config(test_config(), test_monitors());
+        let monitor = state.focused_monitor;
+        let viewport = state.layout_viewport(monitor);
+        let workspace = &mut state.workspaces.get_mut(&monitor).unwrap()[0];
+        workspace.insert_window(100, Some(800)).unwrap();
+        workspace.insert_window_in_column(101, 0).unwrap();
+        workspace.insert_window_in_column(102, 0).unwrap();
+        workspace.toggle_focused_column_tabbed_mode();
+        for wid in [200, 300, 400] {
+            workspace.insert_window(wid, Some(800)).unwrap();
+        }
+        workspace.focus_window(100).unwrap();
+        workspace.set_scroll_offset(0.0);
+        workspace.stop_animation();
+        let outgoing = workspace.compute_placements_animated(viewport);
+        let active = outgoing.iter().find(|p| p.window_id == 100).unwrap();
+        assert_eq!(active.visibility, Visibility::Visible);
+        for wid in [101, 102, 400] {
+            assert_ne!(
+                outgoing
+                    .iter()
+                    .find(|p| p.window_id == wid)
+                    .unwrap()
+                    .visibility,
+                Visibility::Visible
+            );
+        }
+        state.reduce_motion = false;
+        state.config.animation.workspace_switch_duration_ms = 200;
+        state.ensure_workspace_exists(monitor, 1);
+        state.workspaces.get_mut(&monitor).unwrap()[1]
+            .insert_window(500, Some(800))
+            .unwrap();
+        state.previous_focused_hwnd = Some(100);
+
+        if focus_following {
+            state.handle_window_event(WindowEvent::Focused(500, 0));
+        } else {
+            assert!(matches!(
+                state.handle_command(IpcCommand::SwitchWorkspace { index: 2 }),
+                IpcResponse::Ok
+            ));
+        }
+        assert_eq!(state.active_workspace_idx(monitor), 1);
+        let transition = state.layout_transition.as_mut().unwrap();
+        for elapsed_ms in [0, 50, 100, 200] {
+            transition.elapsed_ms = elapsed_ms;
+            let mut frame = Vec::new();
+            AppState::apply_transition_interpolation(transition, &mut frame);
+            assert!(frame.iter().all(|p| {
+                p.visibility != Visibility::Visible || (p.rect.width > 0 && p.rect.height > 0)
+            }));
+            for wid in [101, 102, 400] {
+                assert!(frame.iter().all(|p| p.window_id != wid));
+            }
+            let active_frame = frame.iter().find(|p| p.window_id == 100).unwrap();
+            assert_eq!(active_frame.visibility, Visibility::Visible);
+            assert_eq!(active_frame.rect.width, active.rect.width);
+            assert_eq!(active_frame.rect.height, active.rect.height);
+            if elapsed_ms == 0 {
+                assert_eq!(active_frame.rect, active.rect);
+            } else {
+                assert!(active_frame.rect.y < active.rect.y);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_workspace_relative_switch_wrap_animation_direction() {
     assert_workspace_switch_transition_direction(0, 8, IpcCommand::WorkspacePrev, -1);
     assert_workspace_switch_transition_direction(8, 0, IpcCommand::WorkspaceNext, 1);

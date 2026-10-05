@@ -20,6 +20,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
+- **Hidden tabs no longer shrink to their app's minimum size when you switch away from their workspace.**
 - **File Explorer now gets the same small redraw nudge after sliding that Chrome, Firefox and Windows Terminal get, to address reports of its navigation pane being drawn twice after moving off screen and back.** (#127)
 - **Windows that resize themselves right after LeopardWM places them, like Zen Browser's first-run welcome window, now go back to their tile instead of leaving part of the column empty.**
 - **Untitled helper windows without a title bar, minimize button or resize border, like Zen Browser's first-run startup window, no longer briefly take a column.** Fullscreen apps and explicit Tile/Float rules are unchanged.

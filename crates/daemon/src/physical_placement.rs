@@ -529,6 +529,11 @@ impl AppState {
         let mut physical = Vec::with_capacity(placements.len());
 
         for logical in placements {
+            if logical.visibility == Visibility::Visible
+                && (logical.rect.width <= 0 || logical.rect.height <= 0)
+            {
+                continue;
+            }
             let Some(owner_id) = self.owner_id_for_window(logical.window_id) else {
                 physical.push(logical);
                 continue;
@@ -824,6 +829,40 @@ mod tests {
 
     fn reproduction_window() -> Rect {
         Rect::new(4320, 10, 1600, 1440)
+    }
+
+    #[test]
+    fn physical_dispatch_rejects_nonpositive_visible_sizes() {
+        let mut state = AppState::new_with_config(
+            crate::config::Config::default(),
+            vec![monitor(1, 0, 0, 1920, 1080)],
+        );
+        state.workspaces.get_mut(&1).unwrap()[0]
+            .insert_window(100, Some(800))
+            .unwrap();
+        for (width, height) in [(0, 600), (800, 0), (-1, 600), (800, -1), (0, 0)] {
+            for (wid, column_index) in [(100, 0), (100, usize::MAX), (999, 0)] {
+                let invalid = WindowPlacement {
+                    column_index,
+                    ..placement(wid, Rect::new(0, 0, width, height), Visibility::Visible)
+                };
+                let valid = placement(200, Rect::new(0, 0, 800, 600), Visibility::Visible);
+                let hidden = placement(300, Rect::new(-1920, 0, 0, 0), Visibility::OffScreenLeft);
+                let dispatched =
+                    state.apply_physical_projection(vec![invalid, valid.clone(), hidden.clone()]);
+                assert!(dispatched.iter().all(|p| {
+                    p.visibility != Visibility::Visible || (p.rect.width > 0 && p.rect.height > 0)
+                }));
+                for expected in [valid, hidden] {
+                    let actual = dispatched
+                        .iter()
+                        .find(|p| p.window_id == expected.window_id)
+                        .unwrap();
+                    assert_eq!(actual.rect, expected.rect);
+                    assert_eq!(actual.visibility, expected.visibility);
+                }
+            }
+        }
     }
 
     #[test]

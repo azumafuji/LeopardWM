@@ -1958,21 +1958,9 @@ impl AppState {
             -slide_height
         };
 
-        let viewport = self.layout_viewport(monitor_id);
-
         // Snapshot old workspace positions for exit animation.
-        let mut old_placements: Vec<(u64, leopardwm_core_layout::Rect)> = self
-            .workspaces
-            .get(&monitor_id)
-            .and_then(|v| v.get(active_idx))
-            .map(|ws| {
-                ws.compute_placements_animated(viewport)
-                    .into_iter()
-                    .map(|p| (p.window_id, p.rect))
-                    .collect()
-            })
-            .unwrap_or_default();
-        old_placements.retain(|(wid, _)| !self.is_application_fullscreen(*wid));
+        let mut old_placements = self.workspace_placements(monitor_id, active_idx);
+        old_placements.retain(|p| !self.is_application_fullscreen(p.window_id));
 
         self.active_workspace.insert(monitor_id, ws_idx);
         let viewport_width = self.viewport_width_for(monitor_id);
@@ -1986,45 +1974,40 @@ impl AppState {
         }
 
         // Compute new workspace's final placements for enter animation.
-        let mut new_placements: Vec<(u64, leopardwm_core_layout::Rect)> = self
-            .workspaces
-            .get(&monitor_id)
-            .and_then(|v| v.get(ws_idx))
-            .map(|ws| {
-                ws.compute_placements_animated(viewport)
-                    .into_iter()
-                    .map(|p| (p.window_id, p.rect))
-                    .collect()
-            })
-            .unwrap_or_default();
-        new_placements.retain(|(wid, _)| !self.is_application_fullscreen(*wid));
+        let mut new_placements = self.workspace_placements(monitor_id, ws_idx);
+        new_placements.retain(|p| !self.is_application_fullscreen(p.window_id));
 
         let mut start_rects = std::collections::HashMap::new();
         let mut exit_rects = std::collections::HashMap::new();
         self.prune_recently_restored_managed_windows();
         let restore_focus_target = restore_focus_target.filter(|hwnd| {
             self.recently_restored_managed_windows.contains_key(hwnd)
-                && new_placements.iter().any(|(wid, _)| wid == hwnd)
+                && new_placements.iter().any(|p| p.window_id == *hwnd)
         });
 
-        for (wid, rect) in &new_placements {
-            let start_y = if Some(*wid) == restore_focus_target {
+        for placement in &new_placements {
+            let rect = placement.rect;
+            let start_y = if Some(placement.window_id) == restore_focus_target {
                 rect.y
             } else {
                 rect.y + y_offset
             };
             start_rects.insert(
-                *wid,
+                placement.window_id,
                 leopardwm_core_layout::Rect::new(rect.x, start_y, rect.width, rect.height),
             );
         }
         if let Some(hwnd) = restore_focus_target {
             self.recently_restored_managed_windows.remove(&hwnd);
         }
-        for (wid, rect) in &old_placements {
-            start_rects.insert(*wid, *rect);
+        for placement in &old_placements {
+            if placement.visibility != leopardwm_core_layout::Visibility::Visible {
+                continue;
+            }
+            let rect = placement.rect;
+            start_rects.insert(placement.window_id, rect);
             exit_rects.insert(
-                *wid,
+                placement.window_id,
                 leopardwm_core_layout::Rect::new(
                     rect.x,
                     rect.y - y_offset,
@@ -2039,17 +2022,17 @@ impl AppState {
         // don't linger as ghosts (reduce_motion skips the transition that
         // would otherwise move them off-screen).
         let animating = !start_rects.is_empty() && !self.reduce_motion;
+        for placement in &old_placements {
+            if !animating || placement.visibility != leopardwm_core_layout::Visibility::Visible {
+                #[cfg(not(test))]
+                let _ = leopardwm_platform_win32::move_window_offscreen(placement.window_id);
+            }
+        }
         if animating {
             let duration = self.config.animation.workspace_switch_duration_ms;
             self.start_workspace_switch_transition(start_rects, exit_rects, duration);
         } else {
             self.abort_layout_transition();
-            for (wid, _) in &old_placements {
-                if !self.is_application_fullscreen(*wid) {
-                    #[cfg(not(test))]
-                    let _ = leopardwm_platform_win32::move_window_offscreen(*wid);
-                }
-            }
         }
     }
 

@@ -6,7 +6,7 @@ use crate::layout_apply::LayoutApplyOutcome;
 use crate::state::{
     validate_set_width_fraction, AppState, ElevationBlockedRecord, PendingWorkspaceSwitchFocus,
 };
-use leopardwm_core_layout::{LayoutError, Rect, Workspace};
+use leopardwm_core_layout::{LayoutError, Rect, Visibility, WindowPlacement, Workspace};
 use leopardwm_ipc::{
     ElevationBlockReason, ElevationBlockedWindow, HotkeyBindingInfo, IpcCommand, IpcResponse,
 };
@@ -130,23 +130,18 @@ fn elevation_blocked_health_views(
 }
 
 impl AppState {
-    /// Snapshot a workspace's current animated placements as `(window_id, rect)` pairs.
-    fn workspace_placements(
+    /// Snapshot a workspace's current animated placements.
+    pub(crate) fn workspace_placements(
         &self,
         monitor: leopardwm_platform_win32::MonitorId,
         ws_idx: usize,
-    ) -> Vec<(u64, Rect)> {
+    ) -> Vec<WindowPlacement> {
         let viewport = self.layout_viewport(monitor);
         self.workspaces
             .get(&monitor)
             .and_then(|v| v.get(ws_idx))
             .filter(|_| self.monitors.contains_key(&monitor))
-            .map(|ws| {
-                ws.compute_placements_animated(viewport)
-                    .into_iter()
-                    .map(|p| (p.window_id, p.rect))
-                    .collect()
-            })
+            .map(|ws| ws.compute_placements_animated(viewport))
             .unwrap_or_default()
     }
 
@@ -1250,8 +1245,8 @@ impl AppState {
         // after they move offscreen below. Skipped otherwise (PrintWindow
         // per window is not free).
         if self.config.overview.render == crate::config::OverviewRender::Snapshot {
-            for (wid, _) in &old_placements {
-                let _ = leopardwm_platform_win32::snapshot::snapshot_capture(*wid);
+            for placement in &old_placements {
+                let _ = leopardwm_platform_win32::snapshot::snapshot_capture(placement.window_id);
             }
         }
 
@@ -1281,11 +1276,13 @@ impl AppState {
 
         // Keep sticky windows out of the slide animation so they sit
         // still while the rest of the layout scrolls past.
-        old_placements.retain(|(w, _)| {
-            !self.sticky_windows.contains(w) && !self.is_application_fullscreen(*w)
+        old_placements.retain(|p| {
+            !self.sticky_windows.contains(&p.window_id)
+                && !self.is_application_fullscreen(p.window_id)
         });
-        new_placements.retain(|(w, _)| {
-            !self.sticky_windows.contains(w) && !self.is_application_fullscreen(*w)
+        new_placements.retain(|p| {
+            !self.sticky_windows.contains(&p.window_id)
+                && !self.is_application_fullscreen(p.window_id)
         });
 
         // Build animation rects:
@@ -1295,9 +1292,10 @@ impl AppState {
         let mut exit_rects = std::collections::HashMap::new();
 
         // New workspace windows enter from the opposite side.
-        for (wid, rect) in &new_placements {
+        for placement in &new_placements {
+            let rect = placement.rect;
             start_rects.insert(
-                *wid,
+                placement.window_id,
                 leopardwm_core_layout::Rect::new(
                     rect.x,
                     rect.y + y_offset,
@@ -1308,10 +1306,14 @@ impl AppState {
         }
 
         // Old workspace windows slide out.
-        for (wid, rect) in &old_placements {
-            start_rects.insert(*wid, *rect);
+        for placement in &old_placements {
+            if placement.visibility != Visibility::Visible {
+                continue;
+            }
+            let rect = placement.rect;
+            start_rects.insert(placement.window_id, rect);
             exit_rects.insert(
-                *wid,
+                placement.window_id,
                 leopardwm_core_layout::Rect::new(
                     rect.x,
                     rect.y - y_offset,
@@ -1327,6 +1329,12 @@ impl AppState {
         // would otherwise move them off-screen, so without this they linger as
         // ghosts on top of the new workspace.
         let animating = !start_rects.is_empty() && !self.reduce_motion;
+        for placement in &old_placements {
+            if !animating || placement.visibility != Visibility::Visible {
+                #[cfg(not(test))]
+                let _ = leopardwm_platform_win32::move_window_offscreen(placement.window_id);
+            }
+        }
         if animating {
             let duration = self.config.animation.workspace_switch_duration_ms;
             self.start_workspace_switch_transition(start_rects, exit_rects, duration);
@@ -1340,12 +1348,6 @@ impl AppState {
             // No replacement slide. A deferred border lands now; a
             // non-deferred transition only clears.
             self.abort_layout_transition();
-            for (wid, _) in &old_placements {
-                if !self.is_application_fullscreen(*wid) {
-                    #[cfg(not(test))]
-                    let _ = leopardwm_platform_win32::move_window_offscreen(*wid);
-                }
-            }
         }
 
         if let Err(e) = self.apply_layout() {
