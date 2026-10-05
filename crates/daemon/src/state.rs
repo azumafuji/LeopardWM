@@ -687,8 +687,8 @@ pub(crate) struct AppState {
     /// (managed for a long time, e.g., close-to-tray apps).
     pub(crate) window_managed_at: HashMap<u64, std::time::Instant>,
     pub(crate) pending_maximized_admission_restores: HashSet<u64>,
-    /// Tiled lifetimes admitted unmaximized; consumed before their one late restore attempt.
-    pub(crate) post_admission_maximize_restore_eligible: HashSet<u64>,
+    /// Last-input baseline for tiled lifetimes admitted unmaximized; consumed on first maximize.
+    pub(crate) post_admission_maximize_restore_eligible: HashMap<u64, Option<std::time::Instant>>,
     /// Last time each tiled window was seen maximized. Lets a window that opens
     /// maximized and momentarily restores itself mid-burst (an app opening
     /// several windows/tabs at once) re-assert maximize instead of being snapped
@@ -817,6 +817,8 @@ pub(crate) struct AppState {
     /// Per-window native maximize responses for deterministic daemon tests.
     #[cfg(test)]
     pub(crate) injected_window_maximized: HashMap<u64, bool>,
+    #[cfg(test)]
+    pub(crate) injected_input_age_ms: Option<u32>,
     #[cfg(test)]
     pub(crate) departing_foreground_evidence_reads: usize,
     /// Test-only GetTickCount stand-in for last-window departure arming.
@@ -1211,7 +1213,7 @@ impl AppState {
             stashed_monitor_layouts: HashMap::new(),
             window_managed_at: HashMap::new(),
             pending_maximized_admission_restores: HashSet::new(),
-            post_admission_maximize_restore_eligible: HashSet::new(),
+            post_admission_maximize_restore_eligible: HashMap::new(),
             window_last_maximized_at: HashMap::new(),
             snap_disabled_hwnds: HashSet::new(),
             on_battery_or_saver,
@@ -1271,6 +1273,8 @@ impl AppState {
             injected_snap_disable_attempt_count: AtomicUsize::new(0),
             #[cfg(test)]
             injected_window_maximized: HashMap::new(),
+            #[cfg(test)]
+            injected_input_age_ms: None,
             #[cfg(test)]
             departing_foreground_evidence_reads: 0,
             #[cfg(test)]

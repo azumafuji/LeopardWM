@@ -517,8 +517,22 @@ impl AppState {
         if maximized_at_admission {
             self.queue_maximized_admission_restore(hwnd, now, queue, is_maximized);
         } else if action == config::WindowAction::Tile {
-            self.post_admission_maximize_restore_eligible.insert(hwnd);
+            let last_input = self.native_ms_since_last_user_input().and_then(|age| {
+                std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_millis(u64::from(age)))
+            });
+            self.post_admission_maximize_restore_eligible
+                .insert(hwnd, last_input);
         }
+    }
+
+    fn native_ms_since_last_user_input(&self) -> Option<u32> {
+        #[cfg(test)]
+        {
+            self.injected_input_age_ms
+        }
+        #[cfg(not(test))]
+        leopardwm_platform_win32::ms_since_last_user_input()
     }
 
     fn queue_maximized_admission_restore(
@@ -527,7 +541,7 @@ impl AppState {
         now: std::time::Instant,
         queue: &mut impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
         is_maximized: &mut impl FnMut(u64) -> bool,
-    ) {
+    ) -> bool {
         self.post_admission_maximize_restore_eligible.remove(&hwnd);
         match queue(hwnd) {
             Ok(will_report) => {
@@ -537,6 +551,8 @@ impl AppState {
                 // Keep the zoom sampled at admission: the worker may already be
                 // restoring the window, so a fresh read would race it.
                 self.window_last_maximized_at.insert(hwnd, now);
+                debug!("Queued maximized admission restore for {}", hwnd);
+                true
             }
             Err(error) => {
                 debug!(
@@ -546,8 +562,42 @@ impl AppState {
                 if is_maximized(hwnd) {
                     self.window_last_maximized_at.insert(hwnd, now);
                 }
+                false
             }
         }
+    }
+
+    fn try_restore_post_admission_maximize(
+        &mut self,
+        hwnd: u64,
+        input_age_ms: &mut impl FnMut() -> Option<u32>,
+        queue: &mut impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
+        is_maximized: &mut impl FnMut(u64) -> bool,
+    ) -> bool {
+        let Some(admission_last_input) =
+            self.post_admission_maximize_restore_eligible.remove(&hwnd)
+        else {
+            return false;
+        };
+        let now = std::time::Instant::now();
+        if !self.window_managed_at.get(&hwnd).is_some_and(|managed_at| {
+            now.saturating_duration_since(*managed_at) < SNAPBACK_SETTLE_AFTER_CREATE
+        }) {
+            return false;
+        }
+        let Some(admission_last_input) = admission_last_input else {
+            return false;
+        };
+        let Some(last_input) = input_age_ms().and_then(|age| {
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(u64::from(age)))
+        }) else {
+            return false;
+        };
+        const INPUT_TIMESTAMP_JITTER: std::time::Duration = std::time::Duration::from_millis(50);
+        if last_input.saturating_duration_since(admission_last_input) > INPUT_TIMESTAMP_JITTER {
+            return false;
+        }
+        self.queue_maximized_admission_restore(hwnd, now, queue, is_maximized)
     }
 
     fn on_maximized_admission_restored(&mut self, hwnd: u64, token: u64, still_maximized: bool) {
@@ -3389,13 +3439,15 @@ impl AppState {
     fn on_window_moved_or_resized(&mut self, hwnd: u64, periodic_recheck: bool) {
         #[cfg(test)]
         let maximized = self.injected_window_maximized.get(&hwnd).copied();
+        #[cfg(test)]
+        let input_age_ms = self.native_ms_since_last_user_input();
         self.on_window_moved_or_resized_with_native_ops(
             hwnd,
             periodic_recheck,
             || {
                 #[cfg(test)]
                 {
-                    None
+                    input_age_ms
                 }
                 #[cfg(not(test))]
                 leopardwm_platform_win32::ms_since_last_user_input()
@@ -3425,6 +3477,33 @@ impl AppState {
         if self.pending_maximized_admission_restores.contains(&hwnd) {
             return;
         }
+        let managed_tiled = self
+            .find_window_workspace(hwnd)
+            .and_then(|(monitor_id, ws_idx)| {
+                self.workspaces
+                    .get(&monitor_id)?
+                    .get(ws_idx)
+                    .map(|workspace| {
+                        !workspace.is_floating(hwnd)
+                            && workspace.fullscreen_window_id() != Some(hwnd)
+                    })
+            })
+            .unwrap_or(false);
+        if managed_tiled
+            && self
+                .post_admission_maximize_restore_eligible
+                .contains_key(&hwnd)
+            && !self.is_application_fullscreen(hwnd)
+            && is_maximized(hwnd)
+            && self.try_restore_post_admission_maximize(
+                hwnd,
+                &mut input_age_ms,
+                &mut queue_maximized_restore,
+                &mut is_maximized,
+            )
+        {
+            return;
+        }
         // Placement feedback stays suppressed, except a direct maximize of a
         // managed tiled window needs its timestamp and target-only visual cleanup
         // immediately so the later restore is classified correctly.
@@ -3432,18 +3511,6 @@ impl AppState {
             if self.find_window_workspace(hwnd).is_some() {
                 self.deferred_moved_or_resized.insert(hwnd);
             }
-            let managed_tiled = self
-                .find_window_workspace(hwnd)
-                .and_then(|(monitor_id, ws_idx)| {
-                    self.workspaces
-                        .get(&monitor_id)?
-                        .get(ws_idx)
-                        .map(|workspace| {
-                            !workspace.is_floating(hwnd)
-                                && workspace.fullscreen_window_id() != Some(hwnd)
-                        })
-                })
-                .unwrap_or(false);
             let is_maximized = is_maximized(hwnd);
             if should_observe_maximize_during_suppression(
                 self.applying_layout,
@@ -3583,29 +3650,6 @@ impl AppState {
                     self.show_border(hwnd);
                 }
             } else if is_maximized(hwnd) {
-                let now = std::time::Instant::now();
-                let settling = self.window_managed_at.get(&hwnd).is_some_and(|managed_at| {
-                    now.saturating_duration_since(*managed_at) < SNAPBACK_SETTLE_AFTER_CREATE
-                });
-                const MAXIMIZE_INPUT_RECENT_MS: u32 = 100;
-                if settling
-                    && self
-                        .post_admission_maximize_restore_eligible
-                        .contains(&hwnd)
-                    && input_age_ms().is_some_and(|age| age > MAXIMIZE_INPUT_RECENT_MS)
-                {
-                    self.queue_maximized_admission_restore(
-                        hwnd,
-                        now,
-                        &mut queue_maximized_restore,
-                        &mut is_maximized,
-                    );
-                    debug!(
-                        "Restoring settling tiled window {} after late maximize",
-                        hwnd
-                    );
-                    return;
-                }
                 // User maximized a tiled window — let it stay maximized. Record
                 // the maximize so a brief restore mid-burst is treated as
                 // settling rather than a snap-back trigger, and remove only

@@ -209,6 +209,42 @@ fn native_admission_state(hwnd: u64) -> AppState {
 }
 
 #[test]
+fn test_late_maximize_event_wrapper_uses_input_history_to_queue_restore() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let (_hooks, _events) = leopardwm_platform_win32::install_event_hooks().unwrap();
+    let owner = MaximizedOwner::spawn();
+    let hwnd = owner.window_id;
+    let last_input = Instant::now() - Duration::from_secs(1);
+    let mut state = native_admission_state(hwnd);
+    state.paused = true;
+    state.injected_input_age_ms = Some(1000);
+    assert_eq!(
+        state.try_admit_window_at_with_native_ops(
+            hwnd,
+            AdmissionKind::Automatic,
+            None,
+            |_| false,
+            |_| panic!("unmaximized admission must not restore"),
+        ),
+        AdmitOutcome::Admitted
+    );
+    state.paused = false;
+    state
+        .moved_or_resized_suppression
+        .insert(hwnd, Instant::now() + Duration::from_millis(250));
+    state.injected_input_age_ms = Some(u32::try_from(last_input.elapsed().as_millis()).unwrap());
+    state.handle_window_event(WindowEvent::MovedOrResized(hwnd));
+    assert!(state.pending_maximized_admission_restores.contains(&hwnd));
+    let _ = owner.release.send(());
+    assert!(leopardwm_platform_win32::wait_for_window_style_requests(
+        Duration::from_secs(5)
+    ));
+    assert!(!unsafe { IsZoomed(HWND(hwnd as *mut _)).as_bool() });
+}
+
+#[test]
 fn test_maximized_admission_without_completion_route_does_not_stick_pending() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()

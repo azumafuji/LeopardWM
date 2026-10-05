@@ -719,7 +719,7 @@ impl AppState {
         self.managed_lifetime_admitted_at_event_ms
             .retain(|hwnd, _| self.managed_lifetime_tokens.contains_key(hwnd));
         self.post_admission_maximize_restore_eligible
-            .retain(|hwnd| self.managed_lifetime_tokens.contains_key(hwnd));
+            .retain(|hwnd, _| self.managed_lifetime_tokens.contains_key(hwnd));
         self.recreated_window_slots
             .identities
             .retain(|hwnd, _| self.managed_lifetime_tokens.contains_key(hwnd));

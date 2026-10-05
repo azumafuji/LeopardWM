@@ -3,9 +3,10 @@ use crate::event_handler::{AdmissionKind, AdmitOutcome};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-fn admit_unmaximized_for_late_maximize() -> AppState {
+fn admit_unmaximized_for_late_maximize(input_age_ms: Option<u32>) -> AppState {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     state.reduce_motion = true;
+    state.injected_input_age_ms = input_age_ms;
     state
         .injected_window_info
         .insert(100, make_test_window_info(100));
@@ -26,6 +27,10 @@ fn admit_unmaximized_for_late_maximize() -> AppState {
     state
 }
 
+fn input_age_since(last_input: Instant) -> Option<u32> {
+    Some(u32::try_from(last_input.elapsed().as_millis()).unwrap())
+}
+
 fn complete_late_maximize_restore(state: &mut AppState) {
     state.injected_window_maximized.insert(100, false);
     state.handle_window_event(WindowEvent::MaximizedAdmissionRestored {
@@ -37,13 +42,14 @@ fn complete_late_maximize_restore(state: &mut AppState) {
 
 #[test]
 fn test_late_self_maximize_queues_one_admission_restore_and_lands_tiled() {
-    let mut state = admit_unmaximized_for_late_maximize();
+    let last_input = Instant::now() - Duration::from_millis(400);
+    let mut state = admit_unmaximized_for_late_maximize(Some(400));
     let queued = std::cell::Cell::new(0);
     for _ in 0..2 {
         state.on_window_moved_or_resized_with_native_ops(
             100,
             false,
-            || Some(400),
+            || input_age_since(last_input),
             |_| {
                 queued.set(queued.get() + 1);
                 Ok(true)
@@ -76,9 +82,15 @@ fn test_late_self_maximize_queues_one_admission_restore_and_lands_tiled() {
 }
 
 #[test]
-fn test_late_maximize_with_recent_or_unavailable_input_is_allowed() {
-    for input_age in [Some(0), Some(100), None] {
-        let mut state = admit_unmaximized_for_late_maximize();
+fn test_late_maximize_with_input_since_admission_or_unavailable_input_is_allowed() {
+    for (admission_input_age, input_age) in [
+        (Some(400), Some(0)),
+        (Some(400), Some(100)),
+        (Some(400), Some(200)),
+        (Some(400), None),
+        (None, Some(400)),
+    ] {
+        let mut state = admit_unmaximized_for_late_maximize(admission_input_age);
         let placements = state.last_placed_layout_rects.clone();
         state.on_window_moved_or_resized_with_native_ops(
             100,
@@ -95,11 +107,12 @@ fn test_late_maximize_with_recent_or_unavailable_input_is_allowed() {
 
 #[test]
 fn test_second_self_maximize_after_admission_restore_is_allowed() {
-    let mut state = admit_unmaximized_for_late_maximize();
+    let last_input = Instant::now() - Duration::from_millis(400);
+    let mut state = admit_unmaximized_for_late_maximize(Some(400));
     state.on_window_moved_or_resized_with_native_ops(
         100,
         false,
-        || Some(400),
+        || input_age_since(last_input),
         |_| Ok(true),
         |_| true,
     );
@@ -122,7 +135,7 @@ fn test_second_self_maximize_after_admission_restore_is_allowed() {
 
 #[test]
 fn test_self_maximize_outside_admission_settle_window_is_allowed() {
-    let mut state = admit_unmaximized_for_late_maximize();
+    let mut state = admit_unmaximized_for_late_maximize(Some(400));
     state.window_managed_at.insert(
         100,
         Instant::now() - crate::event_handler::SNAPBACK_SETTLE_AFTER_CREATE,
@@ -136,6 +149,79 @@ fn test_self_maximize_outside_admission_settle_window_is_allowed() {
     );
     assert!(!state.pending_maximized_admission_restores.contains(&100));
     assert!(state.window_last_maximized_at.contains_key(&100));
+}
+
+#[test]
+fn test_single_late_maximize_during_admission_suppression_restores() {
+    for (applying_layout, display_change_pending) in [(false, false), (true, false), (false, true)]
+    {
+        let last_input = Instant::now() - Duration::from_millis(400);
+        let mut state = admit_unmaximized_for_late_maximize(Some(400));
+        state
+            .moved_or_resized_suppression
+            .insert(100, Instant::now() + Duration::from_millis(250));
+        state.applying_layout = applying_layout;
+        state.display_change_pending = display_change_pending;
+        let queued = std::cell::Cell::new(0);
+        state.on_window_moved_or_resized_with_native_ops(
+            100,
+            false,
+            || input_age_since(last_input),
+            |_| {
+                queued.set(queued.get() + 1);
+                Ok(true)
+            },
+            |_| true,
+        );
+        assert_eq!(queued.get(), 1);
+        assert!(state.pending_maximized_admission_restores.contains(&100));
+    }
+}
+
+#[test]
+fn test_allowed_first_maximize_cannot_restore_on_later_notification() {
+    for first_input_age in [Some(20), None] {
+        let mut state = admit_unmaximized_for_late_maximize(Some(400));
+        for input_age in [first_input_age, Some(400)] {
+            state.on_window_moved_or_resized_with_native_ops(
+                100,
+                false,
+                || input_age,
+                |_| panic!("an allowed maximize must never restore on a later notification"),
+                |_| true,
+            );
+            assert!(!state.pending_maximized_admission_restores.contains(&100));
+            assert!(state.window_last_maximized_at.contains_key(&100));
+        }
+    }
+}
+
+#[test]
+fn test_late_maximize_queue_failure_or_missing_report_does_not_retry() {
+    for queue_fails in [false, true] {
+        let last_input = Instant::now() - Duration::from_millis(400);
+        let mut state = admit_unmaximized_for_late_maximize(Some(400));
+        let queued = std::cell::Cell::new(0);
+        for _ in 0..2 {
+            state.on_window_moved_or_resized_with_native_ops(
+                100,
+                false,
+                || input_age_since(last_input),
+                |_| {
+                    queued.set(queued.get() + 1);
+                    if queue_fails {
+                        Err(leopardwm_platform_win32::Win32Error::WindowNotFound(100))
+                    } else {
+                        Ok(false)
+                    }
+                },
+                |_| true,
+            );
+        }
+        assert_eq!(queued.get(), 1);
+        assert!(!state.pending_maximized_admission_restores.contains(&100));
+        assert!(state.window_last_maximized_at.contains_key(&100));
+    }
 }
 
 fn admit_pending_maximized() -> AppState {
