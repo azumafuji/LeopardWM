@@ -17,15 +17,15 @@ The workflow:
 1. Checks out the tagged commit on `windows-latest` with the stable MSVC toolchain.
 2. Builds release binaries with `cargo build --release`.
 3. Verifies that `leopardwm.exe` and `leopardwm-watchdog.exe` use the Windows GUI subsystem.
-4. Runs `cargo test --all`.
-5. Packages `leopardwm.exe`, `leopardwm-cli.exe`, `lwm.exe`, `leopardwm-watchdog.exe`, `README.md`, and `LICENSE` into `LeopardWM-{version}-x86_64-windows.zip`.
+4. Runs `cargo test --all --target x86_64-pc-windows-msvc` on the x64 GitHub-hosted runner.
+5. Packages `leopardwm.exe`, `leopardwm-cli.exe`, `lwm.exe`, `leopardwm-watchdog.exe`, `README.md`, and `LICENSE` into `LeopardWM-{version}-arm64-windows.zip`.
 6. Builds the per-machine MSI with `cargo wix` and `wix/main.wxs`.
 7. Extracts the matching version section from `CHANGELOG.md` for release notes.
 8. Generates `checksums.txt` with SHA-256 hashes for the ZIP and MSI.
 9. Creates the GitHub Release with the ZIP, MSI, checksums, and release notes.
 10. Runs the dependent Winget job, which opens a public `microsoft/winget-pkgs` PR for `jcardama.LeopardWM` using the released MSI.
 
-Binary path: `target/x86_64-pc-windows-msvc/release/` (the explicit target is configured in `.cargo/config.toml`).
+Binary path: `target/aarch64-pc-windows-msvc/release/` (the explicit target is configured in `.cargo/config.toml`).
 
 A successful GitHub Release does not imply the Winget job succeeded. Verify both jobs independently.
 

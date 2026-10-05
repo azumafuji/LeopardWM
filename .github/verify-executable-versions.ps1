@@ -20,10 +20,10 @@ if (-not $version.Success) {
 $expectedVersion = $version.Groups['version'].Value
 
 $paths = @(
-    "target/x86_64-pc-windows-msvc/release/leopardwm.exe",
-    "target/x86_64-pc-windows-msvc/release/leopardwm-watchdog.exe",
-    "target/x86_64-pc-windows-msvc/release/leopardwm-cli.exe",
-    "target/x86_64-pc-windows-msvc/release/lwm.exe"
+    "target/aarch64-pc-windows-msvc/release/leopardwm.exe",
+    "target/aarch64-pc-windows-msvc/release/leopardwm-watchdog.exe",
+    "target/aarch64-pc-windows-msvc/release/leopardwm-cli.exe",
+    "target/aarch64-pc-windows-msvc/release/lwm.exe"
 )
 
 foreach ($relative in $paths) {

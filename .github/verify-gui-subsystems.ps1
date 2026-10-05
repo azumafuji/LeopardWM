@@ -15,8 +15,8 @@ if (-not $RepoRoot) {
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 
 $paths = @(
-    "target/x86_64-pc-windows-msvc/release/leopardwm.exe",
-    "target/x86_64-pc-windows-msvc/release/leopardwm-watchdog.exe"
+    "target/aarch64-pc-windows-msvc/release/leopardwm.exe",
+    "target/aarch64-pc-windows-msvc/release/leopardwm-watchdog.exe"
 )
 
 foreach ($relative in $paths) {

@@ -13,6 +13,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          targets: aarch64-pc-windows-msvc
       - name: Install cargo-wix
         run: cargo install cargo-wix --version ^0.3
       - run: cargo build --release
@@ -22,17 +24,18 @@ jobs:
       - name: Verify executable versions
         shell: pwsh
         run: ./.github/verify-executable-versions.ps1
-      - run: cargo test --all
+      # GitHub-hosted Windows runners are x64; run tests natively.
+      - run: cargo test --all --target x86_64-pc-windows-msvc
       - name: Package zip
         shell: bash
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          DIR="LeopardWM-${VERSION}-x86_64-windows"
+          DIR="LeopardWM-${VERSION}-arm64-windows"
           mkdir "$DIR"
-          cp target/x86_64-pc-windows-msvc/release/leopardwm.exe "$DIR/"
-          cp target/x86_64-pc-windows-msvc/release/leopardwm-cli.exe "$DIR/"
-          cp target/x86_64-pc-windows-msvc/release/lwm.exe "$DIR/"
-          cp target/x86_64-pc-windows-msvc/release/leopardwm-watchdog.exe "$DIR/"
+          cp target/aarch64-pc-windows-msvc/release/leopardwm.exe "$DIR/"
+          cp target/aarch64-pc-windows-msvc/release/leopardwm-cli.exe "$DIR/"
+          cp target/aarch64-pc-windows-msvc/release/lwm.exe "$DIR/"
+          cp target/aarch64-pc-windows-msvc/release/leopardwm-watchdog.exe "$DIR/"
           cp README.md LICENSE "$DIR/"
           7z a "${DIR}.zip" "$DIR"
       - name: Build MSI installer
@@ -40,7 +43,7 @@ jobs:
         run: |
           # WiX 3.14 is pre-installed at this path on windows-latest runners.
           cargo wix -p leopardwm-daemon -I wix/main.wxs \
-            --target x86_64-pc-windows-msvc \
+            --target aarch64-pc-windows-msvc \
             --no-build --nocapture \
             --bin-path "C:\Program Files (x86)\WiX Toolset v3.14\bin"
           cp target/wix/*.msi .

@@ -6,6 +6,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          targets: aarch64-pc-windows-msvc
       - run: cargo build --release
       - name: Verify GUI executable subsystems
         shell: pwsh
@@ -13,7 +15,8 @@ jobs:
       - name: Verify executable versions
         shell: pwsh
         run: ./.github/verify-executable-versions.ps1
-      - run: cargo test --all
+      # GitHub-hosted Windows runners are x64; run tests and clippy natively.
+      - run: cargo test --all --target x86_64-pc-windows-msvc
       - name: Verify offline desktop acceptance helpers
         run: python -m unittest discover -s tools -p test_desktop_acceptance.py -v
-      - run: cargo clippy --all -- -D warnings
+      - run: cargo clippy --all --target x86_64-pc-windows-msvc -- -D warnings
