@@ -13189,6 +13189,36 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
 
 #[test]
 fn test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor() {
+    const CHILD_ENV: &str = "LEOPARDWM_TEST_HIDDEN_TAB_RECHECK_CHILD";
+    if std::env::var_os(CHILD_ENV).is_none() {
+        // Other tests' empty native animation frames clear the process-global off-screen records.
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed() >= Duration::from_secs(30) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("hidden-tab recheck child exceeded its deadline");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.success(),
+            "hidden-tab recheck child failed: {status}"
+        );
+        return;
+    }
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
