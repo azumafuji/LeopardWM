@@ -141,6 +141,11 @@ pub(crate) const DISPLAY_CHANGE_APPLY_RETRY_DELAY: Duration = Duration::from_sec
 /// (it compares actual-vs-expected rect and short-circuits when they match
 /// within a small epsilon), which operates independently of this suppression.
 pub(crate) const MOVED_OR_RESIZED_SUPPRESSION_WINDOW: Duration = Duration::from_millis(250);
+pub(crate) const PERIODIC_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+/// Two suppression windows plus one tick cover placement feedback and replay scheduling.
+pub(crate) const WINDOW_MOVE_RECHECK_FIGHT_WINDOW: Duration = MOVED_OR_RESIZED_SUPPRESSION_WINDOW
+    .saturating_add(MOVED_OR_RESIZED_SUPPRESSION_WINDOW)
+    .saturating_add(PERIODIC_CHECK_INTERVAL);
 /// Max age for a `crossfade_sources` re-registration barrier entry. A
 /// crossfade runs ~130ms (8 frames); 2s is a generous bound. An entry
 /// older than this means its `CrossfadeComplete` never arrived (worker
@@ -271,6 +276,7 @@ pub(crate) struct ElevationBlockedRecord {
 
 pub(crate) struct WindowMoveRecheckAttempt {
     pub(crate) target: (Rect, Visibility),
+    pub(crate) issued_at: std::time::Instant,
     pub(crate) gave_up: bool,
 }
 

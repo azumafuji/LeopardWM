@@ -6,7 +6,7 @@ use crate::state::{
     HiddenColumnWidth, LastWindowDepartureOrigin, PendingLastWindowDeparture, RecentlyHiddenEntry,
     WindowMoveRecheckAttempt, EDIT_CONFIG_PULL_TTL, FALLBACK_VIEWPORT_HEIGHT,
     FALLBACK_VIEWPORT_WIDTH, RECENTLY_HIDDEN_TTL, RECENTLY_RESTORED_MANAGED_WINDOW_TTL,
-    TRANSIENT_WINDOW_THRESHOLD,
+    TRANSIENT_WINDOW_THRESHOLD, WINDOW_MOVE_RECHECK_FIGHT_WINDOW,
 };
 use crate::ui_sync::DepartureCause;
 use leopardwm_core_layout::{Rect, Visibility, Workspace};
@@ -3891,8 +3891,13 @@ impl AppState {
                     }
                 };
                 if at_expected_position {
-                    // Visible landing feedback must not reset the bound on the app's next self-resize.
-                    if offscreen {
+                    // Off-screen landings end map-driven retries; visible bounds survive only an unchanged target.
+                    if offscreen
+                        || self
+                            .window_move_recheck_attempts
+                            .get(&hwnd)
+                            .is_some_and(|attempt| Some(attempt.target) != recheck_target)
+                    {
                         self.window_move_recheck_attempts.remove(&hwnd);
                     }
                     debug!(
@@ -3905,7 +3910,10 @@ impl AppState {
                             return;
                         };
                         if let Some(attempt) = self.window_move_recheck_attempts.get_mut(&hwnd) {
-                            if attempt.target == target {
+                            let recent =
+                                attempt.issued_at.elapsed() <= WINDOW_MOVE_RECHECK_FIGHT_WINDOW;
+                            if attempt.target == target && (offscreen || attempt.gave_up || recent)
+                            {
                                 if !attempt.gave_up {
                                     debug!(
                                         "Giving up deferred MovedOrResized for {} — target {:?} already corrected",
@@ -3920,6 +3928,7 @@ impl AppState {
                             hwnd,
                             WindowMoveRecheckAttempt {
                                 target,
+                                issued_at: std::time::Instant::now(),
                                 gave_up: false,
                             },
                         );

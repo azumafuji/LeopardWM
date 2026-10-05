@@ -12600,7 +12600,14 @@ fn test_visible_replay_bounds_fresh_resizes_but_allows_changed_targets_and_live_
     state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
     state.moved_or_resized_suppression.remove(&owner.hwnd);
     assert!(!state.recheck_deferred_window_moves());
-    for _ in 0..3 {
+    for repeat in 0..3 {
+        if repeat != 0 {
+            state
+                .window_move_recheck_attempts
+                .get_mut(&owner.hwnd)
+                .unwrap()
+                .issued_at -= Duration::from_secs(10);
+        }
         owner.resize(0, 200);
         state.arm_moved_or_resized_suppression([owner.hwnd]);
         state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
@@ -12633,6 +12640,74 @@ fn test_visible_replay_bounds_fresh_resizes_but_allows_changed_targets_and_live_
         350,
         "a live move must bypass the replay bound"
     );
+}
+
+#[test]
+fn test_visible_replay_clears_stale_target_after_successful_intervening_landing() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = visible_resize_recheck_state(owner.hwnd);
+    owner.resize(0, 200);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    assert!(state.recheck_deferred_window_moves());
+    assert_eq!(owner.rect().width, 300);
+
+    state.workspaces.get_mut(&1).unwrap()[0].resize_focused_column(50);
+    state.apply_layout().unwrap();
+    assert_eq!(owner.rect(), Rect::new(0, 0, 350, 560));
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    let at_b = state.physical_request_seq;
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, at_b);
+
+    state.workspaces.get_mut(&1).unwrap()[0].resize_focused_column(-50);
+    state.apply_layout().unwrap();
+    assert_eq!(owner.rect(), Rect::new(0, 0, 300, 560));
+    owner.resize(0, 200);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    let back_at_a = state.physical_request_seq;
+    assert!(state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, back_at_a + 1);
+    assert_eq!(owner.rect(), Rect::new(0, 0, 300, 560));
+}
+
+#[test]
+fn test_visible_replay_renews_old_one_shot_attempt_and_bounds_its_immediate_repeat() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = visible_resize_recheck_state(owner.hwnd);
+    owner.resize(0, 200);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    assert!(state.recheck_deferred_window_moves());
+    state
+        .window_move_recheck_attempts
+        .get_mut(&owner.hwnd)
+        .unwrap()
+        .issued_at -= Duration::from_secs(10);
+
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    owner.resize(0, 200);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    let before = state.physical_request_seq;
+    assert!(state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before + 1);
+    assert_eq!(owner.rect(), Rect::new(0, 0, 300, 560));
+
+    owner.resize(0, 200);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before + 1);
+    assert_eq!(owner.rect().width, 200);
 }
 
 #[test]
