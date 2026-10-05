@@ -20,6 +20,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
+- **File Explorer now gets the same small redraw nudge after sliding that Chrome, Firefox and Windows Terminal get, to address reports of its navigation pane being drawn twice after moving off screen and back.** (#127)
 - **Windows that resize themselves right after LeopardWM places them, like Zen Browser's first-run welcome window, now go back to their tile instead of leaving part of the column empty.**
 - **Untitled helper windows without a title bar, minimize button or resize border, like Zen Browser's first-run startup window, no longer briefly take a column.** Fullscreen apps and explicit Tile/Float rules are unchanged.
 - **Apps that maximize themselves right after opening, such as Zen Browser reopening maximized, now settle into their tile instead of staying maximized.** (#104)

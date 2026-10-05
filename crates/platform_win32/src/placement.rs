@@ -2137,7 +2137,12 @@ const STICKY_COMPOSITOR_CLASSES: &[&str] = &[
     "Chrome_WidgetWin_1", // Electron / Chromium (Slack, Beeper, Spotify, TradingView)
     "MozillaWindowClass", // Firefox / Zen
     "CASCADIA_HOSTING_WINDOW_CLASS", // Windows Terminal
+    "CabinetWClass",      // File Explorer
 ];
+
+fn is_sticky_compositor_class(class: &str) -> bool {
+    STICKY_COMPOSITOR_CLASSES.contains(&class)
+}
 
 /// Read the class name of a window. Returns empty string on failure.
 fn window_class_name(hwnd: HWND) -> String {
@@ -2172,7 +2177,7 @@ fn nudge_sticky_compositor_windows(targets: &[NudgeTarget]) {
             }
         }
         let class = window_class_name(t.hwnd);
-        if !STICKY_COMPOSITOR_CLASSES.iter().any(|c| *c == class) {
+        if !is_sticky_compositor_class(&class) {
             continue;
         }
         let flags = SWP_NOZORDER | SWP_NOACTIVATE;
@@ -2513,6 +2518,19 @@ pub(crate) fn invisible_border_insets(hwnd: HWND) -> (i32, i32, i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sticky_compositor_nudge_includes_explorer_and_existing_classes_only() {
+        for class in [
+            "CabinetWClass",
+            "Chrome_WidgetWin_1",
+            "MozillaWindowClass",
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+        ] {
+            assert!(is_sticky_compositor_class(class), "{class}");
+        }
+        assert!(!is_sticky_compositor_class("Notepad"));
+    }
 
     #[test]
     fn async_position_pending_expires_and_preserves_first_submission_time() {
