@@ -171,6 +171,7 @@ fn test_pending_remaximize_is_freshly_sampled_and_retried_on_completion() {
         state.on_maximized_admission_restored_with_native_ops(
             100,
             token,
+            false,
             || input_age_since(last_input),
             |_| {
                 queued.set(queued.get() + 1);
@@ -205,6 +206,7 @@ fn test_pending_remaximize_completion_respects_input_and_settle_cutoffs() {
         state.on_maximized_admission_restored_with_native_ops(
             100,
             state.managed_lifetime_tokens[&100],
+            false,
             || input_age,
             |_| panic!("completion must not restore past the input or settle cutoff"),
             |_| true,
@@ -222,7 +224,7 @@ fn test_pending_remaximize_completion_respects_input_and_settle_cutoffs() {
 }
 
 #[test]
-fn test_completion_event_uses_fresh_maximize_state_instead_of_worker_sample() {
+fn test_successful_completion_event_samples_for_a_later_remaximize() {
     for native_maximized in [false, true] {
         let mut state = admit_for_late_maximize(Some(400), true);
         state
@@ -232,7 +234,7 @@ fn test_completion_event_uses_fresh_maximize_state_instead_of_worker_sample() {
         state.handle_window_event(WindowEvent::MaximizedAdmissionRestored {
             window_id: 100,
             managed_lifetime_token: state.managed_lifetime_tokens[&100],
-            still_maximized: !native_maximized,
+            still_maximized: false,
         });
         assert!(!state.pending_maximized_admission_restores.contains(&100));
         assert_eq!(
@@ -244,6 +246,53 @@ fn test_completion_event_uses_fresh_maximize_state_instead_of_worker_sample() {
             !native_maximized
         );
     }
+}
+
+#[test]
+fn test_unrestored_worker_verdict_does_not_chain_restore_for_zoomed_replacement() {
+    let mut state = admit_for_late_maximize(Some(400), true);
+    state.on_maximized_admission_restored_with_native_ops(
+        100,
+        state.managed_lifetime_tokens[&100],
+        true,
+        || Some(400),
+        |_| panic!("an identity-skipped or failed restore must not chain another restore"),
+        |_| true,
+    );
+    assert!(!state.pending_maximized_admission_restores.contains(&100));
+    assert!(state.window_last_maximized_at.contains_key(&100));
+}
+
+#[test]
+fn test_unrestored_worker_verdict_preserves_iconic_window_grace_and_placed_rect() {
+    let mut state = admit_for_late_maximize(Some(400), true);
+    let placed_rect = Rect::new(20, 30, 400, 500);
+    state.last_placed_layout_rects.insert(100, placed_rect);
+    let batches_before = state
+        .injected_apply_placements_batches
+        .lock()
+        .unwrap()
+        .len();
+    let before_completion = Instant::now();
+    state.on_maximized_admission_restored_with_native_ops(
+        100,
+        state.managed_lifetime_tokens[&100],
+        true,
+        || Some(400),
+        |_| panic!("an unrestored iconic window must not be restored again"),
+        |_| false,
+    );
+    assert!(!state.pending_maximized_admission_restores.contains(&100));
+    assert!(state.window_last_maximized_at[&100] >= before_completion);
+    assert_eq!(state.last_placed_layout_rects[&100], placed_rect);
+    assert_eq!(
+        state
+            .injected_apply_placements_batches
+            .lock()
+            .unwrap()
+            .len(),
+        batches_before
+    );
 }
 
 #[test]

@@ -22,6 +22,7 @@ pub(crate) const MINIMIZE_HANDOFF_WINDOW_MS: u32 = 500; // Windows timestamps po
 /// initial geometry.
 pub(crate) const SNAPBACK_SETTLE_AFTER_CREATE: std::time::Duration =
     std::time::Duration::from_millis(2000);
+const POST_ADMISSION_MAXIMIZE_RESTORE_BUDGET: u8 = 4;
 /// How recently a window must have been seen maximized to defer snapping it back
 /// while settling.
 pub(crate) const SNAPBACK_MAXIMIZE_GRACE: std::time::Duration =
@@ -618,7 +619,7 @@ impl AppState {
             );
             return false;
         }
-        if restores_issued >= 4 {
+        if restores_issued >= POST_ADMISSION_MAXIMIZE_RESTORE_BUDGET {
             self.post_admission_maximize_restore_eligible.remove(&hwnd);
             debug!(
                 "Post-admission maximize restore budget exhausted for {}",
@@ -629,7 +630,7 @@ impl AppState {
         self.queue_maximized_admission_restore(hwnd, now, queue, is_maximized)
     }
 
-    fn on_maximized_admission_restored(&mut self, hwnd: u64, token: u64, _still_maximized: bool) {
+    fn on_maximized_admission_restored(&mut self, hwnd: u64, token: u64, still_maximized: bool) {
         #[cfg(test)]
         let maximized = self.injected_window_maximized.get(&hwnd).copied();
         #[cfg(test)]
@@ -637,6 +638,7 @@ impl AppState {
         self.on_maximized_admission_restored_with_native_ops(
             hwnd,
             token,
+            still_maximized,
             || {
                 #[cfg(test)]
                 {
@@ -660,6 +662,7 @@ impl AppState {
         &mut self,
         hwnd: u64,
         token: u64,
+        worker_still_maximized: bool,
         mut input_age_ms: impl FnMut() -> Option<u32>,
         mut queue: impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
         mut is_maximized: impl FnMut(u64) -> bool,
@@ -669,17 +672,19 @@ impl AppState {
             return;
         }
         self.pending_maximized_admission_restores.remove(&hwnd);
+        if worker_still_maximized {
+            self.window_last_maximized_at
+                .insert(hwnd, std::time::Instant::now());
+            return;
+        }
         let still_maximized = is_maximized(hwnd);
-        let (chrome_rect, dwm_rect) = self.application_fullscreen_geometry(hwnd);
-        let session =
-            self.observe_application_fullscreen(hwnd, chrome_rect, dwm_rect, still_maximized);
         let managed_tiled = self
             .find_window_workspace(hwnd)
             .and_then(|(monitor_id, ws_idx)| self.workspaces.get(&monitor_id)?.get(ws_idx))
             .is_some_and(|workspace| {
                 !workspace.is_floating(hwnd) && workspace.fullscreen_window_id() != Some(hwnd)
             });
-        if session.is_some() || self.is_application_fullscreen(hwnd) || !managed_tiled {
+        if self.is_application_fullscreen(hwnd) || !managed_tiled {
             self.post_admission_maximize_restore_eligible.remove(&hwnd);
         } else if still_maximized
             && self.try_restore_post_admission_maximize(

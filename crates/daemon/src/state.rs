@@ -687,6 +687,7 @@ pub(crate) struct AppState {
     /// (managed for a long time, e.g., close-to-tray apps).
     pub(crate) window_managed_at: HashMap<u64, std::time::Instant>,
     pub(crate) pending_maximized_admission_restores: HashSet<u64>,
+    /// Admission input baseline and restores issued for this lifetime, including the admission restore.
     pub(crate) post_admission_maximize_restore_eligible:
         HashMap<u64, (Option<std::time::Instant>, u8)>,
     /// Last time each tiled window was seen maximized. Lets a window that opens
