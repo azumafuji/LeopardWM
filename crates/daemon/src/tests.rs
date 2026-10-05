@@ -12643,6 +12643,111 @@ fn test_visible_replay_bounds_fresh_resizes_but_allows_changed_targets_and_live_
 }
 
 #[test]
+fn test_visible_replay_readmission_gets_fresh_same_target_correction_budget() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let hwnd = owner.hwnd;
+    let mut state = visible_resize_recheck_state(hwnd);
+    state.record_managed_lifetime(hwnd, None);
+    state.injected_foreground_hwnd = Some(Some(hwnd));
+    state.injected_foreground_is_valid = Some(true);
+    state.injected_window_info.insert(
+        hwnd,
+        leopardwm_platform_win32::WindowInfo {
+            hwnd,
+            title: "Resize fixture".to_string(),
+            class_name: "ResizeFixture".to_string(),
+            process_id: 1234,
+            rect: owner.rect(),
+            visible: true,
+        },
+    );
+    owner.resize(0, 200);
+    state.handle_window_event(WindowEvent::MovedOrResized(hwnd));
+    state.moved_or_resized_suppression.remove(&hwnd);
+    assert!(state.recheck_deferred_window_moves());
+    owner.resize(0, 200);
+    state.arm_moved_or_resized_suppression([hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(hwnd));
+    state.moved_or_resized_suppression.remove(&hwnd);
+    assert!(!state.recheck_deferred_window_moves());
+    assert!(state.window_move_recheck_attempts[&hwnd].gave_up);
+    let target = state.window_move_recheck_attempts[&hwnd].target;
+    state.arm_moved_or_resized_suppression([hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(hwnd));
+    assert!(state.deferred_moved_or_resized.contains(&hwnd));
+
+    assert!(matches!(state.toggle_ignore(), IpcResponse::Ok));
+    assert!(!state.is_managed_member(hwnd));
+    let deferred_cleared = !state.deferred_moved_or_resized.contains(&hwnd);
+    let attempt_cleared = !state.window_move_recheck_attempts.contains_key(&hwnd);
+    assert!(matches!(state.toggle_ignore(), IpcResponse::Ok));
+    assert!(state.is_managed_member(hwnd));
+    let mut workspace = Workspace::with_gaps(0, 0);
+    workspace.set_reduce_motion(true);
+    workspace.insert_window(hwnd, Some(300)).unwrap();
+    state.workspaces.get_mut(&1).unwrap()[0] = workspace;
+    state.apply_layout().unwrap();
+    assert_eq!(state.expected_physical_rect(hwnd), Some(target.0));
+
+    owner.resize(0, 200);
+    state.arm_moved_or_resized_suppression([hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(hwnd));
+    state.moved_or_resized_suppression.remove(&hwnd);
+    let before = state.physical_request_seq;
+    assert!(state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before + 1);
+    assert_eq!(owner.rect(), target.0);
+    assert!(deferred_cleared);
+    assert!(attempt_cleared);
+}
+
+#[test]
+fn test_deferred_move_recheck_prunes_unmanaged_records_regardless_of_visibility() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let hwnd = owner.hwnd;
+    let mut state = visible_resize_recheck_state(hwnd);
+    let presentation = state.last_physical_presentations[&hwnd].clone();
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .remove_window(hwnd)
+        .unwrap();
+    for visibility in [
+        None,
+        Some(leopardwm_core_layout::Visibility::Visible),
+        Some(leopardwm_core_layout::Visibility::OffScreenLeft),
+    ] {
+        if let Some(visibility) = visibility {
+            let mut presentation = presentation.clone();
+            presentation.physical.visibility = visibility;
+            state.last_physical_presentations.insert(hwnd, presentation);
+        } else {
+            state.clear_physical_window_state(hwnd);
+        }
+        state.window_move_recheck_attempts.insert(
+            hwnd,
+            crate::state::WindowMoveRecheckAttempt {
+                target: (
+                    Rect::new(0, 0, 300, 560),
+                    leopardwm_core_layout::Visibility::Visible,
+                ),
+                issued_at: std::time::Instant::now(),
+                gave_up: true,
+            },
+        );
+        assert!(!state.recheck_deferred_window_moves());
+        assert!(!state.window_move_recheck_attempts.contains_key(&hwnd));
+        state.deferred_moved_or_resized.insert(hwnd);
+        assert!(!state.recheck_deferred_window_moves());
+        assert!(!state.deferred_moved_or_resized.contains(&hwnd));
+    }
+}
+
+#[test]
 fn test_visible_replay_clears_stale_target_after_successful_intervening_landing() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()

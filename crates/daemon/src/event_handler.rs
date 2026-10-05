@@ -3512,10 +3512,19 @@ impl AppState {
                 .keys()
                 .copied()
                 .filter(|hwnd| {
-                    self.current_physical_visibility(*hwnd)
-                        .is_some_and(|visibility| visibility != Visibility::Visible)
+                    !self.is_managed_member(*hwnd)
+                        || self
+                            .current_physical_visibility(*hwnd)
+                            .is_some_and(|visibility| visibility != Visibility::Visible)
                 }),
         );
+        deferred.retain(|hwnd| {
+            if self.is_managed_member(*hwnd) {
+                return true;
+            }
+            self.window_move_recheck_attempts.remove(hwnd);
+            false
+        });
         let mut deferred = deferred.into_iter();
         while let Some(hwnd) = deferred.next() {
             let visibility = self.current_physical_visibility(hwnd);

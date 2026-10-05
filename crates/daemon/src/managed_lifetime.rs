@@ -148,6 +148,8 @@ impl AppState {
 
     /// Drop the recorded lifetime and its admission time together.
     pub(crate) fn take_managed_lifetime_token(&mut self, hwnd: u64) -> Option<u64> {
+        self.window_move_recheck_attempts.remove(&hwnd);
+        self.deferred_moved_or_resized.remove(&hwnd);
         self.pending_maximized_admission_restores.remove(&hwnd);
         self.post_admission_maximize_restore_eligible.remove(&hwnd);
         self.forget_recreated_window_lifetime(hwnd);
