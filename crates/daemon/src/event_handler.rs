@@ -4,8 +4,9 @@ use crate::config;
 use crate::state::{
     AppState, ApplicationFullscreenState, DragHintAction, DragState, ElevationBlockedRecord,
     HiddenColumnWidth, LastWindowDepartureOrigin, PendingLastWindowDeparture, RecentlyHiddenEntry,
-    EDIT_CONFIG_PULL_TTL, FALLBACK_VIEWPORT_HEIGHT, FALLBACK_VIEWPORT_WIDTH, RECENTLY_HIDDEN_TTL,
-    RECENTLY_RESTORED_MANAGED_WINDOW_TTL, TRANSIENT_WINDOW_THRESHOLD,
+    WindowMoveRecheckAttempt, EDIT_CONFIG_PULL_TTL, FALLBACK_VIEWPORT_HEIGHT,
+    FALLBACK_VIEWPORT_WIDTH, RECENTLY_HIDDEN_TTL, RECENTLY_RESTORED_MANAGED_WINDOW_TTL,
+    TRANSIENT_WINDOW_THRESHOLD,
 };
 use crate::ui_sync::DepartureCause;
 use leopardwm_core_layout::{Rect, Visibility, Workspace};
@@ -1506,7 +1507,7 @@ impl AppState {
         // entries for windows that no longer exist.
         self.last_placed_layout_rects.remove(&hwnd);
         self.deferred_moved_or_resized.remove(&hwnd);
-        self.offscreen_recheck_attempts.remove(&hwnd);
+        self.window_move_recheck_attempts.remove(&hwnd);
         leopardwm_platform_win32::forget_offscreen_placement(hwnd);
         self.clear_physical_window_state(hwnd);
         self.application_fullscreen.remove(&hwnd);
@@ -3507,7 +3508,7 @@ impl AppState {
         let mut checked = false;
         let mut deferred = std::mem::take(&mut self.deferred_moved_or_resized);
         deferred.extend(
-            self.offscreen_recheck_attempts
+            self.window_move_recheck_attempts
                 .keys()
                 .copied()
                 .filter(|hwnd| {
@@ -3515,17 +3516,15 @@ impl AppState {
                         .is_some_and(|visibility| visibility != Visibility::Visible)
                 }),
         );
-        self.offscreen_recheck_attempts
-            .retain(|hwnd, _| deferred.contains(hwnd));
-        for hwnd in deferred {
+        let mut deferred = deferred.into_iter();
+        while let Some(hwnd) = deferred.next() {
             let visibility = self.current_physical_visibility(hwnd);
-            if self.find_window_workspace(hwnd).is_none() || visibility.is_none() {
-                self.offscreen_recheck_attempts.remove(&hwnd);
+            let workspace = self
+                .find_window_workspace(hwnd)
+                .and_then(|(monitor_id, ws_idx)| self.workspaces.get(&monitor_id)?.get(ws_idx));
+            if visibility.is_none() || workspace.is_none_or(|ws| ws.is_minimized(hwnd)) {
+                self.window_move_recheck_attempts.remove(&hwnd);
                 continue;
-            }
-            let offscreen = visibility != Some(Visibility::Visible);
-            if !offscreen {
-                self.offscreen_recheck_attempts.remove(&hwnd);
             }
             if self.applying_layout
                 || self.display_change_pending
@@ -3535,8 +3534,12 @@ impl AppState {
                 continue;
             }
             let before = self.physical_request_seq;
-            self.on_window_moved_or_resized(hwnd, offscreen);
-            checked |= self.physical_request_seq != before;
+            self.on_window_moved_or_resized(hwnd, true);
+            if self.physical_request_seq != before {
+                checked = true;
+                self.deferred_moved_or_resized.extend(deferred);
+                break;
+            }
         }
         checked
     }
@@ -3847,7 +3850,7 @@ impl AppState {
                         && (a.width - e.width).abs() <= eps
                         && (a.height - e.height).abs() <= eps
                 };
-                let offscreen_target = expected.zip(self.current_physical_visibility(hwnd));
+                let recheck_target = expected.zip(self.current_physical_visibility(hwnd));
                 let at_expected_position = if offscreen {
                     // Compare the exact position and retained size resolved by placement, not fresh insets.
                     leopardwm_platform_win32::offscreen_placement_matches(hwnd) == Some(true)
@@ -3888,23 +3891,38 @@ impl AppState {
                     }
                 };
                 if at_expected_position {
-                    self.offscreen_recheck_attempts.remove(&hwnd);
+                    // Visible landing feedback must not reset the bound on the app's next self-resize.
+                    if offscreen {
+                        self.window_move_recheck_attempts.remove(&hwnd);
+                    }
                     debug!(
                         "Ignoring spurious MovedOrResized for {} — already at expected layout position",
                         hwnd
                     );
                 } else {
-                    if let Some(target) = offscreen_target.filter(|_| offscreen) {
-                        if periodic_recheck
-                            && self.offscreen_recheck_attempts.get(&hwnd) == Some(&target)
-                        {
+                    if periodic_recheck {
+                        let Some(target) = recheck_target else {
                             return;
+                        };
+                        if let Some(attempt) = self.window_move_recheck_attempts.get_mut(&hwnd) {
+                            if attempt.target == target {
+                                if !attempt.gave_up {
+                                    debug!(
+                                        "Giving up deferred MovedOrResized for {} — target {:?} already corrected",
+                                        hwnd, target
+                                    );
+                                    attempt.gave_up = true;
+                                }
+                                return;
+                            }
                         }
-                        if periodic_recheck {
-                            self.offscreen_recheck_attempts.insert(hwnd, target);
-                        }
-                    } else if offscreen && periodic_recheck {
-                        return;
+                        self.window_move_recheck_attempts.insert(
+                            hwnd,
+                            WindowMoveRecheckAttempt {
+                                target,
+                                gave_up: false,
+                            },
+                        );
                     }
                     debug!("Managed window {} moved/resized — snapping back", hwnd);
                     // Evict the displaced hwnd's last-applied entry so
@@ -3923,7 +3941,7 @@ impl AppState {
                     if offscreen
                         && leopardwm_platform_win32::offscreen_placement_matches(hwnd) == Some(true)
                     {
-                        self.offscreen_recheck_attempts.remove(&hwnd);
+                        self.window_move_recheck_attempts.remove(&hwnd);
                     }
                 }
             }

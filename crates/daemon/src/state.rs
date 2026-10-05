@@ -269,6 +269,11 @@ pub(crate) struct ElevationBlockedRecord {
     pub reason: leopardwm_platform_win32::ManageBlock,
 }
 
+pub(crate) struct WindowMoveRecheckAttempt {
+    pub(crate) target: (Rect, Visibility),
+    pub(crate) gave_up: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ApplicationFullscreenState {
     pub(crate) monitor_id: MonitorId,
@@ -591,7 +596,7 @@ pub(crate) struct AppState {
     /// Per-window suppression deadline for MovedOrResized events after apply_layout().
     pub(crate) moved_or_resized_suppression: HashMap<u64, std::time::Instant>,
     pub(crate) deferred_moved_or_resized: HashSet<u64>,
-    pub(crate) offscreen_recheck_attempts: HashMap<u64, (Rect, Visibility)>,
+    pub(crate) window_move_recheck_attempts: HashMap<u64, WindowMoveRecheckAttempt>,
     /// Last-placed layout rect per managed window (in layout coordinates, the
     /// rect the layout engine asked for — not the OS-level window rect with
     /// invisible borders). Updated on every successful apply_layout. Used by
@@ -1178,7 +1183,7 @@ impl AppState {
             pending_drag_hint: None,
             moved_or_resized_suppression: HashMap::new(),
             deferred_moved_or_resized: HashSet::new(),
-            offscreen_recheck_attempts: HashMap::new(),
+            window_move_recheck_attempts: HashMap::new(),
             last_placed_layout_rects: HashMap::new(),
             last_physical_presentations: HashMap::new(),
             pending_physical_presentations: HashMap::new(),
