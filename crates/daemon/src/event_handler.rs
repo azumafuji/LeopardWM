@@ -514,15 +514,16 @@ impl AppState {
         queue: &mut impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
         is_maximized: &mut impl FnMut(u64) -> bool,
     ) {
-        if maximized_at_admission {
-            self.queue_maximized_admission_restore(hwnd, now, queue, is_maximized);
-        } else if action == config::WindowAction::Tile {
+        if action == config::WindowAction::Tile {
             let last_input = self.native_ms_since_last_user_input().and_then(|age| {
                 std::time::Instant::now()
                     .checked_sub(std::time::Duration::from_millis(u64::from(age)))
             });
             self.post_admission_maximize_restore_eligible
-                .insert(hwnd, last_input);
+                .insert(hwnd, (last_input, 0));
+        }
+        if maximized_at_admission {
+            self.queue_maximized_admission_restore(hwnd, now, queue, is_maximized);
         }
     }
 
@@ -542,11 +543,17 @@ impl AppState {
         queue: &mut impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
         is_maximized: &mut impl FnMut(u64) -> bool,
     ) -> bool {
-        self.post_admission_maximize_restore_eligible.remove(&hwnd);
         match queue(hwnd) {
             Ok(will_report) => {
+                if let Some((_, restores_issued)) =
+                    self.post_admission_maximize_restore_eligible.get_mut(&hwnd)
+                {
+                    *restores_issued += 1;
+                }
                 if will_report {
                     self.pending_maximized_admission_restores.insert(hwnd);
+                } else {
+                    self.post_admission_maximize_restore_eligible.remove(&hwnd);
                 }
                 // Keep the zoom sampled at admission: the worker may already be
                 // restoring the window, so a fresh read would race it.
@@ -555,6 +562,7 @@ impl AppState {
                 true
             }
             Err(error) => {
+                self.post_admission_maximize_restore_eligible.remove(&hwnd);
                 debug!(
                     "Could not queue maximized admission restore for {}: {:?}",
                     hwnd, error
@@ -574,8 +582,13 @@ impl AppState {
         queue: &mut impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
         is_maximized: &mut impl FnMut(u64) -> bool,
     ) -> bool {
-        let Some(admission_last_input) =
-            self.post_admission_maximize_restore_eligible.remove(&hwnd)
+        if self.pending_maximized_admission_restores.contains(&hwnd) {
+            return false;
+        }
+        let Some((admission_last_input, restores_issued)) = self
+            .post_admission_maximize_restore_eligible
+            .get(&hwnd)
+            .copied()
         else {
             return false;
         };
@@ -583,29 +596,101 @@ impl AppState {
         if !self.window_managed_at.get(&hwnd).is_some_and(|managed_at| {
             now.saturating_duration_since(*managed_at) < SNAPBACK_SETTLE_AFTER_CREATE
         }) {
+            self.post_admission_maximize_restore_eligible.remove(&hwnd);
             return false;
         }
         let Some(admission_last_input) = admission_last_input else {
+            self.post_admission_maximize_restore_eligible.remove(&hwnd);
             return false;
         };
         let Some(last_input) = input_age_ms().and_then(|age| {
             std::time::Instant::now().checked_sub(std::time::Duration::from_millis(u64::from(age)))
         }) else {
+            self.post_admission_maximize_restore_eligible.remove(&hwnd);
             return false;
         };
         const INPUT_TIMESTAMP_JITTER: std::time::Duration = std::time::Duration::from_millis(50);
         if last_input.saturating_duration_since(admission_last_input) > INPUT_TIMESTAMP_JITTER {
+            self.post_admission_maximize_restore_eligible.remove(&hwnd);
+            debug!(
+                "User input ended post-admission maximize restores for {}",
+                hwnd
+            );
+            return false;
+        }
+        if restores_issued >= 4 {
+            self.post_admission_maximize_restore_eligible.remove(&hwnd);
+            debug!(
+                "Post-admission maximize restore budget exhausted for {}",
+                hwnd
+            );
             return false;
         }
         self.queue_maximized_admission_restore(hwnd, now, queue, is_maximized)
     }
 
-    fn on_maximized_admission_restored(&mut self, hwnd: u64, token: u64, still_maximized: bool) {
+    fn on_maximized_admission_restored(&mut self, hwnd: u64, token: u64, _still_maximized: bool) {
+        #[cfg(test)]
+        let maximized = self.injected_window_maximized.get(&hwnd).copied();
+        #[cfg(test)]
+        let input_age_ms = self.native_ms_since_last_user_input();
+        self.on_maximized_admission_restored_with_native_ops(
+            hwnd,
+            token,
+            || {
+                #[cfg(test)]
+                {
+                    input_age_ms
+                }
+                #[cfg(not(test))]
+                leopardwm_platform_win32::ms_since_last_user_input()
+            },
+            leopardwm_platform_win32::queue_maximized_window_restore,
+            |window_id| {
+                #[cfg(test)]
+                if let Some(maximized) = maximized {
+                    return maximized;
+                }
+                leopardwm_platform_win32::is_window_maximized(window_id)
+            },
+        );
+    }
+
+    pub(crate) fn on_maximized_admission_restored_with_native_ops(
+        &mut self,
+        hwnd: u64,
+        token: u64,
+        mut input_age_ms: impl FnMut() -> Option<u32>,
+        mut queue: impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
+        mut is_maximized: impl FnMut(u64) -> bool,
+    ) {
         if !self.is_managed_member(hwnd) || self.managed_lifetime_tokens.get(&hwnd) != Some(&token)
         {
             return;
         }
         self.pending_maximized_admission_restores.remove(&hwnd);
+        let still_maximized = is_maximized(hwnd);
+        let (chrome_rect, dwm_rect) = self.application_fullscreen_geometry(hwnd);
+        let session =
+            self.observe_application_fullscreen(hwnd, chrome_rect, dwm_rect, still_maximized);
+        let managed_tiled = self
+            .find_window_workspace(hwnd)
+            .and_then(|(monitor_id, ws_idx)| self.workspaces.get(&monitor_id)?.get(ws_idx))
+            .is_some_and(|workspace| {
+                !workspace.is_floating(hwnd) && workspace.fullscreen_window_id() != Some(hwnd)
+            });
+        if session.is_some() || self.is_application_fullscreen(hwnd) || !managed_tiled {
+            self.post_admission_maximize_restore_eligible.remove(&hwnd);
+        } else if still_maximized
+            && self.try_restore_post_admission_maximize(
+                hwnd,
+                &mut input_age_ms,
+                &mut queue,
+                &mut is_maximized,
+            )
+        {
+            return;
+        }
         if still_maximized {
             self.window_last_maximized_at
                 .insert(hwnd, std::time::Instant::now());

@@ -3,7 +3,7 @@ use crate::event_handler::{AdmissionKind, AdmitOutcome};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-fn admit_unmaximized_for_late_maximize(input_age_ms: Option<u32>) -> AppState {
+fn admit_for_late_maximize(input_age_ms: Option<u32>, maximized: bool) -> AppState {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     state.reduce_motion = true;
     state.injected_input_age_ms = input_age_ms;
@@ -15,8 +15,11 @@ fn admit_unmaximized_for_late_maximize(input_age_ms: Option<u32>) -> AppState {
             100,
             AdmissionKind::Automatic,
             None,
-            |_| false,
-            |_| panic!("unmaximized admission must not restore"),
+            |_| maximized,
+            |_| {
+                assert!(maximized, "unmaximized admission must not restore");
+                Ok(true)
+            },
         ),
         AdmitOutcome::Admitted
     );
@@ -25,6 +28,10 @@ fn admit_unmaximized_for_late_maximize(input_age_ms: Option<u32>) -> AppState {
     state.injected_apply_placements_behavior =
         Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
     state
+}
+
+fn admit_unmaximized_for_late_maximize(input_age_ms: Option<u32>) -> AppState {
+    admit_for_late_maximize(input_age_ms, false)
 }
 
 fn input_age_since(last_input: Instant) -> Option<u32> {
@@ -106,31 +113,137 @@ fn test_late_maximize_with_input_since_admission_or_unavailable_input_is_allowed
 }
 
 #[test]
-fn test_second_self_maximize_after_admission_restore_is_allowed() {
+fn test_repeated_self_maximize_restores_at_most_four_times_including_admission() {
+    for maximized_at_admission in [false, true] {
+        let last_input = Instant::now() - Duration::from_millis(400);
+        let mut state = admit_for_late_maximize(Some(400), maximized_at_admission);
+        let queued = std::cell::Cell::new(u8::from(maximized_at_admission));
+        if maximized_at_admission {
+            complete_late_maximize_restore(&mut state);
+        }
+        for expected in (u8::from(maximized_at_admission) + 1)..=4 {
+            state.on_window_moved_or_resized_with_native_ops(
+                100,
+                false,
+                || input_age_since(last_input),
+                |_| {
+                    queued.set(queued.get() + 1);
+                    Ok(true)
+                },
+                |_| true,
+            );
+            assert_eq!(queued.get(), expected);
+            assert!(state.pending_maximized_admission_restores.contains(&100));
+            complete_late_maximize_restore(&mut state);
+            assert!(!state.window_last_maximized_at.contains_key(&100));
+            assert!(state.last_placed_layout_rects.contains_key(&100));
+        }
+        state.injected_window_maximized.insert(100, true);
+        state.moved_or_resized_suppression.remove(&100);
+        for _ in 0..2 {
+            state.on_window_moved_or_resized_with_native_ops(
+                100,
+                false,
+                || input_age_since(last_input),
+                |_| panic!("the four-restore budget must stop further restores"),
+                |_| true,
+            );
+            assert!(!state.pending_maximized_admission_restores.contains(&100));
+            assert!(state.window_last_maximized_at.contains_key(&100));
+        }
+    }
+}
+
+#[test]
+fn test_pending_remaximize_is_freshly_sampled_and_retried_on_completion() {
     let last_input = Instant::now() - Duration::from_millis(400);
-    let mut state = admit_unmaximized_for_late_maximize(Some(400));
-    state.on_window_moved_or_resized_with_native_ops(
-        100,
-        false,
-        || input_age_since(last_input),
-        |_| Ok(true),
-        |_| true,
-    );
-    assert!(state.pending_maximized_admission_restores.contains(&100));
-    complete_late_maximize_restore(&mut state);
-    assert!(!state.window_last_maximized_at.contains_key(&100));
-    state
-        .moved_or_resized_suppression
-        .insert(100, Instant::now() - Duration::from_millis(1));
-    state.on_window_moved_or_resized_with_native_ops(
-        100,
-        false,
-        || Some(400),
-        |_| panic!("a second self-maximize in this lifetime must not restore"),
-        |_| true,
-    );
-    assert!(!state.pending_maximized_admission_restores.contains(&100));
-    assert!(state.window_last_maximized_at.contains_key(&100));
+    let mut state = admit_for_late_maximize(Some(400), true);
+    let token = state.managed_lifetime_tokens[&100];
+    for restores_issued in 1..=4 {
+        state.on_window_moved_or_resized_with_native_ops(
+            100,
+            false,
+            || panic!("pending restore must not sample input"),
+            |_| panic!("only one restore may be outstanding"),
+            |_| panic!("pending notification must await completion"),
+        );
+        let queued = std::cell::Cell::new(0);
+        state.on_maximized_admission_restored_with_native_ops(
+            100,
+            token,
+            || input_age_since(last_input),
+            |_| {
+                queued.set(queued.get() + 1);
+                Ok(true)
+            },
+            |_| true,
+        );
+        assert_eq!(queued.get(), i32::from(restores_issued < 4));
+        assert_eq!(
+            state.pending_maximized_admission_restores.contains(&100),
+            restores_issued < 4
+        );
+        assert!(state.window_last_maximized_at.contains_key(&100));
+    }
+}
+
+#[test]
+fn test_pending_remaximize_completion_respects_input_and_settle_cutoffs() {
+    for (admission_input_age, input_age, expired) in [
+        (Some(400), Some(0), false),
+        (Some(400), None, false),
+        (None, Some(400), false),
+        (Some(400), Some(400), true),
+    ] {
+        let mut state = admit_for_late_maximize(admission_input_age, true);
+        if expired {
+            state.window_managed_at.insert(
+                100,
+                Instant::now() - crate::event_handler::SNAPBACK_SETTLE_AFTER_CREATE,
+            );
+        }
+        state.on_maximized_admission_restored_with_native_ops(
+            100,
+            state.managed_lifetime_tokens[&100],
+            || input_age,
+            |_| panic!("completion must not restore past the input or settle cutoff"),
+            |_| true,
+        );
+        assert!(!state.pending_maximized_admission_restores.contains(&100));
+        assert!(state.window_last_maximized_at.contains_key(&100));
+        state.on_window_moved_or_resized_with_native_ops(
+            100,
+            false,
+            || Some(400),
+            |_| panic!("ended eligibility must not revive on later notifications"),
+            |_| true,
+        );
+    }
+}
+
+#[test]
+fn test_completion_event_uses_fresh_maximize_state_instead_of_worker_sample() {
+    for native_maximized in [false, true] {
+        let mut state = admit_for_late_maximize(Some(400), true);
+        state
+            .injected_window_maximized
+            .insert(100, native_maximized);
+        state.injected_input_age_ms = Some(0);
+        state.handle_window_event(WindowEvent::MaximizedAdmissionRestored {
+            window_id: 100,
+            managed_lifetime_token: state.managed_lifetime_tokens[&100],
+            still_maximized: !native_maximized,
+        });
+        assert!(!state.pending_maximized_admission_restores.contains(&100));
+        assert_eq!(
+            state.window_last_maximized_at.contains_key(&100),
+            native_maximized
+        );
+        assert_eq!(
+            state.last_placed_layout_rects.contains_key(&100),
+            !native_maximized
+        );
+    }
 }
 
 #[test]

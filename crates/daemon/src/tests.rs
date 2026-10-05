@@ -12982,6 +12982,7 @@ fn test_failed_maximized_admission_restore_keeps_settling_grace() {
     assert!(state.pending_maximized_admission_restores.contains(&100));
     assert!(state.window_last_maximized_at.contains_key(&100));
     let before_result = std::time::Instant::now();
+    state.injected_window_maximized.insert(100, true);
     state.handle_window_event(WindowEvent::MaximizedAdmissionRestored {
         window_id: 100,
         managed_lifetime_token: state.managed_lifetime_tokens[&100],
