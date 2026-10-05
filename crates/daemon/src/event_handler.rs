@@ -279,6 +279,16 @@ pub(crate) fn fullscreen_rect_tolerance(scale_factor: f64) -> i32 {
     (scale_factor * 8.0).round().clamp(1.0, 20.0) as i32
 }
 
+pub(crate) fn rect_covers_monitor(rect: Rect, monitor: &MonitorInfo) -> bool {
+    rect_matches_monitor(rect, monitor)
+        || (rect.x <= monitor.rect.x
+            && rect.y <= monitor.rect.y
+            && rect.x.saturating_add(rect.width)
+                >= monitor.rect.x.saturating_add(monitor.rect.width)
+            && rect.y.saturating_add(rect.height)
+                >= monitor.rect.y.saturating_add(monitor.rect.height))
+}
+
 fn rect_matches_monitor(rect: Rect, monitor: &MonitorInfo) -> bool {
     rects_match_with_tolerance(
         rect,
@@ -1081,15 +1091,10 @@ impl AppState {
                 return AdmitOutcome::PersistentIgnore;
             }
 
-            // No user rule matched and the window has a classic dialog shape (a
-            // title bar but no minimize or maximize button): leave it floating
-            // where Windows placed it instead of tiling it. Catches resizable
-            // progress and notification dialogs that would otherwise take a
-            // column. A user Tile/Float rule overrides this.
-            if !rule_matched && leopardwm_platform_win32::is_dialog_like_window(hwnd) {
+            if let Some(kind) = self.unmanaged_helper_kind(&win_info, rule_matched) {
                 debug!(
-                    "Leaving dialog-like window unmanaged: {} ({})",
-                    win_info.title, win_info.class_name
+                    "Leaving {} window unmanaged: {} ({})",
+                    kind, win_info.title, win_info.class_name
                 );
                 return AdmitOutcome::DialogLike;
             }

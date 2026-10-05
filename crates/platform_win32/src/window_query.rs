@@ -7,7 +7,7 @@ use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongW, GetWindowRect, IsIconic, IsWindow, IsWindowVisible, GWL_STYLE, WS_CAPTION,
-    WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_THICKFRAME,
 };
 
 /// Query DWM for the window's corner-rounding preference and map to a pixel
@@ -207,6 +207,19 @@ fn is_frameless_popup_style(style: u32) -> bool {
     let has_caption = style & WS_CAPTION.0 == WS_CAPTION.0;
     let has_min = style & WS_MINIMIZEBOX.0 != 0;
     !has_caption && !has_min
+}
+
+pub fn is_frameless_fixed_size_window(hwnd: WindowId) -> bool {
+    if hwnd == 0 {
+        return false;
+    }
+    let style = unsafe { GetWindowLongW(HWND(hwnd as *mut c_void), GWL_STYLE) as u32 };
+    // A failed style query must not exclude an otherwise eligible window.
+    style != 0 && is_frameless_fixed_size_style(style)
+}
+
+fn is_frameless_fixed_size_style(style: u32) -> bool {
+    is_frameless_popup_style(style) && style & WS_THICKFRAME.0 == 0
 }
 
 /// Check if a window handle is still valid.
@@ -461,6 +474,7 @@ mod tests {
         // No caption (borderless surface, splash, game) -> not dialog-like.
         assert!(!is_dialog_like_style(0));
         assert!(!is_dialog_like_style(WS_MINIMIZEBOX.0));
+        assert!(!is_dialog_like_style(0x16880080));
     }
 
     #[test]
@@ -469,6 +483,7 @@ mod tests {
         // Frameless ephemeral popup (no caption, no minimize) -> true.
         assert!(is_frameless_popup_style(0));
         assert!(is_frameless_popup_style(WS_POPUP.0));
+        assert!(is_frameless_popup_style(WS_POPUP.0 | WS_THICKFRAME.0));
         // Real app window keeps a minimize box even with a custom title bar.
         assert!(!is_frameless_popup_style(WS_MINIMIZEBOX.0));
         assert!(!is_frameless_popup_style(WS_POPUP.0 | WS_MINIMIZEBOX.0));
@@ -477,6 +492,21 @@ mod tests {
         assert!(!is_frameless_popup_style(
             WS_CAPTION.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0
         ));
+    }
+
+    #[test]
+    fn test_is_frameless_fixed_size_style() {
+        let helper = 0x16880080;
+        for (style, expected) in [
+            (helper, true),
+            (helper | WS_MINIMIZEBOX.0, false),
+            (helper | WS_THICKFRAME.0, false),
+            (helper | WS_CAPTION.0, false),
+            (helper | WS_MAXIMIZEBOX.0, true),
+        ] {
+            assert_eq!(is_frameless_fixed_size_style(style), expected, "{style:#x}");
+        }
+        assert!(!is_frameless_fixed_size_window(0));
     }
 
     #[test]

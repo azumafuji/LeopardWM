@@ -244,15 +244,10 @@ impl AppState {
                 continue;
             }
 
-            // No user rule matched and the window has a classic dialog shape (a
-            // title bar but no minimize or maximize button): leave it floating
-            // instead of reserving a column. Mirrors the live-create path so a
-            // dialog already open at startup or seen via `lwm refresh` is treated
-            // the same. A user Tile/Float rule overrides this.
-            if !rule_matched && leopardwm_platform_win32::is_dialog_like_window(win_info.hwnd) {
+            if let Some(kind) = self.unmanaged_helper_kind(&win_info, rule_matched) {
                 debug!(
-                    "Leaving dialog-like window unmanaged: {} ({})",
-                    win_info.title, win_info.class_name
+                    "Leaving {} window unmanaged: {} ({})",
+                    kind, win_info.title, win_info.class_name
                 );
                 continue;
             }
@@ -343,6 +338,28 @@ impl AppState {
         }
 
         Ok(added)
+    }
+
+    pub(crate) fn unmanaged_helper_kind(
+        &self,
+        window: &WindowInfo,
+        rule_matched: bool,
+    ) -> Option<&'static str> {
+        if rule_matched {
+            return None;
+        }
+        if leopardwm_platform_win32::is_dialog_like_window(window.hwnd) {
+            return Some("dialog-like");
+        }
+        if leopardwm_platform_win32::is_frameless_fixed_size_window(window.hwnd)
+            && !self
+                .monitors
+                .values()
+                .any(|monitor| crate::event_handler::rect_covers_monitor(window.rect, monitor))
+        {
+            return Some("frameless fixed-size");
+        }
+        None
     }
 
     fn windows_for_enumeration(&self) -> Result<Vec<WindowInfo>> {

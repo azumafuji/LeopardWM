@@ -13021,6 +13021,75 @@ fn test_non_maximized_tiled_admission_keeps_normal_column_width() {
 }
 
 #[test]
+fn test_frameless_fixed_size_admission_preserves_rules_and_fullscreen() {
+    use crate::config::{WindowAction, WindowRule};
+    use crate::event_handler::{AdmissionKind, AdmitOutcome};
+
+    for enumerate in [false, true] {
+        for monitor_margin in [None, Some(0), Some(16), Some(-4)] {
+            for action in [None, Some(WindowAction::Tile), Some(WindowAction::Float)] {
+                let window = ResizeTestWindow::new(400);
+                let hwnd = window.id();
+                let mut config = test_config();
+                config.behavior.focus_new_windows = false;
+                if let Some(action) = action {
+                    config.window_rules = vec![WindowRule {
+                        match_class: Some("TestWindowClass".to_string()),
+                        action,
+                        ..Default::default()
+                    }];
+                }
+                let mut state = AppState::new_with_config(config, test_monitors());
+                let mut info = make_test_window_info(hwnd);
+                info.rect = if let Some(margin) = monitor_margin {
+                    let monitor = state.monitors[&state.focused_monitor].rect;
+                    Rect::new(
+                        monitor.x - margin,
+                        monitor.y - margin,
+                        monitor.width + 2 * margin,
+                        monitor.height + 2 * margin,
+                    )
+                } else {
+                    Rect::new(100, 100, 400, 600)
+                };
+                let should_manage = monitor_margin.is_some() || action.is_some();
+                if enumerate {
+                    state.injected_enumerated_windows = Some(vec![info]);
+                    assert_eq!(
+                        state.enumerate_and_add_windows().unwrap(),
+                        usize::from(should_manage)
+                    );
+                } else {
+                    state.injected_window_info.insert(hwnd, info);
+                    let outcome = state.try_admit_window_at_with_native_ops(
+                        hwnd,
+                        AdmissionKind::Automatic,
+                        None,
+                        |_| false,
+                        |_| Ok(true),
+                    );
+                    assert_eq!(
+                        outcome,
+                        if should_manage {
+                            AdmitOutcome::Admitted
+                        } else {
+                            AdmitOutcome::DialogLike
+                        }
+                    );
+                }
+                assert_eq!(state.find_window_workspace(hwnd).is_some(), should_manage);
+                if should_manage {
+                    assert_eq!(
+                        state.focused_workspace().unwrap().is_floating(hwnd),
+                        action == Some(WindowAction::Float)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_created_event_with_injected_window_info() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
 
