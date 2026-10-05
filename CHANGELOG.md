@@ -20,6 +20,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
+- **Apps that maximize themselves right after opening, such as Zen Browser reopening maximized, now settle into their tile instead of staying maximized.** (#104)
 - **Disconnecting or reconnecting a monitor now keeps LeopardWM's focus on the window that actually has it.** Focus no longer points to a different window or none until the next click.
 - **Reloading configuration now validates it just like startup.** `lwm reload` and Settings save clamp out-of-range values and log configuration warnings instead of applying unchecked values.
 - **Pausing tiling or releasing all windows now restores hidden taskbar buttons.** Resuming re-applies the configured taskbar policy.

@@ -505,6 +505,22 @@ impl AppState {
         }
     }
 
+    fn prepare_admission_maximize_restore(
+        &mut self,
+        hwnd: u64,
+        now: std::time::Instant,
+        action: config::WindowAction,
+        maximized_at_admission: bool,
+        queue: &mut impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
+        is_maximized: &mut impl FnMut(u64) -> bool,
+    ) {
+        if maximized_at_admission {
+            self.queue_maximized_admission_restore(hwnd, now, queue, is_maximized);
+        } else if action == config::WindowAction::Tile {
+            self.post_admission_maximize_restore_eligible.insert(hwnd);
+        }
+    }
+
     fn queue_maximized_admission_restore(
         &mut self,
         hwnd: u64,
@@ -512,6 +528,7 @@ impl AppState {
         queue: &mut impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
         is_maximized: &mut impl FnMut(u64) -> bool,
     ) {
+        self.post_admission_maximize_restore_eligible.remove(&hwnd);
         match queue(hwnd) {
             Ok(will_report) => {
                 if will_report {
@@ -1105,14 +1122,14 @@ impl AppState {
                         workspace.ensure_focused_visible_animated(viewport_width);
                     }
                     self.record_managed_lifetime(hwnd, admitted_at_event_ms);
-                    if native_maximized_at_admission {
-                        self.queue_maximized_admission_restore(
-                            hwnd,
-                            now,
-                            &mut queue_maximized_restore,
-                            &mut is_maximized,
-                        );
-                    }
+                    self.prepare_admission_maximize_restore(
+                        hwnd,
+                        now,
+                        action,
+                        native_maximized_at_admission,
+                        &mut queue_maximized_restore,
+                        &mut is_maximized,
+                    );
                     self.record_managed_window_identity(&win_info);
                     if recreated_slot.is_some() {
                         if opens_in_background {
@@ -3370,6 +3387,41 @@ impl AppState {
 
     /// Handle a window move/resize notification.
     fn on_window_moved_or_resized(&mut self, hwnd: u64, periodic_recheck: bool) {
+        #[cfg(test)]
+        let maximized = self.injected_window_maximized.get(&hwnd).copied();
+        self.on_window_moved_or_resized_with_native_ops(
+            hwnd,
+            periodic_recheck,
+            || {
+                #[cfg(test)]
+                {
+                    None
+                }
+                #[cfg(not(test))]
+                leopardwm_platform_win32::ms_since_last_user_input()
+            },
+            leopardwm_platform_win32::queue_maximized_window_restore,
+            |window_id| {
+                #[cfg(test)]
+                if let Some(maximized) = maximized {
+                    return maximized;
+                }
+                leopardwm_platform_win32::is_window_maximized(window_id)
+            },
+        );
+    }
+
+    pub(crate) fn on_window_moved_or_resized_with_native_ops(
+        &mut self,
+        hwnd: u64,
+        periodic_recheck: bool,
+        mut input_age_ms: impl FnMut() -> Option<u32>,
+        mut queue_maximized_restore: impl FnMut(
+            u64,
+        )
+            -> Result<bool, leopardwm_platform_win32::Win32Error>,
+        mut is_maximized: impl FnMut(u64) -> bool,
+    ) {
         if self.pending_maximized_admission_restores.contains(&hwnd) {
             return;
         }
@@ -3392,7 +3444,7 @@ impl AppState {
                         })
                 })
                 .unwrap_or(false);
-            let is_maximized = self.native_window_is_maximized(hwnd);
+            let is_maximized = is_maximized(hwnd);
             if should_observe_maximize_during_suppression(
                 self.applying_layout,
                 self.display_change_pending,
@@ -3405,12 +3457,8 @@ impl AppState {
             return;
         }
         let (chrome_rect, dwm_rect) = self.application_fullscreen_geometry(hwnd);
-        let session = self.observe_application_fullscreen(
-            hwnd,
-            chrome_rect,
-            dwm_rect,
-            self.native_window_is_maximized(hwnd),
-        );
+        let session =
+            self.observe_application_fullscreen(hwnd, chrome_rect, dwm_rect, is_maximized(hwnd));
         let prior = self.application_fullscreen.get(&hwnd).copied();
         let lifecycle = application_fullscreen_lifecycle(prior, session);
         match lifecycle {
@@ -3534,7 +3582,30 @@ impl AppState {
                 if self.previous_focused_hwnd == Some(hwnd) {
                     self.show_border(hwnd);
                 }
-            } else if self.native_window_is_maximized(hwnd) {
+            } else if is_maximized(hwnd) {
+                let now = std::time::Instant::now();
+                let settling = self.window_managed_at.get(&hwnd).is_some_and(|managed_at| {
+                    now.saturating_duration_since(*managed_at) < SNAPBACK_SETTLE_AFTER_CREATE
+                });
+                const MAXIMIZE_INPUT_RECENT_MS: u32 = 100;
+                if settling
+                    && self
+                        .post_admission_maximize_restore_eligible
+                        .contains(&hwnd)
+                    && input_age_ms().is_some_and(|age| age > MAXIMIZE_INPUT_RECENT_MS)
+                {
+                    self.queue_maximized_admission_restore(
+                        hwnd,
+                        now,
+                        &mut queue_maximized_restore,
+                        &mut is_maximized,
+                    );
+                    debug!(
+                        "Restoring settling tiled window {} after late maximize",
+                        hwnd
+                    );
+                    return;
+                }
                 // User maximized a tiled window — let it stay maximized. Record
                 // the maximize so a brief restore mid-burst is treated as
                 // settling rather than a snap-back trigger, and remove only

@@ -688,6 +688,7 @@ impl AppState {
     fn evict_unmanaged_window_metadata(&mut self) {
         if self.window_managed_at.is_empty()
             && self.window_last_maximized_at.is_empty()
+            && self.post_admission_maximize_restore_eligible.is_empty()
             && self.application_fullscreen.is_empty()
             && self.recreated_window_slots.identities.is_empty()
             && self.managed_lifetime_tokens.is_empty()
@@ -717,6 +718,8 @@ impl AppState {
         });
         self.managed_lifetime_admitted_at_event_ms
             .retain(|hwnd, _| self.managed_lifetime_tokens.contains_key(hwnd));
+        self.post_admission_maximize_restore_eligible
+            .retain(|hwnd| self.managed_lifetime_tokens.contains_key(hwnd));
         self.recreated_window_slots
             .identities
             .retain(|hwnd, _| self.managed_lifetime_tokens.contains_key(hwnd));

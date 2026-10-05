@@ -3,6 +3,141 @@ use crate::event_handler::{AdmissionKind, AdmitOutcome};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+fn admit_unmaximized_for_late_maximize() -> AppState {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.reduce_motion = true;
+    state
+        .injected_window_info
+        .insert(100, make_test_window_info(100));
+    assert_eq!(
+        state.try_admit_window_at_with_native_ops(
+            100,
+            AdmissionKind::Automatic,
+            None,
+            |_| false,
+            |_| panic!("unmaximized admission must not restore"),
+        ),
+        AdmitOutcome::Admitted
+    );
+    state.paused = false;
+    state.layout_transition = None;
+    state.injected_apply_placements_behavior =
+        Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
+    state
+}
+
+fn complete_late_maximize_restore(state: &mut AppState) {
+    state.injected_window_maximized.insert(100, false);
+    state.handle_window_event(WindowEvent::MaximizedAdmissionRestored {
+        window_id: 100,
+        managed_lifetime_token: state.managed_lifetime_tokens[&100],
+        still_maximized: false,
+    });
+}
+
+#[test]
+fn test_late_self_maximize_queues_one_admission_restore_and_lands_tiled() {
+    let mut state = admit_unmaximized_for_late_maximize();
+    let queued = std::cell::Cell::new(0);
+    for _ in 0..2 {
+        state.on_window_moved_or_resized_with_native_ops(
+            100,
+            false,
+            || Some(400),
+            |_| {
+                queued.set(queued.get() + 1);
+                Ok(true)
+            },
+            |_| true,
+        );
+    }
+    assert_eq!(queued.get(), 1);
+    assert!(state.pending_maximized_admission_restores.contains(&100));
+    assert!(state.window_last_maximized_at.contains_key(&100));
+    let batches_before = state
+        .injected_apply_placements_batches
+        .lock()
+        .unwrap()
+        .len();
+    complete_late_maximize_restore(&mut state);
+    assert!(!state.pending_maximized_admission_restores.contains(&100));
+    assert!(!state.window_last_maximized_at.contains_key(&100));
+    assert!(state.focused_workspace().unwrap().columns()[0].contains(100));
+    assert!(!state.focused_workspace().unwrap().is_floating(100));
+    assert_eq!(
+        state
+            .injected_apply_placements_batches
+            .lock()
+            .unwrap()
+            .len(),
+        batches_before + 1
+    );
+    assert!(state.last_placed_layout_rects.contains_key(&100));
+}
+
+#[test]
+fn test_late_maximize_with_recent_or_unavailable_input_is_allowed() {
+    for input_age in [Some(0), Some(100), None] {
+        let mut state = admit_unmaximized_for_late_maximize();
+        let placements = state.last_placed_layout_rects.clone();
+        state.on_window_moved_or_resized_with_native_ops(
+            100,
+            false,
+            || input_age,
+            |_| panic!("user maximize or unavailable input must not restore"),
+            |_| true,
+        );
+        assert!(!state.pending_maximized_admission_restores.contains(&100));
+        assert!(state.window_last_maximized_at.contains_key(&100));
+        assert_eq!(state.last_placed_layout_rects, placements);
+    }
+}
+
+#[test]
+fn test_second_self_maximize_after_admission_restore_is_allowed() {
+    let mut state = admit_unmaximized_for_late_maximize();
+    state.on_window_moved_or_resized_with_native_ops(
+        100,
+        false,
+        || Some(400),
+        |_| Ok(true),
+        |_| true,
+    );
+    assert!(state.pending_maximized_admission_restores.contains(&100));
+    complete_late_maximize_restore(&mut state);
+    assert!(!state.window_last_maximized_at.contains_key(&100));
+    state
+        .moved_or_resized_suppression
+        .insert(100, Instant::now() - Duration::from_millis(1));
+    state.on_window_moved_or_resized_with_native_ops(
+        100,
+        false,
+        || Some(400),
+        |_| panic!("a second self-maximize in this lifetime must not restore"),
+        |_| true,
+    );
+    assert!(!state.pending_maximized_admission_restores.contains(&100));
+    assert!(state.window_last_maximized_at.contains_key(&100));
+}
+
+#[test]
+fn test_self_maximize_outside_admission_settle_window_is_allowed() {
+    let mut state = admit_unmaximized_for_late_maximize();
+    state.window_managed_at.insert(
+        100,
+        Instant::now() - crate::event_handler::SNAPBACK_SETTLE_AFTER_CREATE,
+    );
+    state.on_window_moved_or_resized_with_native_ops(
+        100,
+        false,
+        || Some(400),
+        |_| panic!("an established window must not restore"),
+        |_| true,
+    );
+    assert!(!state.pending_maximized_admission_restores.contains(&100));
+    assert!(state.window_last_maximized_at.contains_key(&100));
+}
+
 fn admit_pending_maximized() -> AppState {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
     state.reduce_motion = true;
