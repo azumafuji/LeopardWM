@@ -12516,6 +12516,103 @@ impl Drop for OffscreenResizeOwner {
     }
 }
 
+fn visible_resize_recheck_state(hwnd: u64) -> AppState {
+    let mut monitors = test_monitors();
+    monitors[0].rect = Rect::new(0, 0, 800, 600);
+    monitors[0].work_area = Rect::new(0, 0, 800, 560);
+    let mut state = AppState::new_with_config(test_config(), monitors);
+    state.paused = false;
+    state.reduce_motion = true;
+    let mut workspace = Workspace::with_gaps(0, 0);
+    workspace.set_reduce_motion(true);
+    workspace.insert_window(hwnd, Some(300)).unwrap();
+    state.workspaces.get_mut(&1).unwrap()[0] = workspace;
+    state.apply_layout().unwrap();
+    assert_eq!(
+        state.current_physical_visibility(hwnd),
+        Some(leopardwm_core_layout::Visibility::Visible)
+    );
+    assert_eq!(
+        state.expected_physical_rect(hwnd),
+        Some(Rect::new(0, 0, 300, 560))
+    );
+    state
+}
+
+#[test]
+fn test_suppressed_visible_resize_replays_once_after_all_suppression_ends() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = visible_resize_recheck_state(owner.hwnd);
+    owner.resize(0, 200);
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    let before = state.physical_request_seq;
+    for guard in 0..3 {
+        state.applying_layout = guard == 1;
+        state.display_change_pending = guard == 2;
+        if guard != 0 {
+            state.moved_or_resized_suppression.insert(
+                owner.hwnd,
+                std::time::Instant::now() - Duration::from_millis(1),
+            );
+        }
+        assert!(!state.recheck_deferred_window_moves());
+        assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+        assert_eq!(state.physical_request_seq, before);
+        assert_eq!(owner.rect(), Rect::new(0, 0, 200, 560));
+    }
+    state.display_change_pending = false;
+    state.injected_apply_placements_behavior =
+        Some(TestApplyPlacementsBehavior::SleepAndSucceed(Duration::ZERO));
+    assert!(state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before + 1);
+    assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before + 1);
+    assert_eq!(
+        state
+            .injected_apply_placements_call_count
+            .load(Ordering::SeqCst),
+        1,
+        "a consumed visible resize must not feed another replay even if it stays displaced"
+    );
+}
+
+#[test]
+fn test_suppressed_visible_placement_feedback_and_maximize_settling_are_noops() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = visible_resize_recheck_state(owner.hwnd);
+    for settling in [false, true] {
+        if settling {
+            owner.resize(0, 200);
+            let now = std::time::Instant::now();
+            state.window_managed_at.insert(owner.hwnd, now);
+            state.window_last_maximized_at.insert(owner.hwnd, now);
+        } else {
+            assert_eq!(owner.rect(), Rect::new(0, 0, 300, 560));
+        }
+        state.arm_moved_or_resized_suppression([owner.hwnd]);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+        state.moved_or_resized_suppression.insert(
+            owner.hwnd,
+            std::time::Instant::now() - Duration::from_millis(1),
+        );
+        let before = state.physical_request_seq;
+        assert!(!state.recheck_deferred_window_moves());
+        assert_eq!(state.physical_request_seq, before);
+        assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+        assert_eq!(owner.rect().width, if settling { 200 } else { 300 });
+    }
+}
+
 #[test]
 fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
@@ -12560,7 +12657,7 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
         state.arm_moved_or_resized_suppression([owner.hwnd]);
         state.applying_layout = applying;
         state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
-        assert!(!state.recheck_deferred_offscreen_windows());
+        assert!(!state.recheck_deferred_window_moves());
         assert!(
             owner.rect().intersects(&work_area),
             "placement feedback remains suppressed"
@@ -12570,7 +12667,7 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
             owner.hwnd,
             std::time::Instant::now() - Duration::from_millis(1),
         );
-        state.recheck_deferred_offscreen_windows();
+        state.recheck_deferred_window_moves();
         assert!(
             !owner.rect().intersects(&work_area),
             "periodic re-check must correct the missed resize, got {:?}",
@@ -12591,7 +12688,7 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
         std::time::Instant::now() - Duration::from_millis(1),
     );
     let request_seq = state.physical_request_seq;
-    assert!(!state.recheck_deferred_offscreen_windows());
+    assert!(!state.recheck_deferred_window_moves());
     assert_eq!(
         owner.rect().x,
         -315,
@@ -12604,7 +12701,7 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
     leopardwm_platform_win32::forget_offscreen_placement(owner.hwnd);
     state.deferred_moved_or_resized.insert(owner.hwnd);
     state.moved_or_resized_suppression.remove(&owner.hwnd);
-    assert!(state.recheck_deferred_offscreen_windows());
+    assert!(state.recheck_deferred_window_moves());
     assert_eq!(state.physical_request_seq, request_seq + 1);
     assert_eq!(
         leopardwm_platform_win32::offscreen_placement_matches(owner.hwnd),
@@ -12655,7 +12752,7 @@ fn test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor() {
             owner.hwnd,
             std::time::Instant::now() - Duration::from_millis(1),
         );
-        state.recheck_deferred_offscreen_windows();
+        state.recheck_deferred_window_moves();
         assert_eq!(
             state.physical_request_seq, requests,
             "a legitimate hidden-tab origin must not dispatch snap-back"
@@ -12732,7 +12829,7 @@ fn test_offscreen_recheck_converges_with_cached_insets_after_frame_change() {
     state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
     state.moved_or_resized_suppression.remove(&owner.hwnd);
     let before = state.physical_request_seq;
-    assert!(state.recheck_deferred_offscreen_windows());
+    assert!(state.recheck_deferred_window_moves());
     let landed = owner.rect();
     assert_ne!(
         (landed.x, landed.y),
@@ -12746,7 +12843,7 @@ fn test_offscreen_recheck_converges_with_cached_insets_after_frame_change() {
     for _ in 0..4 {
         state.deferred_moved_or_resized.insert(owner.hwnd);
         state.moved_or_resized_suppression.remove(&owner.hwnd);
-        assert!(!state.recheck_deferred_offscreen_windows());
+        assert!(!state.recheck_deferred_window_moves());
         assert_eq!(
             state.physical_request_seq,
             before + 1,
@@ -12784,7 +12881,7 @@ fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
             owner.hwnd,
             std::time::Instant::now() - Duration::from_millis(1),
         );
-        assert_eq!(state.recheck_deferred_offscreen_windows(), tick == 0);
+        assert_eq!(state.recheck_deferred_window_moves(), tick == 0);
         assert_eq!(
             owner.rect().x,
             -300,
@@ -12800,7 +12897,7 @@ fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
     }
     owner.resize(-300, 330);
     state.moved_or_resized_suppression.remove(&owner.hwnd);
-    assert!(!state.recheck_deferred_offscreen_windows());
+    assert!(!state.recheck_deferred_window_moves());
     assert_eq!(
         state
             .injected_apply_placements_call_count
@@ -12811,7 +12908,7 @@ fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
     state.workspaces.get_mut(&1).unwrap()[0].set_scroll_offset(330.0);
     state.apply_layout().unwrap();
     state.moved_or_resized_suppression.remove(&owner.hwnd);
-    assert!(state.recheck_deferred_offscreen_windows());
+    assert!(state.recheck_deferred_window_moves());
     assert_eq!(
         state
             .injected_apply_placements_call_count
@@ -12823,7 +12920,7 @@ fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
     state.bump_physical_invalidation();
     state.apply_layout().unwrap();
     state.moved_or_resized_suppression.remove(&owner.hwnd);
-    assert!(!state.recheck_deferred_offscreen_windows());
+    assert!(!state.recheck_deferred_window_moves());
     assert_eq!(
         leopardwm_platform_win32::offscreen_placement_matches(owner.hwnd),
         Some(true)
@@ -12834,7 +12931,7 @@ fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
     state.arm_moved_or_resized_suppression([owner.hwnd]);
     state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
     state.moved_or_resized_suppression.remove(&owner.hwnd);
-    state.recheck_deferred_offscreen_windows();
+    state.recheck_deferred_window_moves();
     assert_eq!(
         state
             .injected_apply_placements_call_count

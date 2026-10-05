@@ -3502,19 +3502,30 @@ impl AppState {
         }
     }
 
-    /// Re-check suppressed off-screen moves once placement feedback has settled.
-    pub(crate) fn recheck_deferred_offscreen_windows(&mut self) -> bool {
+    /// Replay suppressed moves once placement feedback settles, and re-check off-screen drift.
+    pub(crate) fn recheck_deferred_window_moves(&mut self) -> bool {
         let mut checked = false;
         let mut deferred = std::mem::take(&mut self.deferred_moved_or_resized);
-        deferred.extend(self.offscreen_recheck_attempts.keys().copied());
+        deferred.extend(
+            self.offscreen_recheck_attempts
+                .keys()
+                .copied()
+                .filter(|hwnd| {
+                    self.current_physical_visibility(*hwnd)
+                        .is_some_and(|visibility| visibility != Visibility::Visible)
+                }),
+        );
+        self.offscreen_recheck_attempts
+            .retain(|hwnd, _| deferred.contains(hwnd));
         for hwnd in deferred {
-            if self.find_window_workspace(hwnd).is_none()
-                || !self
-                    .current_physical_visibility(hwnd)
-                    .is_some_and(|visibility| visibility != Visibility::Visible)
-            {
+            let visibility = self.current_physical_visibility(hwnd);
+            if self.find_window_workspace(hwnd).is_none() || visibility.is_none() {
                 self.offscreen_recheck_attempts.remove(&hwnd);
                 continue;
+            }
+            let offscreen = visibility != Some(Visibility::Visible);
+            if !offscreen {
+                self.offscreen_recheck_attempts.remove(&hwnd);
             }
             if self.applying_layout
                 || self.display_change_pending
@@ -3524,7 +3535,7 @@ impl AppState {
                 continue;
             }
             let before = self.physical_request_seq;
-            self.on_window_moved_or_resized(hwnd, true);
+            self.on_window_moved_or_resized(hwnd, offscreen);
             checked |= self.physical_request_seq != before;
         }
         checked

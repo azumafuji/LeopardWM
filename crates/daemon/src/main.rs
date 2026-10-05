@@ -2514,7 +2514,7 @@ async fn handle_tray_event(ctx: &mut EventLoopCtx<'_>, tray_event: tray::TrayEve
     }
 }
 
-/// Check eventless focus disappearance and off-screen drift after placement
+/// Check eventless focus disappearance and deferred moves after placement
 /// feedback suppression ends.
 fn spawn_periodic_ticker(event_tx: &mpsc::Sender<DaemonEvent>) {
     let tx = event_tx.clone();
@@ -2530,13 +2530,13 @@ fn spawn_periodic_ticker(event_tx: &mpsc::Sender<DaemonEvent>) {
     });
 }
 
-/// Prune vanished tracked focus, re-check suppressed off-screen moves, and
-/// start the animation worker when either check changes the layout.
+/// Prune vanished tracked focus, replay suppressed moves and re-check off-screen drift,
+/// and start the animation worker when either check changes the layout.
 async fn handle_periodic_check(ctx: &mut EventLoopCtx<'_>) {
     let mut state = ctx.state.lock().await;
     let focus_changed = state.check_tracked_focus_liveness();
-    let offscreen_checked = state.recheck_deferred_offscreen_windows();
-    if !focus_changed && !offscreen_checked {
+    let moves_checked = state.recheck_deferred_window_moves();
+    if !focus_changed && !moves_checked {
         return;
     }
     if state.overview_open {
