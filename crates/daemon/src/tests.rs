@@ -12516,6 +12516,180 @@ impl Drop for OffscreenResizeOwner {
     }
 }
 
+fn floating_move_state(owner: &OffscreenResizeOwner) -> AppState {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = false;
+    state.reduce_motion = true;
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .add_floating(owner.hwnd, owner.rect())
+        .unwrap();
+    state.apply_layout().unwrap();
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    state
+}
+
+#[test]
+fn test_external_floating_move_survives_reapply_and_workspace_round_trip() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = floating_move_state(&owner);
+    owner.resize(230, 450);
+    let moved = Rect::new(230, 0, 450, 560);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.apply_layout().unwrap();
+    assert_eq!(owner.rect(), moved);
+    assert!(matches!(
+        state.handle_command(IpcCommand::SwitchWorkspace { index: 2 }),
+        IpcResponse::Ok
+    ));
+    assert!(matches!(
+        state.handle_command(IpcCommand::SwitchWorkspace { index: 1 }),
+        IpcResponse::Ok
+    ));
+    assert_eq!(owner.rect(), moved);
+    assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, moved);
+}
+
+#[test]
+fn test_suppressed_floating_move_replays_after_placement_without_looping() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = floating_move_state(&owner);
+    let original = owner.rect();
+    owner.resize(230, 450);
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    let before = state.physical_request_seq;
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, original);
+    assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+    state.moved_or_resized_suppression.insert(
+        owner.hwnd,
+        std::time::Instant::now() - Duration::from_millis(1),
+    );
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(
+        state.workspaces[&1][0].floating_windows()[0].rect,
+        Rect::new(230, 0, 450, 560)
+    );
+    assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+    assert!(!state.window_move_recheck_attempts.contains_key(&owner.hwnd));
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before);
+}
+
+#[test]
+fn test_floating_placement_and_special_states_preserve_stored_geometry() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for exclusion in [
+        "inactive",
+        "parked",
+        "minimized",
+        "maximized",
+        "fullscreen",
+        "resize",
+        "drag",
+        "transition",
+        "applying",
+        "display_change",
+    ] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_move_state(&owner);
+        let original = owner.rect();
+        owner.resize(230, 450);
+        match exclusion {
+            "inactive" => {
+                state.ensure_workspace_exists(1, 1);
+                state.active_workspace.insert(1, 1);
+            }
+            "parked" => {
+                leopardwm_platform_win32::move_window_offscreen(owner.hwnd).unwrap();
+            }
+            "minimized" => {
+                state.workspaces.get_mut(&1).unwrap()[0].mark_minimized(owner.hwnd);
+            }
+            "maximized" => {
+                state.injected_window_maximized.insert(owner.hwnd, true);
+            }
+            "fullscreen" => {
+                state.application_fullscreen.insert(
+                    owner.hwnd,
+                    ApplicationFullscreenState {
+                        monitor_id: 1,
+                        rect: Rect::new(0, 0, 1920, 1080),
+                    },
+                );
+                owner.resize(0, 1920);
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::{
+                        SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+                    };
+                    SetWindowPos(
+                        windows::Win32::Foundation::HWND(owner.hwnd as *mut _),
+                        None,
+                        0,
+                        0,
+                        1920,
+                        1080,
+                        SWP_NOACTIVATE | SWP_NOZORDER,
+                    )
+                    .unwrap();
+                }
+            }
+            "resize" => state.resize_hwnd = Some(owner.hwnd),
+            "drag" => {
+                state.drag_state = Some(DragState {
+                    hwnd: owner.hwnd,
+                    is_tiled: false,
+                    source_monitor: 1,
+                    source_workspace_idx: 0,
+                    source_window_slot: 0,
+                    current_column_index: 0,
+                    last_drop_target: None,
+                    last_hint_update: None,
+                    removed_from_source: false,
+                    preview_mode: crate::state::DragPreviewMode::None,
+                    target_column_peers: Vec::new(),
+                    source_column_peers: Vec::new(),
+                });
+            }
+            "transition" => state.start_layout_transition_with_duration(
+                std::collections::HashMap::from([(owner.hwnd, original)]),
+                150,
+            ),
+            "applying" => state.applying_layout = true,
+            "display_change" => state.display_change_pending = true,
+            _ => unreachable!(),
+        }
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            original,
+            "{exclusion} geometry must not become the floating rectangle"
+        );
+        if matches!(exclusion, "transition" | "applying" | "display_change") {
+            assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+            assert!(!state.recheck_deferred_window_moves());
+            assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, original);
+            state.layout_transition = None;
+            state.applying_layout = false;
+            state.display_change_pending = false;
+            state.post_animation_nudge_pending = true;
+            state.apply_layout().unwrap();
+            state.moved_or_resized_suppression.remove(&owner.hwnd);
+            assert!(!state.recheck_deferred_window_moves());
+            assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+            assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, original);
+        }
+    }
+}
+
 fn visible_resize_recheck_state(hwnd: u64) -> AppState {
     let mut monitors = test_monitors();
     monitors[0].rect = Rect::new(0, 0, 800, 600);

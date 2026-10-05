@@ -20,6 +20,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
+- **Floating windows moved or resized by tools like AutoHotkey now keep their new position and size.** Switching windows or leaving and returning to a workspace no longer restores the old geometry. (#134)
 - **Hidden tabs no longer shrink to their app's minimum size when you switch away from their workspace.**
 - **File Explorer now gets the same small redraw nudge after sliding that Chrome, Firefox and Windows Terminal get, to address reports of its navigation pane being drawn twice after moving off screen and back.** (#127)
 - **Windows that resize themselves right after LeopardWM places them, like Zen Browser's first-run welcome window, now go back to their tile instead of leaving part of the column empty.**
