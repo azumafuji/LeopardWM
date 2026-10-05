@@ -13026,7 +13026,15 @@ fn test_frameless_fixed_size_admission_preserves_rules_and_fullscreen() {
     use crate::event_handler::{AdmissionKind, AdmitOutcome};
 
     for enumerate in [false, true] {
-        for monitor_margin in [None, Some(0), Some(16), Some(-4)] {
+        for (title, has_monitors, monitor_margin) in [
+            ("", true, None),
+            (" \t\n", true, None),
+            ("Game", true, None),
+            ("", false, None),
+            ("", true, Some(0)),
+            ("", true, Some(16)),
+            ("", true, Some(-4)),
+        ] {
             for action in [None, Some(WindowAction::Tile), Some(WindowAction::Float)] {
                 let window = ResizeTestWindow::new(400);
                 let hwnd = window.id();
@@ -13041,6 +13049,10 @@ fn test_frameless_fixed_size_admission_preserves_rules_and_fullscreen() {
                 }
                 let mut state = AppState::new_with_config(config, test_monitors());
                 let mut info = make_test_window_info(hwnd);
+                info.title = title.to_string();
+                if !has_monitors {
+                    state.monitors.clear();
+                }
                 info.rect = if let Some(margin) = monitor_margin {
                     let monitor = state.monitors[&state.focused_monitor].rect;
                     Rect::new(
@@ -13052,7 +13064,10 @@ fn test_frameless_fixed_size_admission_preserves_rules_and_fullscreen() {
                 } else {
                     Rect::new(100, 100, 400, 600)
                 };
-                let should_manage = monitor_margin.is_some() || action.is_some();
+                let should_manage = !title.trim().is_empty()
+                    || !has_monitors
+                    || monitor_margin.is_some()
+                    || action.is_some();
                 if enumerate {
                     state.injected_enumerated_windows = Some(vec![info]);
                     assert_eq!(

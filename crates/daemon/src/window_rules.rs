@@ -340,6 +340,9 @@ impl AppState {
         Ok(added)
     }
 
+    /// Leave dialog-like windows, or untitled frameless fixed-size windows not
+    /// covering a monitor when topology is known, unmanaged. A matching user
+    /// rule overrides this.
     pub(crate) fn unmanaged_helper_kind(
         &self,
         window: &WindowInfo,
@@ -351,7 +354,9 @@ impl AppState {
         if leopardwm_platform_win32::is_dialog_like_window(window.hwnd) {
             return Some("dialog-like");
         }
-        if leopardwm_platform_win32::is_frameless_fixed_size_window(window.hwnd)
+        if window.title.trim().is_empty()
+            && !self.monitors.is_empty()
+            && leopardwm_platform_win32::is_frameless_fixed_size_window(window.hwnd)
             && !self
                 .monitors
                 .values()

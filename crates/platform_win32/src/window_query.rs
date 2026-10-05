@@ -209,6 +209,11 @@ fn is_frameless_popup_style(style: u32) -> bool {
     !has_caption && !has_min
 }
 
+/// Whether a window has no full caption, minimize box or resize border: a helper
+/// shape rather than a resizable primary window. Zen/Firefox's untitled first-run
+/// `MozillaDialogClass` window (style `0x16880080`) is one observed example.
+/// Admission leaves untitled matches unmanaged unless they cover a monitor or a
+/// user Tile/Float rule overrides; this predicate only checks the style.
 pub fn is_frameless_fixed_size_window(hwnd: WindowId) -> bool {
     if hwnd == 0 {
         return false;
