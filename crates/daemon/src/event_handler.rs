@@ -3494,15 +3494,28 @@ impl AppState {
                 .post_admission_maximize_restore_eligible
                 .contains_key(&hwnd)
             && !self.is_application_fullscreen(hwnd)
-            && is_maximized(hwnd)
-            && self.try_restore_post_admission_maximize(
-                hwnd,
-                &mut input_age_ms,
-                &mut queue_maximized_restore,
-                &mut is_maximized,
-            )
         {
-            return;
+            let native_maximized = is_maximized(hwnd);
+            let (chrome_rect, dwm_rect) = self.application_fullscreen_geometry(hwnd);
+            let session = self.observe_application_fullscreen(
+                hwnd,
+                chrome_rect,
+                dwm_rect,
+                is_maximized(hwnd),
+            );
+            if session.is_some() {
+                self.post_admission_maximize_restore_eligible.remove(&hwnd);
+            } else if native_maximized
+                && self.try_restore_post_admission_maximize(
+                    hwnd,
+                    &mut input_age_ms,
+                    &mut queue_maximized_restore,
+                    &mut is_maximized,
+                )
+            {
+                // on_maximized_admission_restored applies layout; no deferred replay is needed.
+                return;
+            }
         }
         // Placement feedback stays suppressed, except a direct maximize of a
         // managed tiled window needs its timestamp and target-only visual cleanup
