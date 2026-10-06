@@ -620,6 +620,12 @@ pub struct WindowRule {
     #[serde(default)]
     pub match_executable: Option<String>,
 
+    /// Maximum outer window size in logical pixels at admission.
+    #[serde(default)]
+    pub match_max_width: Option<i32>,
+    #[serde(default)]
+    pub match_max_height: Option<i32>,
+
     /// Action to take when the rule matches.
     #[serde(default)]
     pub action: WindowAction,
@@ -709,12 +715,20 @@ impl WindowRule {
     /// Note: Runtime code uses `CompiledWindowRule::matches()` for efficiency.
     /// This method is retained for tests and direct use.
     #[allow(dead_code)]
-    pub fn matches(&self, class_name: &str, title: &str, executable: &str) -> bool {
+    pub fn matches(
+        &self,
+        class_name: &str,
+        title: &str,
+        executable: &str,
+        size: Option<(i32, i32)>,
+    ) -> bool {
         let has_any_criteria = self.match_class.is_some()
             || self.match_title.is_some()
             || self.match_executable.is_some();
 
-        if !has_any_criteria {
+        if !has_any_criteria
+            || !matches_window_size(self.match_max_width, self.match_max_height, size)
+        {
             return false;
         }
 
@@ -1037,6 +1051,8 @@ pub struct CompiledWindowRule {
     pub title_regex: Option<regex::Regex>,
     /// Executable name to match (case-insensitive string comparison).
     pub match_executable: Option<String>,
+    pub match_max_width: Option<i32>,
+    pub match_max_height: Option<i32>,
     /// Action to take when the rule matches.
     pub action: WindowAction,
     /// Fixed width for floating windows (optional).
@@ -1058,14 +1074,40 @@ pub struct CompiledWindowRule {
     pub sticky: bool,
 }
 
+fn matches_window_size(
+    max_width: Option<i32>,
+    max_height: Option<i32>,
+    size: Option<(i32, i32)>,
+) -> bool {
+    if max_width.is_none() && max_height.is_none() {
+        return true;
+    }
+    let Some((width, height)) = size else {
+        return false;
+    };
+    max_width.is_none_or(|max| width <= max) && max_height.is_none_or(|max| height <= max)
+}
+
 impl CompiledWindowRule {
+    pub(crate) fn has_size_condition(&self) -> bool {
+        self.match_max_width.is_some() || self.match_max_height.is_some()
+    }
+
     /// Check if this compiled rule matches a window.
-    pub fn matches(&self, class_name: &str, title: &str, executable: &str) -> bool {
+    pub fn matches(
+        &self,
+        class_name: &str,
+        title: &str,
+        executable: &str,
+        size: Option<(i32, i32)>,
+    ) -> bool {
         let has_any_criteria = self.class_regex.is_some()
             || self.title_regex.is_some()
             || self.match_executable.is_some();
 
-        if !has_any_criteria {
+        if !has_any_criteria
+            || !matches_window_size(self.match_max_width, self.match_max_height, size)
+        {
             return false;
         }
 
@@ -1482,10 +1524,27 @@ impl Config {
                 None => None,
             };
 
+            let positive_limit = |value: Option<i32>, field: &str| {
+                value.filter(|&n| {
+                    if n <= 0 {
+                        tracing::warn!(
+                            "Window rule {} = {} is invalid (must be positive); ignoring",
+                            field,
+                            n
+                        );
+                    }
+                    n > 0
+                })
+            };
+            let match_max_width = positive_limit(rule.match_max_width, "match_max_width");
+            let match_max_height = positive_limit(rule.match_max_height, "match_max_height");
+
             compiled.push(CompiledWindowRule {
                 class_regex,
                 title_regex,
                 match_executable: rule.match_executable.clone(),
+                match_max_width,
+                match_max_height,
                 action: rule.action,
                 width: rule.width,
                 height: rule.height,
@@ -1504,6 +1563,8 @@ impl Config {
                 class_regex: None,
                 title_regex: None,
                 match_executable: Some(exe.to_string()),
+                match_max_width: None,
+                match_max_height: None,
                 action: WindowAction::Ignore,
                 width: None,
                 height: None,
@@ -2046,10 +2107,12 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(rule.matches("Notepad", "Untitled - Notepad", "notepad.exe"));
-        assert!(!rule.matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe"));
+        assert!(rule.matches("Notepad", "Untitled - Notepad", "notepad.exe", None));
+        assert!(!rule.matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe", None));
     }
 
     #[test]
@@ -2067,15 +2130,18 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
         assert!(rule.matches(
             "Chrome_WidgetWin_1",
             "DevTools - localhost:3000",
-            "chrome.exe"
+            "chrome.exe",
+            None
         ));
-        assert!(rule.matches("SomeClass", "Firefox DevTools", "firefox.exe"));
-        assert!(!rule.matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe"));
+        assert!(rule.matches("SomeClass", "Firefox DevTools", "firefox.exe", None));
+        assert!(!rule.matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe", None));
     }
 
     #[test]
@@ -2093,11 +2159,13 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(rule.matches("SpotifyClass", "Spotify - Song Title", "spotify.exe"));
-        assert!(rule.matches("SpotifyClass", "Spotify - Song Title", "SPOTIFY.EXE")); // Case insensitive
-        assert!(!rule.matches("SpotifyClass", "Spotify - Song Title", "chrome.exe"));
+        assert!(rule.matches("SpotifyClass", "Spotify - Song Title", "spotify.exe", None));
+        assert!(rule.matches("SpotifyClass", "Spotify - Song Title", "SPOTIFY.EXE", None)); // Case insensitive
+        assert!(!rule.matches("SpotifyClass", "Spotify - Song Title", "chrome.exe", None));
     }
 
     #[test]
@@ -2115,16 +2183,19 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
         // Both patterns must match
         assert!(rule.matches(
             "Chrome_WidgetWin_1",
             "YouTube - Google Chrome",
-            "chrome.exe"
+            "chrome.exe",
+            None
         ));
-        assert!(!rule.matches("Firefox", "YouTube - Mozilla Firefox", "firefox.exe")); // Class doesn't match
-        assert!(!rule.matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe"));
+        assert!(!rule.matches("Firefox", "YouTube - Mozilla Firefox", "firefox.exe", None)); // Class doesn't match
+        assert!(!rule.matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe", None));
         // Title doesn't match
     }
 
@@ -2143,9 +2214,11 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(!rule.matches("AnyClass", "Any Title", "any.exe"));
+        assert!(!rule.matches("AnyClass", "Any Title", "any.exe", None));
     }
 
     #[test]
@@ -2257,6 +2330,8 @@ mod tests {
                 column_width: None,
                 open_in_column: None,
                 sticky: false,
+                match_max_width: None,
+                match_max_height: None,
             },
             WindowRule {
                 match_class: Some("Notepad".to_string()),
@@ -2271,13 +2346,15 @@ mod tests {
                 column_width: None,
                 open_in_column: None,
                 sticky: false,
+                match_max_width: None,
+                match_max_height: None,
             },
         ];
 
         // First matching rule should be returned
         let mut matched_action = WindowAction::Tile; // Default
         for rule in &rules {
-            if rule.matches("Notepad", "Untitled", "notepad.exe") {
+            if rule.matches("Notepad", "Untitled", "notepad.exe", None) {
                 matched_action = rule.action;
                 break;
             }
@@ -2301,10 +2378,12 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(rule.matches("AnyClass", "[DEBUG] Application started", "app.exe"));
-        assert!(!rule.matches("AnyClass", "DEBUG Application started", "app.exe"));
+        assert!(rule.matches("AnyClass", "[DEBUG] Application started", "app.exe", None));
+        assert!(!rule.matches("AnyClass", "DEBUG Application started", "app.exe", None));
     }
 
     #[test]
@@ -2323,10 +2402,12 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(rule.matches("AnyClass", "Error Dialog", "app.exe"));
-        assert!(!rule.matches("AnyClass", "error dialog", "app.exe")); // Case mismatch
+        assert!(rule.matches("AnyClass", "Error Dialog", "app.exe", None));
+        assert!(!rule.matches("AnyClass", "error dialog", "app.exe", None)); // Case mismatch
     }
 
     #[test]
@@ -2345,11 +2426,13 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(rule.matches("AnyClass", "Error Dialog", "app.exe"));
-        assert!(rule.matches("AnyClass", "error dialog", "app.exe"));
-        assert!(rule.matches("AnyClass", "ERROR DIALOG", "app.exe"));
+        assert!(rule.matches("AnyClass", "Error Dialog", "app.exe", None));
+        assert!(rule.matches("AnyClass", "error dialog", "app.exe", None));
+        assert!(rule.matches("AnyClass", "ERROR DIALOG", "app.exe", None));
     }
 
     #[test]
@@ -2368,11 +2451,13 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(rule.matches("MyClass", "Any Title", "any.exe"));
-        assert!(rule.matches("MyClass", "Different Title", "different.exe"));
-        assert!(!rule.matches("OtherClass", "Any Title", "any.exe"));
+        assert!(rule.matches("MyClass", "Any Title", "any.exe", None));
+        assert!(rule.matches("MyClass", "Different Title", "different.exe", None));
+        assert!(!rule.matches("OtherClass", "Any Title", "any.exe", None));
     }
 
     #[test]
@@ -2391,11 +2476,13 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(rule.matches("AnyClass", "App Settings", "any.exe"));
-        assert!(rule.matches("DifferentClass", "Settings Panel", "different.exe"));
-        assert!(!rule.matches("AnyClass", "Main Window", "any.exe"));
+        assert!(rule.matches("AnyClass", "App Settings", "any.exe", None));
+        assert!(rule.matches("DifferentClass", "Settings Panel", "different.exe", None));
+        assert!(!rule.matches("AnyClass", "Main Window", "any.exe", None));
     }
 
     #[test]
@@ -2414,11 +2501,13 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(rule.matches("AnyClass", "Any Title", "notepad.exe"));
-        assert!(rule.matches("AnyClass", "Any Title", "NOTEPAD.EXE")); // Case insensitive
-        assert!(!rule.matches("AnyClass", "Any Title", "wordpad.exe"));
+        assert!(rule.matches("AnyClass", "Any Title", "notepad.exe", None));
+        assert!(rule.matches("AnyClass", "Any Title", "NOTEPAD.EXE", None)); // Case insensitive
+        assert!(!rule.matches("AnyClass", "Any Title", "wordpad.exe", None));
     }
 
     #[test]
@@ -2437,10 +2526,12 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
         // Should return false because regex is invalid
-        assert!(!rule.matches("AnyClass", "Any Title", "any.exe"));
+        assert!(!rule.matches("AnyClass", "Any Title", "any.exe", None));
     }
 
     #[test]
@@ -2459,10 +2550,12 @@ mod tests {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         };
 
-        assert!(rule.matches("", "Title", "app.exe")); // Empty class matches .*
-        assert!(rule.matches("SomeClass", "Title", "app.exe"));
+        assert!(rule.matches("", "Title", "app.exe", None)); // Empty class matches .*
+        assert!(rule.matches("SomeClass", "Title", "app.exe", None));
     }
 
     #[test]
@@ -2851,6 +2944,8 @@ mod tests {
                     column_width: None,
                     open_in_column: None,
                     sticky: false,
+                    match_max_width: None,
+                    match_max_height: None,
                 },
                 WindowRule {
                     match_class: None,
@@ -2865,6 +2960,8 @@ mod tests {
                     column_width: None,
                     open_in_column: None,
                     sticky: false,
+                    match_max_width: None,
+                    match_max_height: None,
                 },
             ],
             ..Default::default()
@@ -2877,15 +2974,16 @@ mod tests {
         assert!(compiled[0].matches(
             "Chrome_WidgetWin_1",
             "YouTube - Google Chrome",
-            "chrome.exe"
+            "chrome.exe",
+            None
         ));
-        assert!(!compiled[0].matches("Firefox", "YouTube", "firefox.exe")); // class doesn't match
-        assert!(!compiled[0].matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe")); // title doesn't match
+        assert!(!compiled[0].matches("Firefox", "YouTube", "firefox.exe", None)); // class doesn't match
+        assert!(!compiled[0].matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe", None)); // title doesn't match
 
         // Second rule: executable only
-        assert!(compiled[1].matches("AnyClass", "Any Title", "notepad.exe"));
-        assert!(compiled[1].matches("AnyClass", "Any Title", "NOTEPAD.EXE")); // case insensitive
-        assert!(!compiled[1].matches("AnyClass", "Any Title", "wordpad.exe"));
+        assert!(compiled[1].matches("AnyClass", "Any Title", "notepad.exe", None));
+        assert!(compiled[1].matches("AnyClass", "Any Title", "NOTEPAD.EXE", None)); // case insensitive
+        assert!(!compiled[1].matches("AnyClass", "Any Title", "wordpad.exe", None));
     }
 
     #[test]
@@ -2905,6 +3003,8 @@ mod tests {
                     column_width: None,
                     open_in_column: None,
                     sticky: false,
+                    match_max_width: None,
+                    match_max_height: None,
                 },
                 WindowRule {
                     match_class: Some("ValidClass".to_string()),
@@ -2919,6 +3019,8 @@ mod tests {
                     column_width: None,
                     open_in_column: None,
                     sticky: false,
+                    match_max_width: None,
+                    match_max_height: None,
                 },
             ],
             ..Default::default()
@@ -2927,7 +3029,90 @@ mod tests {
         let compiled = config.compile_window_rules();
         // First rule should be skipped due to invalid regex
         assert_eq!(compiled.len(), 1 + BUILTIN_IGNORE_EXECUTABLES.len());
-        assert!(compiled[0].matches("ValidClass", "Any Title", "any.exe"));
+        assert!(compiled[0].matches("ValidClass", "Any Title", "any.exe", None));
+    }
+
+    #[test]
+    fn test_window_rule_size_matching() {
+        for (max_width, max_height, size, class, expected) in [
+            (Some(400), Some(300), Some((400, 300)), "QQ", true),
+            (Some(400), Some(300), Some((401, 300)), "QQ", false),
+            (Some(400), Some(300), Some((400, 301)), "QQ", false),
+            (Some(400), Some(300), None, "QQ", false),
+            (Some(400), None, Some((400, 900)), "QQ", true),
+            (None, Some(300), Some((900, 300)), "QQ", true),
+            (Some(400), Some(300), Some((400, 300)), "Other", false),
+            (None, None, None, "QQ", true),
+        ] {
+            let rule = WindowRule {
+                match_class: Some("^QQ$".into()),
+                match_title: Some("^QQ NT$".into()),
+                match_executable: Some("QQ.exe".into()),
+                match_max_width: max_width,
+                match_max_height: max_height,
+                action: WindowAction::Ignore,
+                ..Default::default()
+            };
+            let config = Config {
+                window_rules: vec![rule.clone()],
+                ..Default::default()
+            };
+            assert_eq!(rule.matches(class, "QQ NT", "qq.EXE", size), expected);
+            assert_eq!(
+                config.compile_window_rules()[0].matches(class, "QQ NT", "qq.EXE", size),
+                expected
+            );
+        }
+        let rule = WindowRule {
+            match_max_width: Some(400),
+            match_max_height: Some(300),
+            ..Default::default()
+        };
+        let config = Config {
+            window_rules: vec![rule.clone()],
+            ..Default::default()
+        };
+        assert!(!rule.matches("QQ", "QQ NT", "QQ.exe", Some((100, 100))));
+        assert!(!config.compile_window_rules()[0].matches(
+            "QQ",
+            "QQ NT",
+            "QQ.exe",
+            Some((100, 100))
+        ));
+    }
+
+    #[test]
+    fn test_window_rule_size_limits_validate_and_roundtrip() {
+        let config: Config = toml::from_str(
+            r#"
+            [[window_rules]]
+            match_executable = "QQ.exe"
+            match_max_width = 400
+            match_max_height = 300
+            action = "ignore"
+            [[window_rules]]
+            match_executable = "QQ.exe"
+            match_max_width = 0
+            match_max_height = -1
+            action = "float"
+        "#,
+        )
+        .unwrap();
+        let saved = toml::to_string(&config).unwrap();
+        let restored: Config = toml::from_str(&saved).unwrap();
+        let compiled = restored.compile_window_rules();
+        assert_eq!(compiled[0].match_max_width, Some(400));
+        assert_eq!(compiled[0].match_max_height, Some(300));
+        assert_eq!(compiled[1].match_max_width, None);
+        assert_eq!(compiled[1].match_max_height, None);
+        assert_eq!(compiled[1].action, WindowAction::Float);
+        assert!(compiled[1].matches("QQ", "QQ NT", "QQ.exe", None));
+        for rule in Config::default().compile_window_rules() {
+            assert!(
+                !rule.has_size_condition(),
+                "defaults must not add size thresholds"
+            );
+        }
     }
 
     #[test]

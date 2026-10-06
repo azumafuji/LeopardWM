@@ -129,12 +129,13 @@ function assertKnownKeys(markup, catalog = english) {
 }
 assertKnownKeys(page.split('<script>')[0]);
 
-function ruleMarkup(source) {
+function ruleFixture(source, rule = {}) {
+  const fields = {};
   const shell = { addEventListener() {}, querySelectorAll: () => [], classList: { contains: () => false } };
   const row = {
     querySelectorAll: () => [],
-    querySelector: selector => ['.rule-opts-btn', '.rule-opts-pop', '.rule-maximized', '.rule-sticky'].includes(selector)
-      ? shell : null
+    querySelector: selector => fields[selector] || (['.rule-opts-btn', '.rule-opts-pop', '.rule-maximized', '.rule-sticky'].includes(selector)
+      ? shell : null)
   };
   const doc = {
     documentElement: { lang: 'en' }, addEventListener() {}, querySelectorAll: () => [],
@@ -144,10 +145,18 @@ function ruleMarkup(source) {
   vm.runInContext(source, ctx);
   doc.createElement = () => row;
   doc.getElementById = () => ({ appendChild() {} });
-  ctx.addRuleRow({});
-  return row.innerHTML;
+  ctx.addRuleRow(rule);
+  for (const match of row.innerHTML.matchAll(/<input\b[^>]*class="([^"]+)"[^>]*value="([^"]*)"/g)) {
+    fields['.' + match[1].split(' ')[0]] = { value: match[2] };
+  }
+  fields['.rule-action'] = { dataset: { value: rule.action || 'tile' } };
+  fields['.rule-corner'] = { dataset: { value: 'auto' } };
+  fields['.rule-workspace'] = { dataset: { value: '' } };
+  fields['.rule-opts-summary'] = {};
+  doc.querySelectorAll = selector => selector === '#rules-body tr' ? [row] : [];
+  return { ctx, row, fields };
 }
-const rules = ruleMarkup(script);
+const rules = ruleFixture(script).row.innerHTML;
 assertKnownKeys(rules);
 const ruleKeys = new Set(attributeKeys(rules));
 assert.ok(ruleKeys.size > 0);
@@ -157,6 +166,32 @@ for (const key of ruleKeys) {
   assert.throws(() => assertKnownKeys(rules, incomplete), error =>
     error.message.includes(`Unknown generated locale key: ${key}`));
 }
+
+const sizeRule = { match_executable: 'QQ.exe', action: 'ignore', match_max_width: 400, match_max_height: 300, width: 900, height: 700 };
+const sizeFixture = ruleFixture(script, sizeRule);
+const savedRules = () => JSON.parse(JSON.stringify(sizeFixture.ctx.readRules()));
+assert.deepEqual(savedRules(), [sizeRule]);
+sizeFixture.ctx.updateRuleSummary(sizeFixture.row);
+assert.equal(sizeFixture.fields['.rule-opts-summary'].textContent, 'Max width 400 · Max height 300');
+sizeFixture.ctx.localeStrings = chinese;
+sizeFixture.ctx.updateRuleSummary(sizeFixture.row);
+assert.equal(sizeFixture.fields['.rule-opts-summary'].textContent, '最大宽度 400 · 最大高度 300');
+for (const [width, height, expected] of [
+  ['500', '350', { match_max_width: 500, match_max_height: 350 }],
+  ['', '', {}],
+  ['0', '-1', {}],
+  ['1.5', 'invalid', {}],
+  ['1', '', { match_max_width: 1 }],
+  ['', '1', { match_max_height: 1 }]
+]) {
+  sizeFixture.fields['.rule-max-width'].value = width;
+  sizeFixture.fields['.rule-max-height'].value = height;
+  assert.deepEqual(savedRules(), [{ match_executable: 'QQ.exe', action: 'ignore', width: 900, height: 700, ...expected }]);
+}
+assert.equal(sizeRule.match_max_width, 400);
+assert.equal(sizeRule.match_max_height, 300);
+sizeFixture.fields['.rule-exe'].value = '';
+assert.deepEqual(savedRules(), []);
 
 function eventElement() {
   const listeners = {};

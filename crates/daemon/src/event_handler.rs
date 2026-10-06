@@ -495,6 +495,9 @@ impl AppState {
                 // debouncing (schedule on enter, cancel on leave).
             }
             WindowEvent::TitleChanged(hwnd) => {
+                if self.size_ignored_windows.remove(&hwnd) {
+                    self.try_admit_window_at(hwnd, AdmissionKind::Automatic, None);
+                }
                 // Only refresh the tab strip when the title change is
                 // for a window that's a tab in the focused workspace's
                 // visible Tabbed column — every other title change
@@ -959,6 +962,7 @@ impl AppState {
         // Depart before the body. Its own duplicate check then sees a non-member
         // and does not sample foreground a second time. Reconcile only a real
         // replaced departure: an ordinary Created must not touch tracked focus.
+        self.size_ignored_windows.remove(&hwnd);
         let replaced = self.depart_replaced_managed_lifetime(hwnd);
         let outcome = self.admit_window_after_replaced_departure(
             hwnd,
@@ -1066,7 +1070,7 @@ impl AppState {
 
             // Match once: the action and the per-app open extras both come from
             // the same first-matching rule (or the defaults when none matches).
-            let matched = self.matched_rule(&win_info.class_name, &win_info.title, &executable);
+            let matched = self.admission_rule(&win_info, &executable);
             let rule_matched = matched.is_some();
             let action = matched
                 .map(|r| r.action)
@@ -1507,6 +1511,7 @@ impl AppState {
         // entries for windows that no longer exist.
         self.last_placed_layout_rects.remove(&hwnd);
         self.deferred_moved_or_resized.remove(&hwnd);
+        self.size_ignored_windows.remove(&hwnd);
         self.window_move_recheck_attempts.remove(&hwnd);
         leopardwm_platform_win32::forget_offscreen_placement(hwnd);
         self.clear_physical_window_state(hwnd);
@@ -2697,8 +2702,12 @@ impl AppState {
         if self.same_lifetime_recently_hidden(hwnd) {
             if let Some(win_info) = self.lookup_window_info(hwnd) {
                 let executable = get_process_executable(win_info.process_id).unwrap_or_default();
-                let action =
-                    self.evaluate_window_rules(&win_info.class_name, &win_info.title, &executable);
+                let action = self.evaluate_window_rules(
+                    &win_info.class_name,
+                    &win_info.title,
+                    &executable,
+                    Some(self.window_rule_size(&win_info.rect)),
+                );
                 if action != config::WindowAction::Ignore {
                     info!(
                         "Recovering suppressed window: {} ({}) - user focused it",
@@ -2750,6 +2759,7 @@ impl AppState {
                         &win_info.class_name,
                         &win_info.title,
                         &executable,
+                        Some(self.window_rule_size(&win_info.rect)),
                     );
                     if action != config::WindowAction::Ignore {
                         info!(
@@ -3538,6 +3548,10 @@ impl AppState {
 
     /// Handle a window move/resize notification.
     fn on_window_moved_or_resized(&mut self, hwnd: u64, periodic_recheck: bool) {
+        if self.size_ignored_windows.remove(&hwnd) {
+            self.try_admit_window_at(hwnd, AdmissionKind::Automatic, None);
+            return;
+        }
         #[cfg(test)]
         let maximized = self.injected_window_maximized.get(&hwnd).copied();
         #[cfg(test)]

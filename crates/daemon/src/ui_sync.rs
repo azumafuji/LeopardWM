@@ -265,7 +265,7 @@ impl AppState {
             if any_corner_overrides {
                 let exe = get_process_executable(info.process_id).unwrap_or_default();
                 for rule in &self.compiled_rules {
-                    if rule.matches(&info.class_name, &info.title, &exe) {
+                    if rule.matches(&info.class_name, &info.title, &exe, None) {
                         if let Some(style) = rule.corner_style {
                             return style.radius_px();
                         }

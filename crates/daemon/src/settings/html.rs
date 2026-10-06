@@ -533,8 +533,7 @@ input[type="color"]::-webkit-color-swatch { border: none; border-radius: 2px; }
 .rule-opts-btn:hover { background: var(--ctrl-fill-secondary); }
 .rule-opts.open .rule-opts-btn .combobox-chevron { transform: rotate(180deg); }
 /* MenuFlyout-style options menu: radio submenus, checkmark toggle items,
-   separators (WinUI MenuFlyout idiom), plus one input row for the free
-   column-slot number (which a menu item can't express). */
+   separators (WinUI MenuFlyout idiom), plus input rows for numeric options. */
 .rule-opts-pop {
   display: none;
   position: fixed;
@@ -2115,6 +2114,8 @@ function addRuleRow(r) {
     return '<div class="menu-radio' + (w === ws ? ' selected' : '') + '" data-value="' + w + '"' + (w === '' ? ' data-i18n="settings.text.none"' : '') + '>' + escHtml(w === '' ? t('settings.text.none') : w) + '</div>';
   }).join('');
   var slot = (r.open_in_column >= 1) ? String(r.open_in_column) : '';
+  var maxWidth = r.match_max_width != null ? String(r.match_max_width) : '';
+  var maxHeight = r.match_max_height != null ? String(r.match_max_height) : '';
   var columnWidth = r.column_width != null ? String(r.column_width) : '';
   tr.innerHTML =
     '<td><input type="text" class="rule-class" value="' + escAttr(r.match_class||'') + '" data-i18n-placeholder="settings.text.regex" placeholder="' + escAttr(t('settings.text.regex')) + '"></td>' +
@@ -2130,6 +2131,10 @@ function addRuleRow(r) {
         '<div class="menu-item has-sub rule-workspace" data-value="' + ws + '">' +
           '<span class="menu-label" data-i18n="settings.text.open_on_workspace">' + escHtml(t('settings.text.open_on_workspace')) + '</span><span class="menu-value">' + escHtml(ws === '' ? t('settings.text.none') : ws) + '</span>' + menuArrow +
           '<div class="menu-sub">' + wsRadios + '</div></div>' +
+        '<div class="menu-item input-row"><span class="menu-label" data-i18n="settings.text.max_width">' + escHtml(t('settings.text.max_width')) + '</span>' +
+          '<input type="number" min="1" step="1" class="rule-max-width opt-num" placeholder="-" value="' + escAttr(maxWidth) + '"></div>' +
+        '<div class="menu-item input-row"><span class="menu-label" data-i18n="settings.text.max_height">' + escHtml(t('settings.text.max_height')) + '</span>' +
+          '<input type="number" min="1" step="1" class="rule-max-height opt-num" placeholder="-" value="' + escAttr(maxHeight) + '"></div>' +
         '<div class="menu-item input-row"><span class="menu-label" data-i18n="settings.text.open_in_column">' + escHtml(t('settings.text.open_in_column')) + '</span>' +
           '<input type="number" min="1" class="rule-slot opt-num" placeholder="-" value="' + slot + '"></div>' +
         '<div class="menu-item input-row"><span class="menu-label" data-i18n="settings.text.column_width">' + escHtml(t('settings.text.column_width')) + '</span>' +
@@ -2188,6 +2193,10 @@ function updateRuleSummary(tr) {
   if (wsEl && wsEl.dataset.value) parts.push(t('settings.text.ws_index', {index:wsEl.dataset.value}));
   var slotEl = tr.querySelector('.rule-slot');
   if (slotEl && slotEl.value.trim()) parts.push(t('settings.text.col_index', {index:slotEl.value.trim()}));
+  var maxWidthEl = tr.querySelector('.rule-max-width');
+  var maxHeightEl = tr.querySelector('.rule-max-height');
+  if (maxWidthEl && maxWidthEl.value.trim()) parts.push(t('settings.text.max_width') + ' ' + maxWidthEl.value.trim());
+  if (maxHeightEl && maxHeightEl.value.trim()) parts.push(t('settings.text.max_height') + ' ' + maxHeightEl.value.trim());
   if (tr.querySelector('.rule-maximized').classList.contains('checked')) parts.push(t('settings.text.max'));
   if (tr.querySelector('.rule-sticky').classList.contains('checked')) parts.push(t('settings.text.sticky'));
   var sum = tr.querySelector('.rule-opts-summary');
@@ -2217,7 +2226,7 @@ function initRuleOptions(tr) {
       var rect = btn.getBoundingClientRect();
       pop.style.right = Math.max(8, window.innerWidth - rect.right) + 'px';
       pop.style.left = 'auto';
-      if (window.innerHeight - rect.bottom - 8 >= 230) {
+      if (window.innerHeight - rect.bottom - 8 >= 310) {
         pop.style.top = (rect.bottom + 4) + 'px'; pop.style.bottom = 'auto';
       } else {
         pop.style.bottom = (window.innerHeight - rect.top + 4) + 'px'; pop.style.top = 'auto';
@@ -2421,6 +2430,7 @@ function readRules() {
     delete r.match_class; delete r.match_title; delete r.match_executable;
     delete r.corner_style; delete r.open_on_workspace; delete r.open_maximized;
     delete r.column_width; delete r.open_in_column; delete r.sticky;
+    delete r.match_max_width; delete r.match_max_height;
     var cls = tr.querySelector('.rule-class').value.trim();
     var title = tr.querySelector('.rule-title').value.trim();
     var exe = tr.querySelector('.rule-exe').value.trim();
@@ -2439,6 +2449,12 @@ function readRules() {
     var slotEl = tr.querySelector('.rule-slot');
     var slotv = slotEl ? parseInt(slotEl.value, 10) : NaN;
     if (slotv >= 1) r.open_in_column = slotv;
+    var maxWidthEl = tr.querySelector('.rule-max-width');
+    var maxWidth = maxWidthEl ? Number(maxWidthEl.value.trim()) : NaN;
+    if (Number.isInteger(maxWidth) && maxWidth >= 1) r.match_max_width = maxWidth;
+    var maxHeightEl = tr.querySelector('.rule-max-height');
+    var maxHeight = maxHeightEl ? Number(maxHeightEl.value.trim()) : NaN;
+    if (Number.isInteger(maxHeight) && maxHeight >= 1) r.match_max_height = maxHeight;
     var columnWidthEl = tr.querySelector('.rule-column-width');
     var columnWidth = columnWidthEl ? Number(columnWidthEl.value.trim()) : NaN;
     if (columnWidthEl && columnWidthEl.value.trim() && Number.isFinite(columnWidth) &&
@@ -2625,6 +2641,29 @@ mod tests {
         assert!(SETTINGS_HTML.contains("function onRecordedChord(chord) {"));
         assert!(SETTINGS_HTML.contains("activeRecorder = input;"));
         assert!(SETTINGS_HTML.contains("action: 'set_recording', recording: active"));
+    }
+
+    #[test]
+    fn window_rule_size_inputs_are_optional_positive_integers() {
+        for (field, control, label) in [
+            (
+                "match_max_width",
+                "rule-max-width",
+                "settings.text.max_width",
+            ),
+            (
+                "match_max_height",
+                "rule-max-height",
+                "settings.text.max_height",
+            ),
+        ] {
+            assert!(SETTINGS_HTML.contains(&format!(
+                "type=\"number\" min=\"1\" step=\"1\" class=\"{control} opt-num\""
+            )));
+            assert!(SETTINGS_HTML.contains(&format!("data-i18n=\"{label}\"")));
+            assert!(SETTINGS_HTML.contains(&format!("delete r.{field};")));
+            assert!(SETTINGS_HTML.contains(&format!("r.{field} =")));
+        }
     }
 
     #[test]

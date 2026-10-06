@@ -6011,6 +6011,8 @@ fn tile_open_on_workspace_rule(
         column_width: None,
         open_in_column: None,
         sticky: false,
+        match_max_width: None,
+        match_max_height: None,
     }
 }
 
@@ -8374,11 +8376,13 @@ fn test_window_rule_matching_class() {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
-    let action = state.evaluate_window_rules("TestClass", "Any Title", "any.exe");
+    let action = state.evaluate_window_rules("TestClass", "Any Title", "any.exe", None);
     assert_eq!(action, config::WindowAction::Float);
 }
 
@@ -8398,11 +8402,14 @@ fn test_window_rule_matching_title() {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
-    let action = state.evaluate_window_rules("AnyClass", "DevTools - localhost", "chrome.exe");
+    let action =
+        state.evaluate_window_rules("AnyClass", "DevTools - localhost", "chrome.exe", None);
     assert_eq!(action, config::WindowAction::Float);
 }
 
@@ -8422,18 +8429,20 @@ fn test_window_rule_matching_executable() {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
-    let action = state.evaluate_window_rules("SpotifyClass", "Spotify", "spotify.exe");
+    let action = state.evaluate_window_rules("SpotifyClass", "Spotify", "spotify.exe", None);
     assert_eq!(action, config::WindowAction::Ignore);
 }
 
 #[test]
 fn test_window_rule_no_match_defaults_to_tile() {
     let state = AppState::new_with_config(test_config(), test_monitors());
-    let action = state.evaluate_window_rules("SomeClass", "Some Title", "some.exe");
+    let action = state.evaluate_window_rules("SomeClass", "Some Title", "some.exe", None);
     assert_eq!(action, config::WindowAction::Tile);
 }
 
@@ -8453,13 +8462,15 @@ fn test_floating_rect_uses_rule_dimensions() {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
     let original = Rect::new(100, 100, 640, 480);
     let result =
-        state.get_floating_rect_from_rules("TestClass", "Title", "test.exe", &original, None);
+        state.get_floating_rect_from_rules("TestClass", "Title", "test.exe", &original, None, None);
     assert_eq!(result.width, 1024);
     assert_eq!(result.height, 768);
 }
@@ -8480,13 +8491,15 @@ fn test_floating_rect_preserves_original_if_no_dimensions() {
             column_width: None,
             open_in_column: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
     let original = Rect::new(100, 100, 640, 480);
     let result =
-        state.get_floating_rect_from_rules("TestClass", "Title", "test.exe", &original, None);
+        state.get_floating_rect_from_rules("TestClass", "Title", "test.exe", &original, None, None);
     assert_eq!(result.width, 640);
     assert_eq!(result.height, 480);
 }
@@ -13708,6 +13721,128 @@ fn make_test_window_info(hwnd: u64) -> leopardwm_platform_win32::WindowInfo {
     }
 }
 
+fn size_rule_config() -> Config {
+    let mut config = test_config();
+    config.behavior.focus_new_windows = false;
+    config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+    config.window_rules = vec![
+        crate::config::WindowRule {
+            match_class: Some("^QQClass$".into()),
+            match_title: Some("^QQ NT$".into()),
+            match_max_width: Some(400),
+            match_max_height: Some(300),
+            action: crate::config::WindowAction::Ignore,
+            ..Default::default()
+        },
+        crate::config::WindowRule {
+            match_class: Some("^QQClass$".into()),
+            action: crate::config::WindowAction::Tile,
+            ..Default::default()
+        },
+    ];
+    config
+}
+
+fn size_rule_window(hwnd: u64, width: i32, height: i32) -> leopardwm_platform_win32::WindowInfo {
+    let mut info = make_test_window_info(hwnd);
+    info.class_name = "QQClass".into();
+    info.title = "QQ NT".into();
+    info.process_id = std::process::id();
+    info.rect = Rect::new(2200, 100, width, height);
+    info
+}
+
+#[test]
+fn test_size_rules_enumeration_separates_same_app_helpers() {
+    let mut state = new_window_monitor_state(size_rule_config());
+    state.monitors.get_mut(&2).unwrap().scale_factor = 2.0;
+    state.focused_monitor = 1;
+    let small = size_rule_window(100, 800, 600);
+    let large = size_rule_window(200, 1000, 600);
+    state.injected_enumerated_windows = Some(vec![small, large]);
+    assert_eq!(state.enumerate_and_add_windows().unwrap(), 1);
+    assert_eq!(state.find_window_workspace(100), None);
+    assert!(state.size_ignored_windows.contains(&100));
+    assert_eq!(state.find_window_workspace(200), Some((2, 0)));
+    assert!(!state.workspaces[&2][0].is_floating(200));
+    assert!(!state.size_ignored_windows.contains(&200));
+
+    state.config.window_rules.swap(0, 1);
+    state.compiled_rules = state.config.compile_window_rules();
+    assert_eq!(state.enumerate_and_add_windows().unwrap(), 1);
+    assert_eq!(state.find_window_workspace(100), Some((2, 0)));
+    assert!(state.size_ignored_windows.is_empty());
+}
+
+#[test]
+fn test_size_rules_live_admission_retries_growth_and_title_changes() {
+    for growth in [true, false] {
+        let mut state = new_window_monitor_state(size_rule_config());
+        state.monitors.get_mut(&2).unwrap().scale_factor = 2.0;
+        state.focused_monitor = 1;
+        state
+            .injected_window_info
+            .insert(100, size_rule_window(100, 800, 600));
+        state.handle_window_event(WindowEvent::Created(100, 0));
+        assert_eq!(state.find_window_workspace(100), None);
+        assert!(state.size_ignored_windows.contains(&100));
+        state.handle_window_event(WindowEvent::MovedOrResized(100));
+        assert_eq!(state.find_window_workspace(100), None);
+        assert!(state.size_ignored_windows.contains(&100));
+        state.handle_window_event(WindowEvent::TitleChanged(100));
+        assert_eq!(state.find_window_workspace(100), None);
+        assert!(state.size_ignored_windows.contains(&100));
+
+        let info = state.injected_window_info.get_mut(&100).unwrap();
+        let event = if growth {
+            info.rect.width = 1000;
+            WindowEvent::MovedOrResized(100)
+        } else {
+            info.title = "QQ Main".into();
+            WindowEvent::TitleChanged(100)
+        };
+        state.handle_window_event(event);
+        assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+        assert!(!state.size_ignored_windows.contains(&100));
+    }
+}
+
+#[test]
+fn test_size_rules_deferral_clears_on_hide_and_destroy() {
+    for event in [WindowEvent::Hidden(100, 1), WindowEvent::Destroyed(100)] {
+        let mut state = new_window_monitor_state(size_rule_config());
+        state
+            .injected_window_info
+            .insert(100, size_rule_window(100, 200, 150));
+        state.handle_window_event(WindowEvent::Created(100, 0));
+        assert!(state.size_ignored_windows.contains(&100));
+        state.injected_window_info.remove(&100);
+        state.handle_window_event(event);
+        assert!(!state.size_ignored_windows.contains(&100));
+        assert_eq!(state.find_window_workspace(100), None);
+    }
+}
+
+#[test]
+fn test_size_rules_reapply_keeps_managed_small_floating_window() {
+    let mut config = size_rule_config();
+    config.window_rules[1].action = crate::config::WindowAction::Float;
+    let mut state = new_window_monitor_state(config);
+    let large = size_rule_window(100, 800, 600);
+    state.injected_window_info.insert(100, large.clone());
+    state.handle_window_event(WindowEvent::Created(100, 0));
+    assert!(state.workspaces[&1][0].is_floating(100));
+    let mut small = large;
+    small.rect = Rect::new(100, 100, 200, 150);
+    state.injected_window_info.insert(100, small.clone());
+    state.reapply_window_rules();
+    state.injected_enumerated_windows = Some(vec![small]);
+    assert_eq!(state.enumerate_and_add_windows().unwrap(), 0);
+    assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+    assert!(state.workspaces[&1][0].is_floating(100));
+    assert!(!state.size_ignored_windows.contains(&100));
+}
+
 #[test]
 fn test_lookup_window_info_returns_injected() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
@@ -18587,19 +18722,21 @@ fn test_matched_rule_returns_first_match_extras() {
         column_width: Some(0.25),
         open_in_column: None,
         sticky: false,
+        match_max_width: None,
+        match_max_height: None,
     }];
     let state = AppState::new_with_config(config, test_monitors());
     let rule = state
-        .matched_rule("SomeClass", "Editor", "code.exe")
+        .matched_rule("SomeClass", "Editor", "code.exe", None)
         .expect("matches");
     assert_eq!(rule.open_on_workspace, Some(2));
     assert_eq!(rule.column_width, Some(0.25));
     assert!(
         state
-            .matched_rule("SomeClass", "Editor", "other.exe")
+            .matched_rule("SomeClass", "Editor", "other.exe", None)
             .is_none()
             || state
-                .matched_rule("SomeClass", "Editor", "other.exe")
+                .matched_rule("SomeClass", "Editor", "other.exe", None)
                 .unwrap()
                 .match_executable
                 .as_deref()

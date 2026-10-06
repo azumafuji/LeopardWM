@@ -298,6 +298,7 @@ fn rule(action: WindowAction, sticky: bool) -> WindowRule {
         column_width: Some(0.2),
         open_in_column: Some(8),
         sticky,
+        ..Default::default()
     }
 }
 
