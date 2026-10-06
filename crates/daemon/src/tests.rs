@@ -20798,3 +20798,58 @@ fn test_late_floating_feedback_preserves_target_and_records_external_geometry() 
         );
     }
 }
+
+#[test]
+fn test_floating_return_to_old_landing_after_external_or_interactive_move() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for (interactive, deferred_return) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_mismatched_landing_state(&owner, true);
+        state.moved_or_resized_suppression.remove(&owner.hwnd);
+        let placement_sequence = state.physical_request_seq;
+        if interactive {
+            state.handle_window_event(WindowEvent::MoveSizeStart(owner.hwnd));
+        }
+        owner.resize(400, 500);
+        state.handle_window_event(if interactive {
+            WindowEvent::MoveSizeEnd(owner.hwnd)
+        } else {
+            WindowEvent::MovedOrResized(owner.hwnd)
+        });
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            Rect::new(400, 0, 500, 560)
+        );
+        if deferred_return {
+            state.arm_moved_or_resized_suppression([owner.hwnd]);
+        }
+        owner.resize(230, 450);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        if deferred_return {
+            assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+            state.moved_or_resized_suppression.remove(&owner.hwnd);
+            assert!(!state.recheck_deferred_window_moves());
+        }
+        assert_eq!(state.physical_request_seq, placement_sequence);
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            Rect::new(230, 0, 450, 560),
+            "interactive={interactive}, deferred_return={deferred_return}"
+        );
+        for index in [2, 1] {
+            assert!(matches!(
+                state.handle_command(IpcCommand::SwitchWorkspace { index }),
+                IpcResponse::Ok
+            ));
+        }
+        assert_eq!(owner.rect(), Rect::new(230, 0, 450, 560));
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            Rect::new(230, 0, 450, 560)
+        );
+    }
+}

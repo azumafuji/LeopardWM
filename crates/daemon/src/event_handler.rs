@@ -4003,8 +4003,13 @@ impl AppState {
         }
         let actual = leopardwm_platform_win32::get_window_visible_rect(hwnd)?;
         if let Some(acknowledged) = self.acknowledged_visible_rect(hwnd) {
-            // Native landings can be clamped or DPI-adjusted away from the target.
-            if actual.x.abs_diff(acknowledged.x) <= 2
+            let floating = workspace
+                .floating_windows()
+                .iter()
+                .find(|floating| floating.id == hwnd)?;
+            // A clamped landing is feedback only until the stored placement target changes.
+            if self.expected_physical_rect(hwnd) == Some(floating.rect)
+                && actual.x.abs_diff(acknowledged.x) <= 2
                 && actual.y.abs_diff(acknowledged.y) <= 2
                 && actual.width.abs_diff(acknowledged.width) <= 2
                 && actual.height.abs_diff(acknowledged.height) <= 2
