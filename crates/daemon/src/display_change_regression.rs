@@ -443,6 +443,11 @@ fn test_owner_wait_offscreen_deferral_drains_after_resume() {
 
 #[test]
 fn test_owner_wait_parked_maximized_recovery_is_classified_before_positioning() {
+    if run_in_placement_test_process(
+        "tests::display_change_regression::test_owner_wait_parked_maximized_recovery_is_classified_before_positioning",
+    ) {
+        return;
+    }
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());

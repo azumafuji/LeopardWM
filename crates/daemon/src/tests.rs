@@ -4,6 +4,36 @@ use std::sync::atomic::Ordering;
 
 static REAL_WINDOW_STYLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn run_in_placement_test_process(test_name: &str) -> bool {
+    const CHILD_ENV: &str = "LEOPARDWM_TEST_PLACEMENT_CHILD";
+    if std::env::var(CHILD_ENV).as_deref() == Ok(test_name) {
+        return false;
+    }
+    // Other tests' native batches clear process-global parked and off-screen records.
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test_name, "--nocapture"])
+        .env(CHILD_ENV, test_name)
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() >= Duration::from_secs(30) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("placement test child exceeded its deadline: {test_name}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        status.success(),
+        "placement test child failed: {test_name}: {status}"
+    );
+    true
+}
+
 // Run the test binary with the daemon's process DPI awareness, set before any test thread or
 // window exists, so placements and DWM frame measurements agree on scaled displays.
 #[used]
@@ -13328,6 +13358,11 @@ fn test_suppressed_visible_placement_feedback_and_maximize_settling_are_noops() 
 
 #[test]
 fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows() {
+    if run_in_placement_test_process(
+        "tests::test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows",
+    ) {
+        return;
+    }
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -13425,34 +13460,9 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
 
 #[test]
 fn test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor() {
-    const CHILD_ENV: &str = "LEOPARDWM_TEST_HIDDEN_TAB_RECHECK_CHILD";
-    if std::env::var_os(CHILD_ENV).is_none() {
-        // Other tests' empty native animation frames clear the process-global off-screen records.
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "tests::test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor",
-                "--nocapture",
-            ])
-            .env(CHILD_ENV, "1")
-            .spawn()
-            .unwrap();
-        let started = std::time::Instant::now();
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status;
-            }
-            if started.elapsed() >= Duration::from_secs(30) {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!("hidden-tab recheck child exceeded its deadline");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        assert!(
-            status.success(),
-            "hidden-tab recheck child failed: {status}"
-        );
+    if run_in_placement_test_process(
+        "tests::test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor",
+    ) {
         return;
     }
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
@@ -13506,6 +13516,11 @@ fn test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor() {
 
 #[test]
 fn test_offscreen_recheck_converges_with_cached_insets_after_frame_change() {
+    if run_in_placement_test_process(
+        "tests::test_offscreen_recheck_converges_with_cached_insets_after_frame_change",
+    ) {
+        return;
+    }
     if leopardwm_platform_win32::is_high_contrast_enabled() {
         return;
     }
@@ -13598,6 +13613,11 @@ fn test_offscreen_recheck_converges_with_cached_insets_after_frame_change() {
 
 #[test]
 fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
+    if run_in_placement_test_process(
+        "tests::test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands",
+    ) {
+        return;
+    }
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
