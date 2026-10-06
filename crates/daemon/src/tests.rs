@@ -8551,6 +8551,138 @@ fn test_app_state_apply_config() {
     assert_eq!(state.config.layout.outer_gap_left, 15);
 }
 
+fn rule_reload_state(action: Option<crate::config::WindowAction>) -> AppState {
+    let mut config = test_config();
+    config.window_rules.clear();
+    if let Some(action) = action {
+        config.window_rules.push(crate::config::WindowRule {
+            match_class: Some("^TestWindowClass$".into()),
+            action,
+            width: Some(640),
+            height: Some(480),
+            ..Default::default()
+        });
+    }
+    let mut state = AppState::new_with_config(config, test_monitors());
+    state.paused = true;
+    let mut window = make_test_window_info(100);
+    window.process_id = std::process::id();
+    let mut unaffected = make_test_window_info(200);
+    unaffected.process_id = std::process::id();
+    unaffected.class_name = "OtherClass".into();
+    state.injected_window_info.insert(100, window.clone());
+    state.injected_window_info.insert(200, unaffected.clone());
+    state.injected_enumerated_windows = Some(vec![window, unaffected]);
+    assert_eq!(state.enumerate_and_add_windows().unwrap(), 2);
+    let workspace = state.focused_workspace_mut().unwrap();
+    workspace.focus_window(200).unwrap();
+    workspace.remove_window(200).unwrap();
+    workspace
+        .add_floating(200, Rect::new(300, 200, 500, 400))
+        .unwrap();
+    state
+}
+
+#[test]
+fn test_rule_reload_preserves_hand_floated_window() {
+    let mut state = rule_reload_state(None);
+    state
+        .focused_workspace_mut()
+        .unwrap()
+        .focus_window(100)
+        .unwrap();
+    assert_eq!(
+        state.handle_command(IpcCommand::ToggleFloating),
+        IpcResponse::Ok
+    );
+    assert!(state.workspaces[&1][0].is_floating(100));
+
+    state.apply_config(state.config.clone());
+
+    assert!(state.workspaces[&1][0].is_floating(100));
+}
+
+#[test]
+fn test_rule_reload_preserves_hand_tiled_window_from_float_rule() {
+    let mut state = rule_reload_state(Some(crate::config::WindowAction::Float));
+    state.previous_focused_hwnd = Some(100);
+    assert_eq!(
+        state.handle_command(IpcCommand::ToggleFloating),
+        IpcResponse::Ok
+    );
+    assert!(!state.workspaces[&1][0].is_floating(100));
+
+    state.apply_config(state.config.clone());
+
+    assert!(state.workspaces[&1][0].contains_window(100));
+    assert!(!state.workspaces[&1][0].is_floating(100));
+}
+
+#[test]
+fn test_rule_reload_applies_changed_window_actions() {
+    use crate::config::{WindowAction, WindowRule};
+
+    for (old_action, new_action) in [
+        (Some(WindowAction::Float), None),
+        (None, Some(WindowAction::Float)),
+        (None, Some(WindowAction::Ignore)),
+    ] {
+        let mut state = rule_reload_state(old_action);
+        let unaffected_rect = state.workspaces[&1][0]
+            .floating_windows()
+            .iter()
+            .find(|window| window.id == 200)
+            .map(|window| window.rect);
+        let mut config = state.config.clone();
+        config.window_rules.clear();
+        if let Some(action) = new_action {
+            config.window_rules.push(WindowRule {
+                match_class: Some("^TestWindowClass$".into()),
+                action,
+                width: Some(640),
+                height: Some(480),
+                ..Default::default()
+            });
+        }
+
+        state.apply_config(config);
+
+        match new_action {
+            Some(WindowAction::Float) => {
+                assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+                assert!(state.workspaces[&1][0].is_floating(100));
+                assert_eq!(
+                    state.workspaces[&1][0]
+                        .floating_windows()
+                        .iter()
+                        .find(|window| window.id == 100)
+                        .map(|window| window.rect),
+                    Some(Rect::new(100, 100, 640, 480))
+                );
+            }
+            Some(WindowAction::Ignore) => {
+                assert_eq!(state.find_window_workspace(100), None);
+                assert!(!state.window_managed_at.contains_key(&100));
+                assert!(!state.managed_lifetime_tokens.contains_key(&100));
+            }
+            _ => {
+                assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+                assert!(state.workspaces[&1][0].contains_window(100));
+                assert!(!state.workspaces[&1][0].is_floating(100));
+            }
+        }
+        assert!(state.workspaces[&1][0].is_floating(200));
+        assert_eq!(
+            state.workspaces[&1][0]
+                .floating_windows()
+                .iter()
+                .find(|window| window.id == 200)
+                .map(|window| window.rect),
+            unaffected_rect
+        );
+    }
+}
+
 #[test]
 fn test_state_file_path() {
     let path = AppState::state_file_path();
@@ -13963,7 +14095,7 @@ fn test_size_rules_reapply_keeps_managed_small_floating_window() {
     let mut small = large;
     small.rect = Rect::new(100, 100, 200, 150);
     state.injected_window_info.insert(100, small.clone());
-    state.reapply_window_rules();
+    state.reapply_window_rules(&state.compiled_rules.clone());
     state.injected_enumerated_windows = Some(vec![small]);
     assert_eq!(state.enumerate_and_add_windows().unwrap(), 0);
     assert_eq!(state.find_window_workspace(100), Some((1, 0)));

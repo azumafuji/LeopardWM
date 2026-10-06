@@ -12,10 +12,9 @@ use leopardwm_platform_win32::{
 use tracing::{debug, info, warn};
 
 impl AppState {
-    /// Re-evaluate window rules for all managed windows.
-    ///
-    /// Moves windows between tiled/floating/ignored states based on current rules.
-    pub(crate) fn reapply_window_rules(&mut self) {
+    /// Apply changed rule outcomes to managed windows, preserving manual overrides
+    /// when the previous and current rules decide the same action.
+    pub(crate) fn reapply_window_rules(&mut self, previous_rules: &[config::CompiledWindowRule]) {
         // Collect all managed windows with their current state
         let mut transitions: Vec<(u64, MonitorId, usize, config::WindowAction, bool)> = Vec::new();
 
@@ -32,7 +31,21 @@ impl AppState {
                             &executable,
                             None,
                         );
-                        transitions.push((wid, monitor_id, ws_idx, action, is_floating));
+                        let previous_action = previous_rules
+                            .iter()
+                            .find(|rule| {
+                                rule.matches(
+                                    &win_info.class_name,
+                                    &win_info.title,
+                                    &executable,
+                                    None,
+                                )
+                            })
+                            .map(|rule| rule.action)
+                            .unwrap_or(config::WindowAction::Tile);
+                        if action != previous_action {
+                            transitions.push((wid, monitor_id, ws_idx, action, is_floating));
+                        }
                     }
                 }
             }
