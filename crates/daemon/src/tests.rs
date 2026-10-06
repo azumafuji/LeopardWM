@@ -2221,6 +2221,7 @@ fn test_filtered_empty_apply_releases_only_safe_pending_ghost_sources() {
             request_id: safe_presentation.request_id,
             invalidation_id: safe_presentation.invalidation_id,
             confirmed: true,
+            actual_visible_rect: None,
         },
     );
     state.last_physical_presentations.insert(
@@ -2231,6 +2232,7 @@ fn test_filtered_empty_apply_releases_only_safe_pending_ghost_sources() {
             request_id: safe_presentation.request_id,
             invalidation_id: safe_presentation.invalidation_id,
             confirmed: false,
+            actual_visible_rect: None,
         },
     );
     assert!(!state.physical_landing_is_safe_to_expose(PARKED));
@@ -12526,6 +12528,164 @@ fn floating_move_state(owner: &OffscreenResizeOwner) -> AppState {
     state.apply_layout().unwrap();
     state.moved_or_resized_suppression.remove(&owner.hwnd);
     state
+}
+
+fn floating_mismatched_landing_state(owner: &OffscreenResizeOwner, readable: bool) -> AppState {
+    use leopardwm_core_layout::{Visibility, WindowPlacement};
+    use leopardwm_platform_win32::PlacementLanding;
+
+    let mut state = floating_move_state(owner);
+    let requested = state.workspaces[&1][0].floating_windows()[0].rect;
+    owner.resize(230, 450);
+    let dispatched = state.apply_physical_projection(vec![WindowPlacement {
+        window_id: owner.hwnd,
+        rect: requested,
+        visibility: Visibility::Visible,
+        column_index: usize::MAX,
+    }]);
+    let (request_id, invalidation_id) = state.physical_request_ids();
+    state.consume_physical_landings(
+        request_id,
+        invalidation_id,
+        &[PlacementLanding {
+            window_id: owner.hwnd,
+            requested_rect: dispatched[0].rect,
+            requested_visibility: Visibility::Visible,
+            actual_visible_rect: readable.then(|| owner.rect()),
+            actual_outer_rect: readable.then(|| owner.rect()),
+            failed: false,
+            unreadable: !readable,
+            measurement_deferred: false,
+        }],
+        &[],
+    );
+    assert_eq!(
+        state.physical_landing_is_safe_to_expose(owner.hwnd),
+        readable
+    );
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state
+}
+
+#[test]
+fn test_deferred_floating_mismatched_landing_preserves_target_before_placement() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for (readable, round_trip) in [(true, false), (true, true), (false, false), (false, true)] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_mismatched_landing_state(&owner, readable);
+        let requested = Rect::new(-300, 0, 300, 560);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        if round_trip {
+            for index in [2, 1] {
+                assert!(matches!(
+                    state.handle_command(IpcCommand::SwitchWorkspace { index }),
+                    IpcResponse::Ok
+                ));
+                assert_eq!(
+                    state.workspaces[&1][0].floating_windows()[0].rect,
+                    requested
+                );
+            }
+        } else {
+            state.apply_layout().unwrap();
+            assert_eq!(
+                state.workspaces[&1][0].floating_windows()[0].rect,
+                requested
+            );
+        }
+    }
+}
+
+#[test]
+fn test_deferred_floating_replay_uses_actual_landing_and_requires_acknowledgement() {
+    use leopardwm_core_layout::{Visibility, WindowPlacement};
+
+    #[derive(Clone, Copy)]
+    enum Acknowledgement {
+        Current,
+        Unreadable,
+        Pending,
+        Invalidated,
+        Abandoned,
+    }
+    use Acknowledgement::{Abandoned, Current, Invalidated, Pending, Unreadable};
+
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for (acknowledgement, delta) in [
+        (Current, 0),
+        (Current, 2),
+        (Current, 3),
+        (Unreadable, 3),
+        (Pending, 3),
+        (Invalidated, 3),
+        (Abandoned, 3),
+    ] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state =
+            floating_mismatched_landing_state(&owner, !matches!(acknowledgement, Unreadable));
+        match acknowledgement {
+            Pending | Abandoned => {
+                state.apply_physical_projection(vec![WindowPlacement {
+                    window_id: owner.hwnd,
+                    rect: Rect::new(-300, 0, 300, 560),
+                    visibility: Visibility::Visible,
+                    column_index: usize::MAX,
+                }]);
+                if matches!(acknowledgement, Abandoned) {
+                    let (request_id, invalidation_id) = state.physical_request_ids();
+                    state.abandon_physical_request(request_id, invalidation_id);
+                }
+            }
+            Invalidated => {
+                state.bump_physical_invalidation();
+            }
+            Current | Unreadable => {}
+        }
+        owner.resize(230 + delta, 450 + delta);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        state.moved_or_resized_suppression.remove(&owner.hwnd);
+        assert!(!state.recheck_deferred_window_moves());
+        let expected = if matches!(acknowledgement, Current) && delta > 2 {
+            Rect::new(230 + delta, 0, 450 + delta, 560)
+        } else {
+            Rect::new(-300, 0, 300, 560)
+        };
+        assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, expected);
+        assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+        assert!(!state.recheck_deferred_window_moves());
+    }
+}
+
+#[test]
+fn test_deferred_external_floating_move_after_mismatched_landing_is_preserved() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for round_trip in [false, true] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_mismatched_landing_state(&owner, true);
+        owner.resize(400, 500);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        if round_trip {
+            for index in [2, 1] {
+                assert!(matches!(
+                    state.handle_command(IpcCommand::SwitchWorkspace { index }),
+                    IpcResponse::Ok
+                ));
+            }
+        } else {
+            state.moved_or_resized_suppression.remove(&owner.hwnd);
+            assert!(!state.recheck_deferred_window_moves());
+        }
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            Rect::new(400, 0, 500, 560)
+        );
+    }
 }
 
 #[test]

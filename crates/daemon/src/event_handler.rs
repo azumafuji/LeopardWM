@@ -3764,6 +3764,7 @@ impl AppState {
                     monitor_id,
                     ws_idx,
                     is_maximized(hwnd),
+                    periodic_recheck,
                 );
             } else if is_maximized(hwnd) {
                 // User maximized a tiled window — let it stay maximized. Record
@@ -3951,6 +3952,7 @@ impl AppState {
         monitor_id: leopardwm_platform_win32::MonitorId,
         ws_idx: usize,
         is_maximized: bool,
+        deferred: bool,
     ) {
         self.window_move_recheck_attempts.remove(&hwnd);
         if self.previous_focused_hwnd == Some(hwnd) {
@@ -3959,7 +3961,9 @@ impl AppState {
         if self.layout_transition.is_some() {
             self.deferred_moved_or_resized.insert(hwnd);
         }
-        if let Some(rect) = self.floating_move_geometry(hwnd, monitor_id, ws_idx, is_maximized) {
+        if let Some(rect) =
+            self.floating_move_geometry(hwnd, monitor_id, ws_idx, is_maximized, deferred)
+        {
             self.workspaces.get_mut(&monitor_id).unwrap()[ws_idx].update_floating(hwnd, rect);
         }
     }
@@ -3970,6 +3974,7 @@ impl AppState {
         monitor_id: leopardwm_platform_win32::MonitorId,
         ws_idx: usize,
         is_maximized: bool,
+        deferred: bool,
     ) -> Option<Rect> {
         let workspace = &self.workspaces[&monitor_id][ws_idx];
         if self.applying_layout
@@ -3996,7 +4001,19 @@ impl AppState {
         {
             return None;
         }
-        leopardwm_platform_win32::get_window_visible_rect(hwnd)
+        let actual = leopardwm_platform_win32::get_window_visible_rect(hwnd)?;
+        if deferred {
+            let acknowledged = self.acknowledged_visible_rect(hwnd)?;
+            // Native landings can be clamped or DPI-adjusted away from the target.
+            if actual.x.abs_diff(acknowledged.x) <= 2
+                && actual.y.abs_diff(acknowledged.y) <= 2
+                && actual.width.abs_diff(acknowledged.width) <= 2
+                && actual.height.abs_diff(acknowledged.height) <= 2
+            {
+                return None;
+            }
+        }
+        Some(actual)
     }
 
     pub(crate) fn preserve_deferred_floating_moves(&mut self) {
@@ -4020,7 +4037,7 @@ impl AppState {
             };
             // A changed stored target belongs to a command, not stale placement
             // feedback. Only harvest displacement from an already-landed target.
-            if floating.rect != expected || !self.physical_landing_is_safe_to_expose(hwnd) {
+            if floating.rect != expected {
                 continue;
             }
             let Some(actual) = self.floating_move_geometry(
@@ -4028,12 +4045,11 @@ impl AppState {
                 monitor_id,
                 ws_idx,
                 self.native_window_is_maximized(hwnd),
+                true,
             ) else {
                 continue;
             };
-            if actual != expected {
-                self.workspaces.get_mut(&monitor_id).unwrap()[ws_idx].update_floating(hwnd, actual);
-            }
+            self.workspaces.get_mut(&monitor_id).unwrap()[ws_idx].update_floating(hwnd, actual);
         }
     }
 
