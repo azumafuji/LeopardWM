@@ -48,17 +48,39 @@ pub(crate) fn defer_snapback_while_settling(
     settling && recently_maximized
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_admitted_tile(
     workspace: &mut Workspace,
     hwnd: u64,
     width: Option<i32>,
     rule_slot: Option<usize>,
+    rule_row: Option<usize>,
     in_column: bool,
     take_focus: bool,
     recreated_slot: Option<&crate::recreated_window_slot::RecreatedWindowSlot>,
 ) -> bool {
     if let Some(slot) = recreated_slot {
         slot.insert(workspace, hwnd, take_focus).is_ok()
+    } else if let Some(target_row) = rule_row {
+        if let Some(slot) = rule_slot {
+            if take_focus {
+                workspace
+                    .insert_window_at_row_column(hwnd, target_row, width, slot)
+                    .is_ok()
+            } else {
+                workspace
+                    .insert_window_at_row_column_no_focus(hwnd, target_row, width, slot)
+                    .is_ok()
+            }
+        } else if take_focus {
+            workspace
+                .insert_window_in_row(hwnd, target_row, width)
+                .is_ok()
+        } else {
+            workspace
+                .insert_window_in_row_no_focus(hwnd, target_row, width)
+                .is_ok()
+        }
     } else if let Some(slot) = rule_slot {
         if take_focus {
             workspace.insert_window_at_column(hwnd, width, slot).is_ok()
@@ -973,6 +995,7 @@ impl AppState {
         outcome
     }
 
+    #[allow(clippy::too_many_lines)]
     fn admit_window_after_replaced_departure(
         &mut self,
         hwnd: u64,
@@ -1071,18 +1094,25 @@ impl AppState {
             let action = matched
                 .map(|r| r.action)
                 .unwrap_or(config::WindowAction::Tile);
-            let (rule_workspace, rule_maximized, rule_column_width, rule_slot, rule_sticky) =
-                matched
-                    .map(|r| {
-                        (
-                            r.open_on_workspace,
-                            r.open_maximized,
-                            r.column_width,
-                            r.open_in_column,
-                            r.sticky,
-                        )
-                    })
-                    .unwrap_or((None, false, None, None, false));
+            let (
+                rule_workspace,
+                rule_maximized,
+                rule_column_width,
+                rule_slot,
+                rule_row,
+                rule_sticky,
+            ) = matched
+                .map(|r| {
+                    (
+                        r.open_on_workspace,
+                        r.open_maximized,
+                        r.column_width,
+                        r.open_in_column,
+                        r.row,
+                        r.sticky,
+                    )
+                })
+                .unwrap_or((None, false, None, None, None, false));
 
             if action == config::WindowAction::Ignore {
                 debug!(
@@ -1217,6 +1247,7 @@ impl AppState {
                             hwnd,
                             rule_width_px,
                             rule_slot,
+                            rule_row,
                             in_column,
                             take_workspace_focus,
                             recreated_slot.as_ref(),
@@ -3137,27 +3168,28 @@ impl AppState {
             return;
         }
 
-        let (is_tiled, source_monitor, source_ws_idx, source_window_slot, col_idx) =
+        let (is_tiled, source_monitor, source_ws_idx, source_row, source_window_slot, col_idx) =
             if let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) {
                 let is_floating = self
                     .workspaces
                     .get(&monitor_id)
                     .and_then(|v| v.get(ws_idx))
                     .is_none_or(|ws| ws.is_floating(hwnd));
-                let (source_window_slot, col_idx) = if !is_floating {
+                let (source_row, source_window_slot, col_idx) = if !is_floating {
                     self.workspaces
                         .get(&monitor_id)
                         .and_then(|v| v.get(ws_idx))
-                        .and_then(|ws| ws.find_window_location(hwnd))
-                        .map(|(col, slot)| (slot, col))
-                        .unwrap_or((0, 0))
+                        .and_then(|ws| ws.find_window_location_rc(hwnd))
+                        .map(|(row, col, slot)| (row, slot, col))
+                        .unwrap_or((0, 0, 0))
                 } else {
-                    (0, 0)
+                    (0, 0, 0)
                 };
                 (
                     !is_floating,
                     monitor_id,
                     ws_idx,
+                    source_row,
                     source_window_slot,
                     col_idx,
                 )
@@ -3168,6 +3200,7 @@ impl AppState {
                     self.active_workspace_idx(self.focused_monitor),
                     0,
                     0,
+                    0,
                 )
             };
         self.drag_state = Some(DragState {
@@ -3175,7 +3208,9 @@ impl AppState {
             is_tiled,
             source_monitor,
             source_workspace_idx: source_ws_idx,
+            source_row,
             source_window_slot,
+            current_row_index: source_row,
             current_column_index: col_idx,
             last_drop_target: None,
             last_hint_update: None,

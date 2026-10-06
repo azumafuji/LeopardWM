@@ -467,6 +467,7 @@ fn membership_moves_and_scratchpad_visibility_replace_the_whole_model() {
         shown: false,
         saved_rect: None,
         frame_insets: None,
+        origin_row: 0,
         origin_column: 0,
         origin_sibling: None,
     });
@@ -529,7 +530,9 @@ fn drag_preview_keeps_temporarily_detached_window_in_source_workspace() {
         is_tiled: true,
         source_monitor: 1,
         source_workspace_idx: 0,
+        source_row: 0,
         source_window_slot: 0,
+        current_row_index: 0,
         current_column_index: 0,
         last_drop_target: None,
         last_hint_update: None,

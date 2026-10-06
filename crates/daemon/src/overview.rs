@@ -419,7 +419,9 @@ impl AppState {
                 })
                 .map(|p| {
                     let tab_count = ws
-                        .column(p.column_index)
+                        .rows()
+                        .get(p.row_index)
+                        .and_then(|r| r.column(p.column_index))
                         .filter(|c| c.is_tabbed() && c.len() > 1)
                         .map(leopardwm_core_layout::Column::len);
                     (p.window_id, p.rect, tab_count)

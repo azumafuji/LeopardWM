@@ -100,7 +100,9 @@ fn in_membership_drag(hwnd: u64) -> DragState {
         is_tiled: true,
         source_monitor: 1,
         source_workspace_idx: 0,
+        source_row: 0,
         source_window_slot: 0,
+        current_row_index: 0,
         current_column_index: 0,
         last_drop_target: None,
         last_hint_update: None,
@@ -190,6 +192,7 @@ fn seed_recycled_lifetime_caches(state: &mut AppState, hwnd: u64) {
         MoveOrigin {
             monitor: 1,
             ws_idx: 0,
+            row: 0,
             column: 0,
             sibling: None,
         },
@@ -199,6 +202,7 @@ fn seed_recycled_lifetime_caches(state: &mut AppState, hwnd: u64) {
         MoveOrigin {
             monitor: 1,
             ws_idx: 0,
+            row: 0,
             column: 0,
             sibling: Some(hwnd),
         },

@@ -2603,6 +2603,7 @@ mod tests {
             rect: Rect::new(destination.0, destination.1, 800, 600),
             visibility: Visibility::Visible,
             column_index: 0,
+            row_index: 0,
         };
         let placements = [placement];
         let measured = Rect::new(100, 100, 800, 600);
@@ -2699,6 +2700,7 @@ mod tests {
             rect: Rect::new(400, 100, 800, 600),
             visibility: Visibility::Visible,
             column_index: 0,
+            row_index: 0,
         }];
         let landings = collect_placement_landings_with_recoveries(
             &placements,
@@ -4043,6 +4045,7 @@ mod tests {
             rect: Rect::new(0, 0, 800, 600),
             visibility: Visibility::OffScreenLeft,
             column_index: 0,
+            row_index: 0,
         }];
 
         // Invalid windows (hwnd 0) are silently skipped in the deferred batch
@@ -4106,6 +4109,7 @@ mod tests {
             rect: Rect::new(0, 0, 800, 600),
             visibility: Visibility::Visible,
             column_index: 0,
+            row_index: 0,
         };
         let mut cache = PlacementCache::new();
         cache
@@ -4160,6 +4164,7 @@ mod tests {
             rect: Rect::new(0, 0, 800, 600),
             visibility: Visibility::Visible,
             column_index: 0,
+            row_index: 0,
         };
         let landing_flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
 
@@ -4344,6 +4349,7 @@ mod tests {
             rect,
             visibility,
             column_index: 0,
+            row_index: 0,
         }
     }
 

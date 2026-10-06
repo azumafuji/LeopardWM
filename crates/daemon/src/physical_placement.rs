@@ -816,6 +816,7 @@ mod tests {
             rect,
             visibility,
             column_index: 0,
+            row_index: 0,
         }
     }
 
@@ -1491,7 +1492,9 @@ mod tests {
             is_tiled: true,
             source_monitor: 1,
             source_workspace_idx: 0,
+            source_row: 0,
             source_window_slot: 0,
+            current_row_index: 0,
             current_column_index: 0,
             last_drop_target: None,
             last_hint_update: None,
