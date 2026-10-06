@@ -605,6 +605,7 @@ impl AppState {
             ));
         }
         self.retain_application_fullscreen_sessions();
+        self.preserve_deferred_floating_moves();
         self.applying_layout = true;
 
         // Commit any deferred min-size constraint clears scheduled by

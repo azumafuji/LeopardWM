@@ -3953,8 +3953,35 @@ impl AppState {
         is_maximized: bool,
     ) {
         self.window_move_recheck_attempts.remove(&hwnd);
+        if self.previous_focused_hwnd == Some(hwnd) {
+            self.show_border(hwnd);
+        }
+        if self.layout_transition.is_some() {
+            self.deferred_moved_or_resized.insert(hwnd);
+        }
+        if let Some(rect) = self.floating_move_geometry(hwnd, monitor_id, ws_idx, is_maximized) {
+            self.workspaces.get_mut(&monitor_id).unwrap()[ws_idx].update_floating(hwnd, rect);
+        }
+    }
+
+    fn floating_move_geometry(
+        &self,
+        hwnd: u64,
+        monitor_id: leopardwm_platform_win32::MonitorId,
+        ws_idx: usize,
+        is_maximized: bool,
+    ) -> Option<Rect> {
         let workspace = &self.workspaces[&monitor_id][ws_idx];
-        if ws_idx != self.active_workspace_idx(monitor_id)
+        if self.applying_layout
+            || self.display_change_pending
+            || self.layout_transition.is_some()
+            || self.resize_hwnd == Some(hwnd)
+            || self
+                .drag_state
+                .as_ref()
+                .is_some_and(|drag| drag.hwnd == hwnd)
+            || self.is_application_fullscreen(hwnd)
+            || ws_idx != self.active_workspace_idx(monitor_id)
             || workspace.is_minimized(hwnd)
             || leopardwm_platform_win32::window_minimized_state(hwnd) == Some(true)
             || is_maximized
@@ -3967,19 +3994,46 @@ impl AppState {
                 leopardwm_platform_win32::is_move_offscreen_sentinel_rect(&rect)
             })
         {
+            return None;
+        }
+        leopardwm_platform_win32::get_window_visible_rect(hwnd)
+    }
+
+    pub(crate) fn preserve_deferred_floating_moves(&mut self) {
+        if self.post_animation_nudge_pending || self.pending_idle_layout_reapply {
             return;
         }
-        // Between animation frames the placement worker can be idle while
-        // the HWND is still at an intermediate position. Replay after landing.
-        if self.layout_transition.is_some() {
-            self.deferred_moved_or_resized.insert(hwnd);
-            return;
-        }
-        if let Some(rect) = leopardwm_platform_win32::get_window_visible_rect(hwnd) {
-            self.workspaces.get_mut(&monitor_id).unwrap()[ws_idx].update_floating(hwnd, rect);
-        }
-        if self.previous_focused_hwnd == Some(hwnd) {
-            self.show_border(hwnd);
+        let deferred: Vec<_> = self.deferred_moved_or_resized.iter().copied().collect();
+        for hwnd in deferred {
+            let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) else {
+                continue;
+            };
+            let Some(floating) = self.workspaces[&monitor_id][ws_idx]
+                .floating_windows()
+                .iter()
+                .find(|floating| floating.id == hwnd)
+            else {
+                continue;
+            };
+            let Some(expected) = self.expected_physical_rect(hwnd) else {
+                continue;
+            };
+            // A changed stored target belongs to a command, not stale placement
+            // feedback. Only harvest displacement from an already-landed target.
+            if floating.rect != expected || !self.physical_landing_is_safe_to_expose(hwnd) {
+                continue;
+            }
+            let Some(actual) = self.floating_move_geometry(
+                hwnd,
+                monitor_id,
+                ws_idx,
+                self.native_window_is_maximized(hwnd),
+            ) else {
+                continue;
+            };
+            if actual != expected {
+                self.workspaces.get_mut(&monitor_id).unwrap()[ws_idx].update_floating(hwnd, actual);
+            }
         }
     }
 

@@ -12553,6 +12553,61 @@ fn test_external_floating_move_survives_reapply_and_workspace_round_trip() {
 }
 
 #[test]
+fn test_suppressed_floating_move_survives_intervening_placement() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for round_trip in [false, true] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_move_state(&owner);
+        state.arm_moved_or_resized_suppression([owner.hwnd]);
+        owner.resize(230, 450);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+        assert!(state.should_suppress_moved_or_resized(owner.hwnd));
+        if round_trip {
+            for index in [2, 1] {
+                assert!(matches!(
+                    state.handle_command(IpcCommand::SwitchWorkspace { index }),
+                    IpcResponse::Ok
+                ));
+                assert_eq!(
+                    state.workspaces[&1][0].floating_windows()[0].rect,
+                    Rect::new(230, 0, 450, 560),
+                    "geometry must be saved before the leaving workspace is parked"
+                );
+            }
+        } else {
+            state.last_placed_layout_rects.remove(&owner.hwnd);
+            state.apply_layout().unwrap();
+        }
+        let moved = Rect::new(230, 0, 450, 560);
+        assert_eq!(owner.rect(), moved, "round_trip={round_trip}");
+        assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, moved);
+        state.moved_or_resized_suppression.remove(&owner.hwnd);
+        assert!(!state.recheck_deferred_window_moves());
+        assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+        assert_eq!(owner.rect(), moved);
+    }
+}
+
+#[test]
+fn test_suppressed_floating_placement_feedback_preserves_changed_target() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = floating_move_state(&owner);
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    let target = Rect::new(230, 100, 450, 560);
+    state.workspaces.get_mut(&1).unwrap()[0].update_floating(owner.hwnd, target);
+    state.apply_layout().unwrap();
+    assert_eq!(owner.rect(), target);
+    assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, target);
+}
+
+#[test]
 fn test_suppressed_floating_move_replays_after_placement_without_looping() {
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
@@ -12616,6 +12671,7 @@ fn test_floating_placement_and_special_states_preserve_stored_geometry() {
             }
             "maximized" => {
                 state.injected_window_maximized.insert(owner.hwnd, true);
+                state.previous_focused_hwnd = Some(owner.hwnd);
             }
             "fullscreen" => {
                 state.application_fullscreen.insert(
@@ -12667,12 +12723,19 @@ fn test_floating_placement_and_special_states_preserve_stored_geometry() {
             "display_change" => state.display_change_pending = true,
             _ => unreachable!(),
         }
+        let border_shows = state.border_show_count.load(Ordering::Relaxed);
         state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
         assert_eq!(
             state.workspaces[&1][0].floating_windows()[0].rect,
             original,
             "{exclusion} geometry must not become the floating rectangle"
         );
+        if exclusion == "maximized" {
+            assert_eq!(
+                state.border_show_count.load(Ordering::Relaxed),
+                border_shows + 1
+            );
+        }
         if matches!(exclusion, "transition" | "applying" | "display_change") {
             assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
             assert!(!state.recheck_deferred_window_moves());

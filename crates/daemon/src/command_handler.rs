@@ -1130,6 +1130,7 @@ impl AppState {
         relative_forward: Option<bool>,
         focus_target_monitor: bool,
     ) -> IpcResponse {
+        self.preserve_deferred_floating_moves();
         let idx = (index - 1) as usize;
         let target_was_focused = monitor == self.focused_monitor;
         // A switch initiated outside the overlay (hotkey, CLI) dismisses
