@@ -375,12 +375,13 @@ impl AppState {
         Ok(enumerate_windows()?)
     }
 
-    /// Match once at admission and remember size-ignored windows for growth retries.
+    /// Match once at admission and remember size-ignored windows for size/title retries.
     pub(crate) fn admission_rule(
         &mut self,
         window: &WindowInfo,
         executable: &str,
     ) -> Option<&config::CompiledWindowRule> {
+        self.size_ignored_windows.remove(&window.hwnd);
         let size = Some(self.window_rule_size(&window.rect));
         let matched = self
             .compiled_rules

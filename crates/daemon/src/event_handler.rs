@@ -2694,20 +2694,19 @@ impl AppState {
         // not a transient popup.
         //
         // A recycled handle drops the entry and is not recovered.
-        // Otherwise peek first, remove only on commit. If lookup_window_info
-        // transiently fails or the rule says Ignore, leaving the
-        // entry intact lets a subsequent Focused event retry the
-        // recovery (or the TTL filter at the top of this handler
-        // ages it out).
+        // Otherwise peek first. Lookup failure or an ordinary Ignore keeps
+        // suppression for later focus recovery. A size-conditioned Ignore
+        // hands recovery to size/title retries, which need suppression removed.
         if self.same_lifetime_recently_hidden(hwnd) {
             if let Some(win_info) = self.lookup_window_info(hwnd) {
                 let executable = get_process_executable(win_info.process_id).unwrap_or_default();
-                let action = self.evaluate_window_rules(
-                    &win_info.class_name,
-                    &win_info.title,
-                    &executable,
-                    Some(self.window_rule_size(&win_info.rect)),
-                );
+                let action = self
+                    .admission_rule(&win_info, &executable)
+                    .map(|rule| rule.action)
+                    .unwrap_or(config::WindowAction::Tile);
+                if self.size_ignored_windows.contains(&hwnd) {
+                    self.recently_hidden_hwnds.remove(&hwnd);
+                }
                 if action != config::WindowAction::Ignore {
                     info!(
                         "Recovering suppressed window: {} ({}) - user focused it",
@@ -2755,12 +2754,10 @@ impl AppState {
                 let title_still_exe_path = title_lower.ends_with(".exe")
                     || (!executable.is_empty() && title_lower == executable.to_ascii_lowercase());
                 if !title_still_exe_path {
-                    let action = self.evaluate_window_rules(
-                        &win_info.class_name,
-                        &win_info.title,
-                        &executable,
-                        Some(self.window_rule_size(&win_info.rect)),
-                    );
+                    let action = self
+                        .admission_rule(&win_info, &executable)
+                        .map(|rule| rule.action)
+                        .unwrap_or(config::WindowAction::Tile);
                     if action != config::WindowAction::Ignore {
                         info!(
                             "Recovering console-host window with real title: {} ({}) - user focused it",

@@ -197,10 +197,12 @@ corner_style = "square"
 # match_title = ".*DevTools.*"
 # action = "float"
 
-# Ignore small QQ NT helpers using outer sizes in logical pixels, as shown by
-# `lwm doctor windows`. Put this before broader QQ rules (first match wins).
-# Size limits require a class, title, or executable match and apply on admission;
-# ignored windows are re-evaluated on growth, managed windows stay managed.
+# Ignore small QQ NT helpers using outer sizes in logical pixels, the same units
+# as rule width/height. At 100% scaling these equal the window's pixel dimensions;
+# at 150%, 600x450 pixels count as 400x300. Put this before broader QQ rules
+# (first match wins). Size limits require a class, title, or executable match
+# and apply on admission. Ignored windows are re-evaluated on growth or title
+# changes; managed windows stay managed.
 # [[window_rules]]
 # match_executable = "QQ.exe"
 # match_max_width = 400

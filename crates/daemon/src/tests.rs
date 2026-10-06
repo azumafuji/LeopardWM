@@ -13827,6 +13827,114 @@ fn test_size_rules_live_admission_retries_growth_and_title_changes() {
     }
 }
 
+fn size_rule_focus_recovery_state(recently_hidden: bool) -> AppState {
+    use crate::event_handler::{AdmissionKind, AdmitOutcome};
+
+    let mut config = size_rule_config();
+    let mut info = size_rule_window(100, 200, 150);
+    if !recently_hidden {
+        info.class_name = "ConsoleWindowClass".into();
+        for rule in &mut config.window_rules {
+            rule.match_class = Some("^ConsoleWindowClass$".into());
+        }
+    }
+    let mut state = new_window_monitor_state(config);
+    if recently_hidden {
+        info.rect.width = 800;
+        info.rect.height = 600;
+        state.injected_window_info.insert(100, info);
+        assert_eq!(
+            state.try_admit_window(100, AdmissionKind::Automatic),
+            AdmitOutcome::Admitted
+        );
+        state.handle_window_event(WindowEvent::Hidden(100, 1));
+        assert!(state.recently_hidden_hwnds.contains_key(&100));
+        let info = state.injected_window_info.get_mut(&100).unwrap();
+        info.rect.width = 200;
+        info.rect.height = 150;
+        assert_eq!(
+            state.try_admit_window(100, AdmissionKind::Automatic),
+            AdmitOutcome::TransientSuppressed
+        );
+    } else {
+        info.title = "C:\\Windows\\System32\\cmd.exe".into();
+        state.injected_window_info.insert(100, info);
+        assert_eq!(
+            state.try_admit_window(100, AdmissionKind::Automatic),
+            AdmitOutcome::TransientConsoleHost
+        );
+        state.injected_window_info.get_mut(&100).unwrap().title = "QQ NT".into();
+    }
+    assert_eq!(state.find_window_workspace(100), None);
+    assert!(!state.size_ignored_windows.contains(&100));
+    state
+}
+
+fn assert_size_rule_focus_recovery_retry(recently_hidden: bool, title_change: bool) {
+    let mut state = size_rule_focus_recovery_state(recently_hidden);
+    state.handle_window_event(WindowEvent::Focused(100, 2));
+    assert_eq!(state.find_window_workspace(100), None);
+    state.handle_window_event(WindowEvent::MovedOrResized(100));
+    state.handle_window_event(WindowEvent::TitleChanged(100));
+    assert_eq!(state.find_window_workspace(100), None);
+    let info = state.injected_window_info.get_mut(&100).unwrap();
+    let retry = if title_change {
+        info.title = "QQ Main".into();
+        WindowEvent::TitleChanged(100)
+    } else {
+        info.rect.width = 500;
+        WindowEvent::MovedOrResized(100)
+    };
+    state.handle_window_event(retry);
+    assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+    assert!(!state.size_ignored_windows.contains(&100));
+    assert!(!state.recently_hidden_hwnds.contains_key(&100));
+}
+
+#[test]
+fn test_size_rules_console_focus_recovery_admits_after_growth() {
+    assert_size_rule_focus_recovery_retry(false, false);
+}
+
+#[test]
+fn test_size_rules_console_focus_recovery_admits_after_title_change() {
+    assert_size_rule_focus_recovery_retry(false, true);
+}
+
+#[test]
+fn test_size_rules_recently_hidden_recovery_admits_after_growth() {
+    assert_size_rule_focus_recovery_retry(true, false);
+}
+
+#[test]
+fn test_size_rules_recently_hidden_recovery_admits_after_title_change() {
+    assert_size_rule_focus_recovery_retry(true, true);
+}
+
+#[test]
+fn test_size_rules_recovery_preserves_other_transient_suppression() {
+    use crate::event_handler::{AdmissionKind, AdmitOutcome};
+
+    for ordinary_ignore in [false, true] {
+        let mut state = size_rule_focus_recovery_state(true);
+        if ordinary_ignore {
+            state.config.window_rules[0].match_max_width = None;
+            state.config.window_rules[0].match_max_height = None;
+            state.compiled_rules = state.config.compile_window_rules();
+            state.handle_window_event(WindowEvent::Focused(100, 2));
+        }
+        assert!(state.recently_hidden_hwnds.contains_key(&100));
+        assert!(!state.size_ignored_windows.contains(&100));
+        state.injected_window_info.get_mut(&100).unwrap().rect.width = 500;
+        state.handle_window_event(WindowEvent::MovedOrResized(100));
+        assert_eq!(state.find_window_workspace(100), None);
+        assert_eq!(
+            state.try_admit_window(100, AdmissionKind::Automatic),
+            AdmitOutcome::TransientSuppressed
+        );
+    }
+}
+
 #[test]
 fn test_size_rules_deferral_clears_on_hide_and_destroy() {
     for event in [WindowEvent::Hidden(100, 1), WindowEvent::Destroyed(100)] {
