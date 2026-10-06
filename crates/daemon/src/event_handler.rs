@@ -4002,8 +4002,7 @@ impl AppState {
             return None;
         }
         let actual = leopardwm_platform_win32::get_window_visible_rect(hwnd)?;
-        if deferred {
-            let acknowledged = self.acknowledged_visible_rect(hwnd)?;
+        if let Some(acknowledged) = self.acknowledged_visible_rect(hwnd) {
             // Native landings can be clamped or DPI-adjusted away from the target.
             if actual.x.abs_diff(acknowledged.x) <= 2
                 && actual.y.abs_diff(acknowledged.y) <= 2
@@ -4012,6 +4011,8 @@ impl AppState {
             {
                 return None;
             }
+        } else if deferred {
+            return None;
         }
         Some(actual)
     }

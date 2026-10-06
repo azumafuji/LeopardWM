@@ -20772,3 +20772,29 @@ fn test_floating_above_tiled_order_and_repeated_focus_are_idempotent() {
         assert!(state.floating_raise_order(100, &order, false).is_empty());
     }
 }
+
+#[test]
+fn test_late_floating_feedback_preserves_target_and_records_external_geometry() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for (readable, delta) in [(true, 0), (true, 2), (true, 3), (false, 0)] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_mismatched_landing_state(&owner, readable);
+        state.moved_or_resized_suppression.remove(&owner.hwnd);
+        if delta != 0 {
+            owner.resize(230 + delta, 450 + delta);
+        }
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        let expected = if readable && delta <= 2 {
+            Rect::new(-300, 0, 300, 560)
+        } else {
+            Rect::new(230 + delta, 0, 450 + delta, 560)
+        };
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            expected,
+            "readable={readable}, delta={delta}"
+        );
+    }
+}
