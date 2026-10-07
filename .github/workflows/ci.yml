@@ -31,11 +31,14 @@ jobs:
       - name: Run tests
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           cargo test --all --target x86_64-pc-windows-msvc 2>&1 | Tee-Object -FilePath test-output.log
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
-            $snippet = (Get-Content test-output.log -Tail 150) -join "`n"
-            "# Test Failures`n````n$snippet`n```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            $snippet = (Get-Content test-output.log -Tail 150) -join [Environment]::NewLine
+            if ($env:GITHUB_STEP_SUMMARY) {
+              Set-Content -Path $env:GITHUB_STEP_SUMMARY -Value @('# Test Failures', '```', $snippet, '```')
+            }
             exit $exitCode
           }
       - name: Upload test log
