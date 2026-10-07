@@ -12569,6 +12569,7 @@ impl Drop for OffscreenResizeOwner {
             PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)).unwrap();
         }
         self.join.take().unwrap().join().unwrap();
+        leopardwm_platform_win32::forget_offscreen_placement(self.hwnd);
     }
 }
 
