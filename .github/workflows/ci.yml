@@ -34,15 +34,7 @@ jobs:
           cargo test --all --target x86_64-pc-windows-msvc 2>&1 | Tee-Object -FilePath test-output.log
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
-            $lines = Get-Content test-output.log
-            $failIdx = [array]::FindLastIndex($lines, [Predicate[string]]{ param($x) $x -match 'failures:' })
-            if ($failIdx -ge 0) {
-              $start = [Math]::Max(0, $failIdx - 20)
-              $end = [Math]::Min($lines.Count - 1, $failIdx + 60)
-              $snippet = $lines[$start..$end] -join "`n"
-            } else {
-              $snippet = $lines[([Math]::Max(0, $lines.Count - 50))..($lines.Count - 1)] -join "`n"
-            }
+            $snippet = (Get-Content test-output.log -Tail 150) -join "`n"
             "# Test Failures`n````n$snippet`n```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
             exit $exitCode
           }

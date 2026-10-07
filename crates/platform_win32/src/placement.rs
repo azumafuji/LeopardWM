@@ -576,9 +576,6 @@ fn apply_placements_inner(
         }
         // Uncloak all tracked windows — no placements means all previous
         // windows have left this layout (e.g., workspace switch to empty workspace).
-        if let Ok(mut records) = OFFSCREEN_PLACEMENTS.lock() {
-            records.clear();
-        }
         uncloak_all_tracked();
         return Ok(empty_result);
     }
