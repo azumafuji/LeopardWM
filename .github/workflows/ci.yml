@@ -1,5 +1,8 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 jobs:
   check:
     runs-on: windows-latest
@@ -15,6 +18,15 @@ jobs:
       - name: Verify executable versions
         shell: pwsh
         run: ./.github/verify-executable-versions.ps1
+      - name: Upload release binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: leopardwm-arm64-windows
+          path: |
+            target/aarch64-pc-windows-msvc/release/leopardwm.exe
+            target/aarch64-pc-windows-msvc/release/leopardwm-cli.exe
+            target/aarch64-pc-windows-msvc/release/lwm.exe
+            target/aarch64-pc-windows-msvc/release/leopardwm-watchdog.exe
       # GitHub-hosted Windows runners are x64; run tests and clippy natively.
       - run: cargo test --all --target x86_64-pc-windows-msvc
       - name: Verify offline desktop acceptance helpers
