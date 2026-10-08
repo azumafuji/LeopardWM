@@ -78,6 +78,8 @@
 "settings.text.scroll_modifier" = "Scroll modifier"
 "settings.text.open_on_workspace" = "Open on workspace"
 "settings.text.open_in_column" = "Open in column"
+"settings.text.max_width" = "Max width"
+"settings.text.max_height" = "Max height"
 "settings.text.column_width" = "Column width"
 "settings.text.maximize_on_open" = "Maximize on open"
 "settings.text.sticky_follows_workspaces" = "Sticky (follows workspaces)"

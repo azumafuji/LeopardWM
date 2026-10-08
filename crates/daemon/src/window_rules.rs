@@ -12,10 +12,9 @@ use leopardwm_platform_win32::{
 use tracing::{debug, info, warn};
 
 impl AppState {
-    /// Re-evaluate window rules for all managed windows.
-    ///
-    /// Moves windows between tiled/floating/ignored states based on current rules.
-    pub(crate) fn reapply_window_rules(&mut self) {
+    /// Apply changed rule outcomes to managed windows, preserving manual overrides
+    /// when the previous and current rules decide the same action.
+    pub(crate) fn reapply_window_rules(&mut self, previous_rules: &[config::CompiledWindowRule]) {
         // Collect all managed windows with their current state
         let mut transitions: Vec<(u64, MonitorId, usize, config::WindowAction, bool)> = Vec::new();
 
@@ -30,8 +29,23 @@ impl AppState {
                             &win_info.class_name,
                             &win_info.title,
                             &executable,
+                            None,
                         );
-                        transitions.push((wid, monitor_id, ws_idx, action, is_floating));
+                        let previous_action = previous_rules
+                            .iter()
+                            .find(|rule| {
+                                rule.matches(
+                                    &win_info.class_name,
+                                    &win_info.title,
+                                    &executable,
+                                    None,
+                                )
+                            })
+                            .map(|rule| rule.action)
+                            .unwrap_or(config::WindowAction::Tile);
+                        if action != previous_action {
+                            transitions.push((wid, monitor_id, ws_idx, action, is_floating));
+                        }
                     }
                 }
             }
@@ -52,6 +66,7 @@ impl AppState {
                     &executable,
                     &win_info.rect,
                     Some(*monitor_id),
+                    None,
                 );
                 Some((*wid, rect))
             })
@@ -147,6 +162,7 @@ impl AppState {
             executable,
             &window.rect,
             Some(monitor_id),
+            Some(self.window_rule_size(&window.rect)),
         );
         if use_preferred_monitor {
             let monitor = &self.monitors[&monitor_id];
@@ -188,7 +204,14 @@ impl AppState {
             }
             let executable = get_process_executable(win_info.process_id).unwrap_or_default();
 
-            let matched = self.matched_rule(&win_info.class_name, &win_info.title, &executable);
+            self.size_ignored_windows.remove(&win_info.hwnd);
+            // Restored and previously managed windows are not new admissions.
+            if self.find_window_workspace(win_info.hwnd).is_some() {
+                self.record_managed_lifetime_if_unrecorded(win_info.hwnd);
+                self.record_managed_window_identity(&win_info);
+                continue;
+            }
+            let matched = self.admission_rule(&win_info, &executable);
             let action = matched
                 .map(|rule| rule.action)
                 .unwrap_or(config::WindowAction::Tile);
@@ -202,9 +225,6 @@ impl AppState {
                 continue;
             }
 
-            // Windows restored from the persisted snapshot are already managed
-            // (placed by restore_workspace_structure before this enumerate) and
-            // get skipped below.
             let monitor_id = find_monitor_for_rect(&monitors, &win_info.rect)
                 .map(|m| m.id)
                 .unwrap_or(self.focused_monitor);
@@ -217,19 +237,11 @@ impl AppState {
                     &executable,
                     &win_info.rect,
                     Some(monitor_id),
+                    Some(self.window_rule_size(&win_info.rect)),
                 ))
             } else {
                 None
             };
-
-            // Skip windows already managed on any workspace (including inactive ones)
-            // to prevent duplicates during config reload re-enumeration.
-            // Persisted restores are already members here and have no record yet.
-            if self.find_window_workspace(win_info.hwnd).is_some() {
-                self.record_managed_lifetime_if_unrecorded(win_info.hwnd);
-                self.record_managed_window_identity(&win_info);
-                continue;
-            }
 
             // Elevated window the non-elevated daemon can't reposition (UIPI):
             // skip + notify instead of reserving a column we can't fill. Mirrors
@@ -376,14 +388,48 @@ impl AppState {
         Ok(enumerate_windows()?)
     }
 
+    /// Match once at admission and remember size-ignored windows for size/title retries.
+    pub(crate) fn admission_rule(
+        &mut self,
+        window: &WindowInfo,
+        executable: &str,
+    ) -> Option<&config::CompiledWindowRule> {
+        self.size_ignored_windows.remove(&window.hwnd);
+        let size = Some(self.window_rule_size(&window.rect));
+        let matched = self
+            .compiled_rules
+            .iter()
+            .find(|rule| rule.matches(&window.class_name, &window.title, executable, size));
+        if matched.is_some_and(|rule| {
+            rule.action == config::WindowAction::Ignore && rule.has_size_condition()
+        }) {
+            self.size_ignored_windows.insert(window.hwnd);
+        }
+        matched
+    }
+
+    pub(crate) fn window_rule_size(&self, rect: &Rect) -> (i32, i32) {
+        let scale = self
+            .monitors
+            .values()
+            .find(|monitor| monitor.contains_rect_center(rect))
+            .map(|monitor| monitor.scale_factor)
+            .unwrap_or(1.0);
+        (
+            scale_px(rect.width, 1.0 / scale),
+            scale_px(rect.height, 1.0 / scale),
+        )
+    }
+
     /// Evaluate window rules and return the action for a window.
     pub(crate) fn evaluate_window_rules(
         &self,
         class_name: &str,
         title: &str,
         executable: &str,
+        size: Option<(i32, i32)>,
     ) -> config::WindowAction {
-        self.matched_rule(class_name, title, executable)
+        self.matched_rule(class_name, title, executable, size)
             .map(|r| r.action)
             .unwrap_or(config::WindowAction::Tile)
     }
@@ -394,10 +440,11 @@ impl AppState {
         class_name: &str,
         title: &str,
         executable: &str,
+        size: Option<(i32, i32)>,
     ) -> Option<&config::CompiledWindowRule> {
         self.compiled_rules
             .iter()
-            .find(|rule| rule.matches(class_name, title, executable))
+            .find(|rule| rule.matches(class_name, title, executable, size))
     }
 
     /// Get the floating rect for a window based on rules.
@@ -412,13 +459,14 @@ impl AppState {
         executable: &str,
         original_rect: &leopardwm_core_layout::Rect,
         monitor_id: Option<MonitorId>,
+        size: Option<(i32, i32)>,
     ) -> leopardwm_core_layout::Rect {
         let scale = monitor_id
             .and_then(|id| self.monitors.get(&id))
             .map(|m| m.scale_factor)
             .unwrap_or(1.0);
         for rule in &self.compiled_rules {
-            if rule.matches(class_name, title, executable) {
+            if rule.matches(class_name, title, executable, size) {
                 // Only scale rule-provided dimensions (config logical pixels).
                 // If a dimension is not specified, use the original rect value
                 // which is already in physical pixels from the OS.

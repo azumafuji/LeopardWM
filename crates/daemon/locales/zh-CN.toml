@@ -78,6 +78,8 @@
 "settings.text.scroll_modifier" = "滚动修饰键"
 "settings.text.open_on_workspace" = "在指定工作区打开"
 "settings.text.open_in_column" = "在指定列打开"
+"settings.text.max_width" = "最大宽度"
+"settings.text.max_height" = "最大高度"
 "settings.text.column_width" = "列宽"
 "settings.text.maximize_on_open" = "打开时最大化"
 "settings.text.sticky_follows_workspaces" = "固定（跟随工作区）"

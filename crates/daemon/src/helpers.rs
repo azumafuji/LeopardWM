@@ -184,7 +184,8 @@ impl AppState {
         // reload — the next transition starts from a clean slate.
         self.abort_active_ghost_transition();
         let old_border_on = self.config.appearance.active_border;
-        self.compiled_rules = config.compile_window_rules();
+        let previous_rules =
+            std::mem::replace(&mut self.compiled_rules, config.compile_window_rules());
 
         self.config = config;
 
@@ -261,7 +262,7 @@ impl AppState {
 
         // Re-evaluate window rules for already-managed windows so that
         // newly added/changed rules take effect without restart.
-        self.reapply_window_rules();
+        self.reapply_window_rules(&previous_rules);
 
         // Pick up previously-ignored windows that should now be tiled/floated.
         if let Ok(added) = self.enumerate_and_add_windows() {

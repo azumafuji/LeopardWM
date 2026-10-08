@@ -299,6 +299,7 @@ fn rule(action: WindowAction, sticky: bool) -> WindowRule {
         open_in_column: Some(8),
         row: None,
         sticky,
+        ..Default::default()
     }
 }
 

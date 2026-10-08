@@ -17,6 +17,7 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Features
 
+- **Window rules can now target small helper windows separately from an app's main window.** Set optional `match_max_width` and `match_max_height` limits in logical pixels, or edit Max width and Max height in Settings, alongside a class, title, or executable match. Ignored helpers are re-evaluated if they grow or their title changes; managed windows are not dropped for shrinking. Existing defaults are unchanged. (#129)
 - **Settings, tray menus, and daemon notifications now support English and Simplified Chinese.** Choose Settings → Appearance → Language or set `language = "zh-CN"` under `[appearance]`; English remains the default, and changes apply without restarting. Adding a language now takes a single locale file; see [Translating LeopardWM](CONTRIBUTING.md#translating-leopardwm) for instructions. The zh-CN translation is a machine draft pending native-speaker review. (#98)
 - **Move the selected overview window between workspaces without leaving the overview.** Your configured `move_window_up` / `move_window_down` bindings move it to the previous / next numbered workspace, including empty ones, without switching workspace or taking focus. Selection follows the window; moves stop at 1 and 9, sticky windows stay put, and horizontal move bindings do nothing while the overview is open. (#70)
 - **Your directional focus bindings now navigate the workspace overview without closing it.** `focus_left`, `focus_right`, `focus_up`, and `focus_down` follow your configured keys; arrows, Enter, Esc, and mouse controls still work. (#70)
@@ -31,6 +32,8 @@ All notable changes to LeopardWM will be documented in this file.
 
 ### Fixes
 
+- **Reloading the configuration or saving Settings no longer turns windows you floated by hand back into tiled windows.** Rule changes still apply to the windows they affect.
+- **Floating windows moved or resized by tools like AutoHotkey now keep their new position and size.** Switching windows or leaving and returning to a workspace no longer restores the old geometry. (#134)
 - **Hidden tabs no longer shrink to their app's minimum size when you switch away from their workspace.**
 - **File Explorer now gets the same small redraw nudge after sliding that Chrome, Firefox and Windows Terminal get, to address reports of its navigation pane being drawn twice after moving off screen and back.** (#127)
 - **Windows that resize themselves right after LeopardWM places them, like Zen Browser's first-run welcome window, now go back to their tile instead of leaving part of the column empty.**

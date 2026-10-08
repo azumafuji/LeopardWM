@@ -552,6 +552,22 @@ These processes are ignored via built-in window rules (action = `ignore`):
 | `CredentialUIBroker.exe` | Windows credential/login prompt |
 | `SnippingTool.exe` | Screen capture overlay |
 
+## Size Conditions for Window Rules
+
+Small helpers can share an app's class, title, and executable with its main window. For example, ignore QQ NT helpers with an app-specific size rule:
+
+```toml
+[[window_rules]]
+match_executable = "QQ.exe"
+match_max_width = 400
+match_max_height = 300
+action = "ignore"
+```
+
+Both optional limits use the outer window size in logical pixels, the same units as rule `width` and `height`. At 100% display scaling, these equal the window's pixel dimensions. At 150%, a 600 × 450 pixel window counts as 400 × 300 logical pixels.
+
+Limits are ANDed with the class, title, and executable conditions; size alone cannot match a window. Rules are first-match-wins, so put the size rule above broader rules for the same app. Size conditions apply on admission: an ignored small window is re-evaluated if it grows or its title changes, but a managed window is never dropped for shrinking. Edit **Max width** and **Max height** in a rule's **Options** menu in Settings. Leaving both blank preserves existing matching behavior.
+
 ## Focus Border Corners
 
 The focus border tries to match each window's actual corner radius. Apps that explicitly set `DWMWA_WINDOW_CORNER_PREFERENCE` are honored (`DONOTROUND` → 0 px, `ROUNDSMALL` → 4 px, `ROUND` → 8 px); everything else falls back to the 8 px Win11 default.

@@ -807,6 +807,8 @@ mod tests {
         let mut state = test_state();
         state.paused = false;
         state.reduce_motion = true;
+        // Disable structural transitions, but keep the independent workspace scroll animated.
+        state.workspaces.get_mut(&1).unwrap()[0].set_reduce_motion(false);
         add_windows(&mut state, 0, &[101, 201]);
         {
             let ws = &mut state.workspaces.get_mut(&1).unwrap()[0];
@@ -840,6 +842,8 @@ mod tests {
             for (source, forward, destination) in [(2, false, 1), (2, true, 3), (1, false, 0)] {
                 let mut state = test_state();
                 state.paused = false;
+                state.reduce_motion = false;
+                state.workspaces.get_mut(&1).unwrap()[0].set_reduce_motion(false);
                 add_windows(&mut state, 0, &[101]);
                 if mode == "floating" {
                     state

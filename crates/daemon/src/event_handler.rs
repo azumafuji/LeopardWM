@@ -517,6 +517,9 @@ impl AppState {
                 // debouncing (schedule on enter, cancel on leave).
             }
             WindowEvent::TitleChanged(hwnd) => {
+                if self.size_ignored_windows.remove(&hwnd) {
+                    self.try_admit_window_at(hwnd, AdmissionKind::Automatic, None);
+                }
                 // Only refresh the tab strip when the title change is
                 // for a window that's a tab in the focused workspace's
                 // visible Tabbed column — every other title change
@@ -981,6 +984,7 @@ impl AppState {
         // Depart before the body. Its own duplicate check then sees a non-member
         // and does not sample foreground a second time. Reconcile only a real
         // replaced departure: an ordinary Created must not touch tracked focus.
+        self.size_ignored_windows.remove(&hwnd);
         let replaced = self.depart_replaced_managed_lifetime(hwnd);
         let outcome = self.admit_window_after_replaced_departure(
             hwnd,
@@ -1089,7 +1093,7 @@ impl AppState {
 
             // Match once: the action and the per-app open extras both come from
             // the same first-matching rule (or the defaults when none matches).
-            let matched = self.matched_rule(&win_info.class_name, &win_info.title, &executable);
+            let matched = self.admission_rule(&win_info, &executable);
             let rule_matched = matched.is_some();
             let action = matched
                 .map(|r| r.action)
@@ -1540,6 +1544,7 @@ impl AppState {
         // entries for windows that no longer exist.
         self.last_placed_layout_rects.remove(&hwnd);
         self.deferred_moved_or_resized.remove(&hwnd);
+        self.size_ignored_windows.remove(&hwnd);
         self.window_move_recheck_attempts.remove(&hwnd);
         leopardwm_platform_win32::forget_offscreen_placement(hwnd);
         self.clear_physical_window_state(hwnd);
@@ -2726,16 +2731,19 @@ impl AppState {
         // not a transient popup.
         //
         // A recycled handle drops the entry and is not recovered.
-        // Otherwise peek first, remove only on commit. If lookup_window_info
-        // transiently fails or the rule says Ignore, leaving the
-        // entry intact lets a subsequent Focused event retry the
-        // recovery (or the TTL filter at the top of this handler
-        // ages it out).
+        // Otherwise peek first. Lookup failure or an ordinary Ignore keeps
+        // suppression for later focus recovery. A size-conditioned Ignore
+        // hands recovery to size/title retries, which need suppression removed.
         if self.same_lifetime_recently_hidden(hwnd) {
             if let Some(win_info) = self.lookup_window_info(hwnd) {
                 let executable = get_process_executable(win_info.process_id).unwrap_or_default();
-                let action =
-                    self.evaluate_window_rules(&win_info.class_name, &win_info.title, &executable);
+                let action = self
+                    .admission_rule(&win_info, &executable)
+                    .map(|rule| rule.action)
+                    .unwrap_or(config::WindowAction::Tile);
+                if self.size_ignored_windows.contains(&hwnd) {
+                    self.recently_hidden_hwnds.remove(&hwnd);
+                }
                 if action != config::WindowAction::Ignore {
                     info!(
                         "Recovering suppressed window: {} ({}) - user focused it",
@@ -2783,11 +2791,10 @@ impl AppState {
                 let title_still_exe_path = title_lower.ends_with(".exe")
                     || (!executable.is_empty() && title_lower == executable.to_ascii_lowercase());
                 if !title_still_exe_path {
-                    let action = self.evaluate_window_rules(
-                        &win_info.class_name,
-                        &win_info.title,
-                        &executable,
-                    );
+                    let action = self
+                        .admission_rule(&win_info, &executable)
+                        .map(|rule| rule.action)
+                        .unwrap_or(config::WindowAction::Tile);
                     if action != config::WindowAction::Ignore {
                         info!(
                             "Recovering console-host window with real title: {} ({}) - user focused it",
@@ -3581,6 +3588,10 @@ impl AppState {
 
     /// Handle a window move/resize notification.
     fn on_window_moved_or_resized(&mut self, hwnd: u64, periodic_recheck: bool) {
+        if self.size_ignored_windows.remove(&hwnd) {
+            self.try_admit_window_at(hwnd, AdmissionKind::Automatic, None);
+            return;
+        }
         #[cfg(test)]
         let maximized = self.injected_window_maximized.get(&hwnd).copied();
         #[cfg(test)]
@@ -3795,23 +3806,20 @@ impl AppState {
             }
         }
         // Non-drag: if the window is managed (tiled), snap it back to its layout position.
-        // For floating windows, update the border to track position changes.
+        // For floating windows, retain external geometry changes and refresh the border.
         if let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) {
-            let is_floating = self
-                .workspaces
-                .get(&monitor_id)
-                .and_then(|v| v.get(ws_idx))
-                .is_none_or(|ws| ws.is_floating(hwnd));
-            let is_minimized = self
-                .workspaces
-                .get(&monitor_id)
-                .and_then(|v| v.get(ws_idx))
-                .is_some_and(|ws| ws.is_minimized(hwnd));
+            let workspace = &self.workspaces[&monitor_id][ws_idx];
+            let is_floating = workspace.is_floating(hwnd);
+            let is_minimized = workspace.is_minimized(hwnd);
 
             if is_floating {
-                if self.previous_focused_hwnd == Some(hwnd) {
-                    self.show_border(hwnd);
-                }
+                self.on_floating_window_moved_or_resized(
+                    hwnd,
+                    monitor_id,
+                    ws_idx,
+                    is_maximized(hwnd),
+                    periodic_recheck,
+                );
             } else if is_maximized(hwnd) {
                 // User maximized a tiled window — let it stay maximized. Record
                 // the maximize so a brief restore mid-burst is treated as
@@ -3989,6 +3997,119 @@ impl AppState {
                     }
                 }
             }
+        }
+    }
+
+    fn on_floating_window_moved_or_resized(
+        &mut self,
+        hwnd: u64,
+        monitor_id: leopardwm_platform_win32::MonitorId,
+        ws_idx: usize,
+        is_maximized: bool,
+        deferred: bool,
+    ) {
+        self.window_move_recheck_attempts.remove(&hwnd);
+        if self.previous_focused_hwnd == Some(hwnd) {
+            self.show_border(hwnd);
+        }
+        if self.layout_transition.is_some() {
+            self.deferred_moved_or_resized.insert(hwnd);
+        }
+        if let Some(rect) =
+            self.floating_move_geometry(hwnd, monitor_id, ws_idx, is_maximized, deferred)
+        {
+            self.workspaces.get_mut(&monitor_id).unwrap()[ws_idx].update_floating(hwnd, rect);
+        }
+    }
+
+    fn floating_move_geometry(
+        &self,
+        hwnd: u64,
+        monitor_id: leopardwm_platform_win32::MonitorId,
+        ws_idx: usize,
+        is_maximized: bool,
+        deferred: bool,
+    ) -> Option<Rect> {
+        let workspace = &self.workspaces[&monitor_id][ws_idx];
+        if self.applying_layout
+            || self.display_change_pending
+            || self.layout_transition.is_some()
+            || self.resize_hwnd == Some(hwnd)
+            || self
+                .drag_state
+                .as_ref()
+                .is_some_and(|drag| drag.hwnd == hwnd)
+            || self.is_application_fullscreen(hwnd)
+            || ws_idx != self.active_workspace_idx(monitor_id)
+            || workspace.is_minimized(hwnd)
+            || leopardwm_platform_win32::window_minimized_state(hwnd) == Some(true)
+            || is_maximized
+            || workspace.fullscreen_window_id() == Some(hwnd)
+            || self
+                .current_physical_visibility(hwnd)
+                .is_some_and(|visibility| visibility != Visibility::Visible)
+            || leopardwm_platform_win32::is_placement_parked(hwnd)
+            || leopardwm_platform_win32::get_window_chrome_rect(hwnd).is_some_and(|rect| {
+                leopardwm_platform_win32::is_move_offscreen_sentinel_rect(&rect)
+            })
+        {
+            return None;
+        }
+        let actual = leopardwm_platform_win32::get_window_visible_rect(hwnd)?;
+        if let Some(acknowledged) = self.acknowledged_visible_rect(hwnd) {
+            let floating = workspace
+                .floating_windows()
+                .iter()
+                .find(|floating| floating.id == hwnd)?;
+            // A clamped landing is feedback only until the stored placement target changes.
+            if self.expected_physical_rect(hwnd) == Some(floating.rect)
+                && actual.x.abs_diff(acknowledged.x) <= 2
+                && actual.y.abs_diff(acknowledged.y) <= 2
+                && actual.width.abs_diff(acknowledged.width) <= 2
+                && actual.height.abs_diff(acknowledged.height) <= 2
+            {
+                return None;
+            }
+        } else if deferred {
+            return None;
+        }
+        Some(actual)
+    }
+
+    pub(crate) fn preserve_deferred_floating_moves(&mut self) {
+        if self.post_animation_nudge_pending || self.pending_idle_layout_reapply {
+            return;
+        }
+        let deferred: Vec<_> = self.deferred_moved_or_resized.iter().copied().collect();
+        for hwnd in deferred {
+            let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) else {
+                continue;
+            };
+            let Some(floating) = self.workspaces[&monitor_id][ws_idx]
+                .floating_windows()
+                .iter()
+                .find(|floating| floating.id == hwnd)
+            else {
+                continue;
+            };
+            let Some(expected) = self.expected_physical_rect(hwnd) else {
+                continue;
+            };
+            // A changed stored target belongs to a command, not stale placement
+            // feedback. Only harvest displacement from an already-landed target.
+            if floating.rect != expected {
+                continue;
+            }
+            let Some(actual) = self.floating_move_geometry(
+                hwnd,
+                monitor_id,
+                ws_idx,
+                self.native_window_is_maximized(hwnd),
+                true,
+            ) else {
+                continue;
+            };
+            self.workspaces.get_mut(&monitor_id).unwrap()[ws_idx].update_floating(hwnd, actual);
         }
     }
 

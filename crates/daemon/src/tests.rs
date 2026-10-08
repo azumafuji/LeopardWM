@@ -4,6 +4,36 @@ use std::sync::atomic::Ordering;
 
 static REAL_WINDOW_STYLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn run_in_placement_test_process(test_name: &str) -> bool {
+    const CHILD_ENV: &str = "LEOPARDWM_TEST_PLACEMENT_CHILD";
+    if std::env::var(CHILD_ENV).as_deref() == Ok(test_name) {
+        return false;
+    }
+    // Other tests' native batches clear process-global parked and off-screen records.
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test_name, "--nocapture"])
+        .env(CHILD_ENV, test_name)
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() >= Duration::from_secs(30) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("placement test child exceeded its deadline: {test_name}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        status.success(),
+        "placement test child failed: {test_name}: {status}"
+    );
+    true
+}
+
 // Run the test binary with the daemon's process DPI awareness, set before any test thread or
 // window exists, so placements and DWM frame measurements agree on scaled displays.
 #[used]
@@ -2234,6 +2264,7 @@ fn test_filtered_empty_apply_releases_only_safe_pending_ghost_sources() {
             request_id: safe_presentation.request_id,
             invalidation_id: safe_presentation.invalidation_id,
             confirmed: true,
+            actual_visible_rect: None,
         },
     );
     state.last_physical_presentations.insert(
@@ -2244,6 +2275,7 @@ fn test_filtered_empty_apply_releases_only_safe_pending_ghost_sources() {
             request_id: safe_presentation.request_id,
             invalidation_id: safe_presentation.invalidation_id,
             confirmed: false,
+            actual_visible_rect: None,
         },
     );
     assert!(!state.physical_landing_is_safe_to_expose(PARKED));
@@ -6058,6 +6090,8 @@ fn tile_open_on_workspace_rule(
         open_in_column: None,
         row: None,
         sticky: false,
+        match_max_width: None,
+        match_max_height: None,
     }
 }
 
@@ -8422,11 +8456,13 @@ fn test_window_rule_matching_class() {
             open_in_column: None,
             row: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
-    let action = state.evaluate_window_rules("TestClass", "Any Title", "any.exe");
+    let action = state.evaluate_window_rules("TestClass", "Any Title", "any.exe", None);
     assert_eq!(action, config::WindowAction::Float);
 }
 
@@ -8447,11 +8483,14 @@ fn test_window_rule_matching_title() {
             open_in_column: None,
             row: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
-    let action = state.evaluate_window_rules("AnyClass", "DevTools - localhost", "chrome.exe");
+    let action =
+        state.evaluate_window_rules("AnyClass", "DevTools - localhost", "chrome.exe", None);
     assert_eq!(action, config::WindowAction::Float);
 }
 
@@ -8472,18 +8511,20 @@ fn test_window_rule_matching_executable() {
             open_in_column: None,
             row: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
-    let action = state.evaluate_window_rules("SpotifyClass", "Spotify", "spotify.exe");
+    let action = state.evaluate_window_rules("SpotifyClass", "Spotify", "spotify.exe", None);
     assert_eq!(action, config::WindowAction::Ignore);
 }
 
 #[test]
 fn test_window_rule_no_match_defaults_to_tile() {
     let state = AppState::new_with_config(test_config(), test_monitors());
-    let action = state.evaluate_window_rules("SomeClass", "Some Title", "some.exe");
+    let action = state.evaluate_window_rules("SomeClass", "Some Title", "some.exe", None);
     assert_eq!(action, config::WindowAction::Tile);
 }
 
@@ -8504,13 +8545,15 @@ fn test_floating_rect_uses_rule_dimensions() {
             open_in_column: None,
             row: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
     let original = Rect::new(100, 100, 640, 480);
     let result =
-        state.get_floating_rect_from_rules("TestClass", "Title", "test.exe", &original, None);
+        state.get_floating_rect_from_rules("TestClass", "Title", "test.exe", &original, None, None);
     assert_eq!(result.width, 1024);
     assert_eq!(result.height, 768);
 }
@@ -8532,13 +8575,15 @@ fn test_floating_rect_preserves_original_if_no_dimensions() {
             open_in_column: None,
             row: None,
             sticky: false,
+            match_max_width: None,
+            match_max_height: None,
         }],
         ..Default::default()
     };
     let state = AppState::new_with_config(config, test_monitors());
     let original = Rect::new(100, 100, 640, 480);
     let result =
-        state.get_floating_rect_from_rules("TestClass", "Title", "test.exe", &original, None);
+        state.get_floating_rect_from_rules("TestClass", "Title", "test.exe", &original, None, None);
     assert_eq!(result.width, 640);
     assert_eq!(result.height, 480);
 }
@@ -8558,6 +8603,138 @@ fn test_app_state_apply_config() {
     state.apply_config(new_config.clone());
     assert_eq!(state.config.layout.gap, 20);
     assert_eq!(state.config.layout.outer_gap_left, 15);
+}
+
+fn rule_reload_state(action: Option<crate::config::WindowAction>) -> AppState {
+    let mut config = test_config();
+    config.window_rules.clear();
+    if let Some(action) = action {
+        config.window_rules.push(crate::config::WindowRule {
+            match_class: Some("^TestWindowClass$".into()),
+            action,
+            width: Some(640),
+            height: Some(480),
+            ..Default::default()
+        });
+    }
+    let mut state = AppState::new_with_config(config, test_monitors());
+    state.paused = true;
+    let mut window = make_test_window_info(100);
+    window.process_id = std::process::id();
+    let mut unaffected = make_test_window_info(200);
+    unaffected.process_id = std::process::id();
+    unaffected.class_name = "OtherClass".into();
+    state.injected_window_info.insert(100, window.clone());
+    state.injected_window_info.insert(200, unaffected.clone());
+    state.injected_enumerated_windows = Some(vec![window, unaffected]);
+    assert_eq!(state.enumerate_and_add_windows().unwrap(), 2);
+    let workspace = state.focused_workspace_mut().unwrap();
+    workspace.focus_window(200).unwrap();
+    workspace.remove_window(200).unwrap();
+    workspace
+        .add_floating(200, Rect::new(300, 200, 500, 400))
+        .unwrap();
+    state
+}
+
+#[test]
+fn test_rule_reload_preserves_hand_floated_window() {
+    let mut state = rule_reload_state(None);
+    state
+        .focused_workspace_mut()
+        .unwrap()
+        .focus_window(100)
+        .unwrap();
+    assert_eq!(
+        state.handle_command(IpcCommand::ToggleFloating),
+        IpcResponse::Ok
+    );
+    assert!(state.workspaces[&1][0].is_floating(100));
+
+    state.apply_config(state.config.clone());
+
+    assert!(state.workspaces[&1][0].is_floating(100));
+}
+
+#[test]
+fn test_rule_reload_preserves_hand_tiled_window_from_float_rule() {
+    let mut state = rule_reload_state(Some(crate::config::WindowAction::Float));
+    state.previous_focused_hwnd = Some(100);
+    assert_eq!(
+        state.handle_command(IpcCommand::ToggleFloating),
+        IpcResponse::Ok
+    );
+    assert!(!state.workspaces[&1][0].is_floating(100));
+
+    state.apply_config(state.config.clone());
+
+    assert!(state.workspaces[&1][0].contains_window(100));
+    assert!(!state.workspaces[&1][0].is_floating(100));
+}
+
+#[test]
+fn test_rule_reload_applies_changed_window_actions() {
+    use crate::config::{WindowAction, WindowRule};
+
+    for (old_action, new_action) in [
+        (Some(WindowAction::Float), None),
+        (None, Some(WindowAction::Float)),
+        (None, Some(WindowAction::Ignore)),
+    ] {
+        let mut state = rule_reload_state(old_action);
+        let unaffected_rect = state.workspaces[&1][0]
+            .floating_windows()
+            .iter()
+            .find(|window| window.id == 200)
+            .map(|window| window.rect);
+        let mut config = state.config.clone();
+        config.window_rules.clear();
+        if let Some(action) = new_action {
+            config.window_rules.push(WindowRule {
+                match_class: Some("^TestWindowClass$".into()),
+                action,
+                width: Some(640),
+                height: Some(480),
+                ..Default::default()
+            });
+        }
+
+        state.apply_config(config);
+
+        match new_action {
+            Some(WindowAction::Float) => {
+                assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+                assert!(state.workspaces[&1][0].is_floating(100));
+                assert_eq!(
+                    state.workspaces[&1][0]
+                        .floating_windows()
+                        .iter()
+                        .find(|window| window.id == 100)
+                        .map(|window| window.rect),
+                    Some(Rect::new(100, 100, 640, 480))
+                );
+            }
+            Some(WindowAction::Ignore) => {
+                assert_eq!(state.find_window_workspace(100), None);
+                assert!(!state.window_managed_at.contains_key(&100));
+                assert!(!state.managed_lifetime_tokens.contains_key(&100));
+            }
+            _ => {
+                assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+                assert!(state.workspaces[&1][0].contains_window(100));
+                assert!(!state.workspaces[&1][0].is_floating(100));
+            }
+        }
+        assert!(state.workspaces[&1][0].is_floating(200));
+        assert_eq!(
+            state.workspaces[&1][0]
+                .floating_windows()
+                .iter()
+                .find(|window| window.id == 200)
+                .map(|window| window.rect),
+            unaffected_rect
+        );
+    }
 }
 
 #[test]
@@ -12573,6 +12750,405 @@ impl Drop for OffscreenResizeOwner {
     }
 }
 
+fn floating_move_state(owner: &OffscreenResizeOwner) -> AppState {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = false;
+    state.reduce_motion = true;
+    state.workspaces.get_mut(&1).unwrap()[0]
+        .add_floating(owner.hwnd, owner.rect())
+        .unwrap();
+    state.apply_layout().unwrap();
+    state.moved_or_resized_suppression.remove(&owner.hwnd);
+    state
+}
+
+fn floating_mismatched_landing_state(owner: &OffscreenResizeOwner, readable: bool) -> AppState {
+    use leopardwm_core_layout::{Visibility, WindowPlacement};
+    use leopardwm_platform_win32::PlacementLanding;
+
+    let mut state = floating_move_state(owner);
+    let requested = state.workspaces[&1][0].floating_windows()[0].rect;
+    owner.resize(230, 450);
+    let dispatched = state.apply_physical_projection(vec![WindowPlacement {
+        window_id: owner.hwnd,
+        rect: requested,
+        visibility: Visibility::Visible,
+        column_index: usize::MAX,
+        row_index: 0,
+    }]);
+    let (request_id, invalidation_id) = state.physical_request_ids();
+    state.consume_physical_landings(
+        request_id,
+        invalidation_id,
+        &[PlacementLanding {
+            window_id: owner.hwnd,
+            requested_rect: dispatched[0].rect,
+            requested_visibility: Visibility::Visible,
+            actual_visible_rect: readable.then(|| owner.rect()),
+            actual_outer_rect: readable.then(|| owner.rect()),
+            failed: false,
+            unreadable: !readable,
+            measurement_deferred: false,
+        }],
+        &[],
+    );
+    assert_eq!(
+        state.physical_landing_is_safe_to_expose(owner.hwnd),
+        readable
+    );
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state
+}
+
+#[test]
+fn test_deferred_floating_mismatched_landing_preserves_target_before_placement() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for (readable, round_trip) in [(true, false), (true, true), (false, false), (false, true)] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_mismatched_landing_state(&owner, readable);
+        let requested = Rect::new(-300, 0, 300, 560);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        if round_trip {
+            for index in [2, 1] {
+                assert!(matches!(
+                    state.handle_command(IpcCommand::SwitchWorkspace { index }),
+                    IpcResponse::Ok
+                ));
+                assert_eq!(
+                    state.workspaces[&1][0].floating_windows()[0].rect,
+                    requested
+                );
+            }
+        } else {
+            state.apply_layout().unwrap();
+            assert_eq!(
+                state.workspaces[&1][0].floating_windows()[0].rect,
+                requested
+            );
+        }
+    }
+}
+
+#[test]
+fn test_deferred_floating_replay_uses_actual_landing_and_requires_acknowledgement() {
+    use leopardwm_core_layout::{Visibility, WindowPlacement};
+
+    #[derive(Clone, Copy)]
+    enum Acknowledgement {
+        Current,
+        Unreadable,
+        Pending,
+        Invalidated,
+        Abandoned,
+    }
+    use Acknowledgement::{Abandoned, Current, Invalidated, Pending, Unreadable};
+
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for (acknowledgement, delta) in [
+        (Current, 0),
+        (Current, 2),
+        (Current, 3),
+        (Unreadable, 3),
+        (Pending, 3),
+        (Invalidated, 3),
+        (Abandoned, 3),
+    ] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state =
+            floating_mismatched_landing_state(&owner, !matches!(acknowledgement, Unreadable));
+        match acknowledgement {
+            Pending | Abandoned => {
+                state.apply_physical_projection(vec![WindowPlacement {
+                    window_id: owner.hwnd,
+                    rect: Rect::new(-300, 0, 300, 560),
+                    visibility: Visibility::Visible,
+                    column_index: usize::MAX,
+                    row_index: 0,
+                }]);
+                if matches!(acknowledgement, Abandoned) {
+                    let (request_id, invalidation_id) = state.physical_request_ids();
+                    state.abandon_physical_request(request_id, invalidation_id);
+                }
+            }
+            Invalidated => {
+                state.bump_physical_invalidation();
+            }
+            Current | Unreadable => {}
+        }
+        owner.resize(230 + delta, 450 + delta);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        state.moved_or_resized_suppression.remove(&owner.hwnd);
+        assert!(!state.recheck_deferred_window_moves());
+        let expected = if matches!(acknowledgement, Current) && delta > 2 {
+            Rect::new(230 + delta, 0, 450 + delta, 560)
+        } else {
+            Rect::new(-300, 0, 300, 560)
+        };
+        assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, expected);
+        assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+        assert!(!state.recheck_deferred_window_moves());
+    }
+}
+
+#[test]
+fn test_deferred_external_floating_move_after_mismatched_landing_is_preserved() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for round_trip in [false, true] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_mismatched_landing_state(&owner, true);
+        owner.resize(400, 500);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        if round_trip {
+            for index in [2, 1] {
+                assert!(matches!(
+                    state.handle_command(IpcCommand::SwitchWorkspace { index }),
+                    IpcResponse::Ok
+                ));
+            }
+        } else {
+            state.moved_or_resized_suppression.remove(&owner.hwnd);
+            assert!(!state.recheck_deferred_window_moves());
+        }
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            Rect::new(400, 0, 500, 560)
+        );
+    }
+}
+
+#[test]
+fn test_external_floating_move_survives_reapply_and_workspace_round_trip() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = floating_move_state(&owner);
+    owner.resize(230, 450);
+    let moved = Rect::new(230, 0, 450, 560);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    state.apply_layout().unwrap();
+    assert_eq!(owner.rect(), moved);
+    assert!(matches!(
+        state.handle_command(IpcCommand::SwitchWorkspace { index: 2 }),
+        IpcResponse::Ok
+    ));
+    assert!(matches!(
+        state.handle_command(IpcCommand::SwitchWorkspace { index: 1 }),
+        IpcResponse::Ok
+    ));
+    assert_eq!(owner.rect(), moved);
+    assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, moved);
+}
+
+#[test]
+fn test_suppressed_floating_move_survives_intervening_placement() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for round_trip in [false, true] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_move_state(&owner);
+        state.arm_moved_or_resized_suppression([owner.hwnd]);
+        owner.resize(230, 450);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+        assert!(state.should_suppress_moved_or_resized(owner.hwnd));
+        if round_trip {
+            for index in [2, 1] {
+                assert!(matches!(
+                    state.handle_command(IpcCommand::SwitchWorkspace { index }),
+                    IpcResponse::Ok
+                ));
+                assert_eq!(
+                    state.workspaces[&1][0].floating_windows()[0].rect,
+                    Rect::new(230, 0, 450, 560),
+                    "geometry must be saved before the leaving workspace is parked"
+                );
+            }
+        } else {
+            state.last_placed_layout_rects.remove(&owner.hwnd);
+            state.apply_layout().unwrap();
+        }
+        let moved = Rect::new(230, 0, 450, 560);
+        assert_eq!(owner.rect(), moved, "round_trip={round_trip}");
+        assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, moved);
+        state.moved_or_resized_suppression.remove(&owner.hwnd);
+        assert!(!state.recheck_deferred_window_moves());
+        assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+        assert_eq!(owner.rect(), moved);
+    }
+}
+
+#[test]
+fn test_suppressed_floating_placement_feedback_preserves_changed_target() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = floating_move_state(&owner);
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    let target = Rect::new(230, 100, 450, 560);
+    state.workspaces.get_mut(&1).unwrap()[0].update_floating(owner.hwnd, target);
+    state.apply_layout().unwrap();
+    assert_eq!(owner.rect(), target);
+    assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, target);
+}
+
+#[test]
+fn test_suppressed_floating_move_replays_after_placement_without_looping() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = floating_move_state(&owner);
+    let original = owner.rect();
+    owner.resize(230, 450);
+    state.arm_moved_or_resized_suppression([owner.hwnd]);
+    state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+    let before = state.physical_request_seq;
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, original);
+    assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+    state.moved_or_resized_suppression.insert(
+        owner.hwnd,
+        std::time::Instant::now() - Duration::from_millis(1),
+    );
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(
+        state.workspaces[&1][0].floating_windows()[0].rect,
+        Rect::new(230, 0, 450, 560)
+    );
+    assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+    assert!(!state.window_move_recheck_attempts.contains_key(&owner.hwnd));
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before);
+}
+
+#[test]
+fn test_floating_placement_and_special_states_preserve_stored_geometry() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for exclusion in [
+        "inactive",
+        "parked",
+        "minimized",
+        "maximized",
+        "fullscreen",
+        "resize",
+        "drag",
+        "transition",
+        "applying",
+        "display_change",
+    ] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_move_state(&owner);
+        let original = owner.rect();
+        owner.resize(230, 450);
+        match exclusion {
+            "inactive" => {
+                state.ensure_workspace_exists(1, 1);
+                state.active_workspace.insert(1, 1);
+            }
+            "parked" => {
+                leopardwm_platform_win32::move_window_offscreen(owner.hwnd).unwrap();
+            }
+            "minimized" => {
+                state.workspaces.get_mut(&1).unwrap()[0].mark_minimized(owner.hwnd);
+            }
+            "maximized" => {
+                state.injected_window_maximized.insert(owner.hwnd, true);
+                state.previous_focused_hwnd = Some(owner.hwnd);
+            }
+            "fullscreen" => {
+                state.application_fullscreen.insert(
+                    owner.hwnd,
+                    ApplicationFullscreenState {
+                        monitor_id: 1,
+                        rect: Rect::new(0, 0, 1920, 1080),
+                    },
+                );
+                owner.resize(0, 1920);
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::{
+                        SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+                    };
+                    SetWindowPos(
+                        windows::Win32::Foundation::HWND(owner.hwnd as *mut _),
+                        None,
+                        0,
+                        0,
+                        1920,
+                        1080,
+                        SWP_NOACTIVATE | SWP_NOZORDER,
+                    )
+                    .unwrap();
+                }
+            }
+            "resize" => state.resize_hwnd = Some(owner.hwnd),
+            "drag" => {
+                state.drag_state = Some(DragState {
+                    hwnd: owner.hwnd,
+                    is_tiled: false,
+                    source_monitor: 1,
+                    source_workspace_idx: 0,
+                    source_row: 0,
+                    source_window_slot: 0,
+                    current_row_index: 0,
+                    current_column_index: 0,
+                    last_drop_target: None,
+                    last_hint_update: None,
+                    removed_from_source: false,
+                    preview_mode: crate::state::DragPreviewMode::None,
+                    target_column_peers: Vec::new(),
+                    source_column_peers: Vec::new(),
+                });
+            }
+            "transition" => state.start_layout_transition_with_duration(
+                std::collections::HashMap::from([(owner.hwnd, original)]),
+                150,
+            ),
+            "applying" => state.applying_layout = true,
+            "display_change" => state.display_change_pending = true,
+            _ => unreachable!(),
+        }
+        let border_shows = state.border_show_count.load(Ordering::Relaxed);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            original,
+            "{exclusion} geometry must not become the floating rectangle"
+        );
+        if exclusion == "maximized" {
+            assert_eq!(
+                state.border_show_count.load(Ordering::Relaxed),
+                border_shows + 1
+            );
+        }
+        if matches!(exclusion, "transition" | "applying" | "display_change") {
+            assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+            assert!(!state.recheck_deferred_window_moves());
+            assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, original);
+            state.layout_transition = None;
+            state.applying_layout = false;
+            state.display_change_pending = false;
+            state.post_animation_nudge_pending = true;
+            state.apply_layout().unwrap();
+            state.moved_or_resized_suppression.remove(&owner.hwnd);
+            assert!(!state.recheck_deferred_window_moves());
+            assert!(!state.deferred_moved_or_resized.contains(&owner.hwnd));
+            assert_eq!(state.workspaces[&1][0].floating_windows()[0].rect, original);
+        }
+    }
+}
+
 fn visible_resize_recheck_state(hwnd: u64) -> AppState {
     let mut monitors = test_monitors();
     monitors[0].rect = Rect::new(0, 0, 800, 600);
@@ -12975,6 +13551,11 @@ fn test_suppressed_visible_placement_feedback_and_maximize_settling_are_noops() 
 
 #[test]
 fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows() {
+    if run_in_placement_test_process(
+        "tests::test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows",
+    ) {
+        return;
+    }
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -13072,6 +13653,11 @@ fn test_suppressed_offscreen_resize_is_rechecked_without_retiling_hidden_windows
 
 #[test]
 fn test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor() {
+    if run_in_placement_test_process(
+        "tests::test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor",
+    ) {
+        return;
+    }
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -13123,6 +13709,11 @@ fn test_offscreen_recheck_accepts_hidden_tab_on_neighbor_monitor() {
 
 #[test]
 fn test_offscreen_recheck_converges_with_cached_insets_after_frame_change() {
+    if run_in_placement_test_process(
+        "tests::test_offscreen_recheck_converges_with_cached_insets_after_frame_change",
+    ) {
+        return;
+    }
     if leopardwm_platform_win32::is_high_contrast_enabled() {
         return;
     }
@@ -13216,6 +13807,11 @@ fn test_offscreen_recheck_converges_with_cached_insets_after_frame_change() {
 
 #[test]
 fn test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands() {
+    if run_in_placement_test_process(
+        "tests::test_offscreen_periodic_snapback_is_bounded_until_target_changes_or_lands",
+    ) {
+        return;
+    }
     let _serial = REAL_WINDOW_STYLE_TEST_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -13337,6 +13933,236 @@ fn make_test_window_info(hwnd: u64) -> leopardwm_platform_win32::WindowInfo {
         rect: Rect::new(100, 100, 800, 600),
         visible: true,
     }
+}
+
+fn size_rule_config() -> Config {
+    let mut config = test_config();
+    config.behavior.focus_new_windows = false;
+    config.behavior.new_window_monitor = crate::config::NewWindowMonitor::Focused;
+    config.window_rules = vec![
+        crate::config::WindowRule {
+            match_class: Some("^QQClass$".into()),
+            match_title: Some("^QQ NT$".into()),
+            match_max_width: Some(400),
+            match_max_height: Some(300),
+            action: crate::config::WindowAction::Ignore,
+            ..Default::default()
+        },
+        crate::config::WindowRule {
+            match_class: Some("^QQClass$".into()),
+            action: crate::config::WindowAction::Tile,
+            ..Default::default()
+        },
+    ];
+    config
+}
+
+fn size_rule_window(hwnd: u64, width: i32, height: i32) -> leopardwm_platform_win32::WindowInfo {
+    let mut info = make_test_window_info(hwnd);
+    info.class_name = "QQClass".into();
+    info.title = "QQ NT".into();
+    info.process_id = std::process::id();
+    info.rect = Rect::new(2200, 100, width, height);
+    info
+}
+
+#[test]
+fn test_size_rules_enumeration_separates_same_app_helpers() {
+    let mut state = new_window_monitor_state(size_rule_config());
+    state.monitors.get_mut(&2).unwrap().scale_factor = 2.0;
+    state.focused_monitor = 1;
+    let small = size_rule_window(100, 800, 600);
+    let large = size_rule_window(200, 1000, 600);
+    state.injected_enumerated_windows = Some(vec![small, large]);
+    assert_eq!(state.enumerate_and_add_windows().unwrap(), 1);
+    assert_eq!(state.find_window_workspace(100), None);
+    assert!(state.size_ignored_windows.contains(&100));
+    assert_eq!(state.find_window_workspace(200), Some((2, 0)));
+    assert!(!state.workspaces[&2][0].is_floating(200));
+    assert!(!state.size_ignored_windows.contains(&200));
+
+    state.config.window_rules.swap(0, 1);
+    state.compiled_rules = state.config.compile_window_rules();
+    assert_eq!(state.enumerate_and_add_windows().unwrap(), 1);
+    assert_eq!(state.find_window_workspace(100), Some((2, 0)));
+    assert!(state.size_ignored_windows.is_empty());
+}
+
+#[test]
+fn test_size_rules_live_admission_retries_growth_and_title_changes() {
+    for growth in [true, false] {
+        let mut state = new_window_monitor_state(size_rule_config());
+        state.monitors.get_mut(&2).unwrap().scale_factor = 2.0;
+        state.focused_monitor = 1;
+        state
+            .injected_window_info
+            .insert(100, size_rule_window(100, 800, 600));
+        state.handle_window_event(WindowEvent::Created(100, 0));
+        assert_eq!(state.find_window_workspace(100), None);
+        assert!(state.size_ignored_windows.contains(&100));
+        state.handle_window_event(WindowEvent::MovedOrResized(100));
+        assert_eq!(state.find_window_workspace(100), None);
+        assert!(state.size_ignored_windows.contains(&100));
+        state.handle_window_event(WindowEvent::TitleChanged(100));
+        assert_eq!(state.find_window_workspace(100), None);
+        assert!(state.size_ignored_windows.contains(&100));
+
+        let info = state.injected_window_info.get_mut(&100).unwrap();
+        let event = if growth {
+            info.rect.width = 1000;
+            WindowEvent::MovedOrResized(100)
+        } else {
+            info.title = "QQ Main".into();
+            WindowEvent::TitleChanged(100)
+        };
+        state.handle_window_event(event);
+        assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+        assert!(!state.size_ignored_windows.contains(&100));
+    }
+}
+
+fn size_rule_focus_recovery_state(recently_hidden: bool) -> AppState {
+    use crate::event_handler::{AdmissionKind, AdmitOutcome};
+
+    let mut config = size_rule_config();
+    let mut info = size_rule_window(100, 200, 150);
+    if !recently_hidden {
+        info.class_name = "ConsoleWindowClass".into();
+        for rule in &mut config.window_rules {
+            rule.match_class = Some("^ConsoleWindowClass$".into());
+        }
+    }
+    let mut state = new_window_monitor_state(config);
+    if recently_hidden {
+        info.rect.width = 800;
+        info.rect.height = 600;
+        state.injected_window_info.insert(100, info);
+        assert_eq!(
+            state.try_admit_window(100, AdmissionKind::Automatic),
+            AdmitOutcome::Admitted
+        );
+        state.handle_window_event(WindowEvent::Hidden(100, 1));
+        assert!(state.recently_hidden_hwnds.contains_key(&100));
+        let info = state.injected_window_info.get_mut(&100).unwrap();
+        info.rect.width = 200;
+        info.rect.height = 150;
+        assert_eq!(
+            state.try_admit_window(100, AdmissionKind::Automatic),
+            AdmitOutcome::TransientSuppressed
+        );
+    } else {
+        info.title = "C:\\Windows\\System32\\cmd.exe".into();
+        state.injected_window_info.insert(100, info);
+        assert_eq!(
+            state.try_admit_window(100, AdmissionKind::Automatic),
+            AdmitOutcome::TransientConsoleHost
+        );
+        state.injected_window_info.get_mut(&100).unwrap().title = "QQ NT".into();
+    }
+    assert_eq!(state.find_window_workspace(100), None);
+    assert!(!state.size_ignored_windows.contains(&100));
+    state
+}
+
+fn assert_size_rule_focus_recovery_retry(recently_hidden: bool, title_change: bool) {
+    let mut state = size_rule_focus_recovery_state(recently_hidden);
+    state.handle_window_event(WindowEvent::Focused(100, 2));
+    assert_eq!(state.find_window_workspace(100), None);
+    state.handle_window_event(WindowEvent::MovedOrResized(100));
+    state.handle_window_event(WindowEvent::TitleChanged(100));
+    assert_eq!(state.find_window_workspace(100), None);
+    let info = state.injected_window_info.get_mut(&100).unwrap();
+    let retry = if title_change {
+        info.title = "QQ Main".into();
+        WindowEvent::TitleChanged(100)
+    } else {
+        info.rect.width = 500;
+        WindowEvent::MovedOrResized(100)
+    };
+    state.handle_window_event(retry);
+    assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+    assert!(!state.size_ignored_windows.contains(&100));
+    assert!(!state.recently_hidden_hwnds.contains_key(&100));
+}
+
+#[test]
+fn test_size_rules_console_focus_recovery_admits_after_growth() {
+    assert_size_rule_focus_recovery_retry(false, false);
+}
+
+#[test]
+fn test_size_rules_console_focus_recovery_admits_after_title_change() {
+    assert_size_rule_focus_recovery_retry(false, true);
+}
+
+#[test]
+fn test_size_rules_recently_hidden_recovery_admits_after_growth() {
+    assert_size_rule_focus_recovery_retry(true, false);
+}
+
+#[test]
+fn test_size_rules_recently_hidden_recovery_admits_after_title_change() {
+    assert_size_rule_focus_recovery_retry(true, true);
+}
+
+#[test]
+fn test_size_rules_recovery_preserves_other_transient_suppression() {
+    use crate::event_handler::{AdmissionKind, AdmitOutcome};
+
+    for ordinary_ignore in [false, true] {
+        let mut state = size_rule_focus_recovery_state(true);
+        if ordinary_ignore {
+            state.config.window_rules[0].match_max_width = None;
+            state.config.window_rules[0].match_max_height = None;
+            state.compiled_rules = state.config.compile_window_rules();
+            state.handle_window_event(WindowEvent::Focused(100, 2));
+        }
+        assert!(state.recently_hidden_hwnds.contains_key(&100));
+        assert!(!state.size_ignored_windows.contains(&100));
+        state.injected_window_info.get_mut(&100).unwrap().rect.width = 500;
+        state.handle_window_event(WindowEvent::MovedOrResized(100));
+        assert_eq!(state.find_window_workspace(100), None);
+        assert_eq!(
+            state.try_admit_window(100, AdmissionKind::Automatic),
+            AdmitOutcome::TransientSuppressed
+        );
+    }
+}
+
+#[test]
+fn test_size_rules_deferral_clears_on_hide_and_destroy() {
+    for event in [WindowEvent::Hidden(100, 1), WindowEvent::Destroyed(100)] {
+        let mut state = new_window_monitor_state(size_rule_config());
+        state
+            .injected_window_info
+            .insert(100, size_rule_window(100, 200, 150));
+        state.handle_window_event(WindowEvent::Created(100, 0));
+        assert!(state.size_ignored_windows.contains(&100));
+        state.injected_window_info.remove(&100);
+        state.handle_window_event(event);
+        assert!(!state.size_ignored_windows.contains(&100));
+        assert_eq!(state.find_window_workspace(100), None);
+    }
+}
+
+#[test]
+fn test_size_rules_reapply_keeps_managed_small_floating_window() {
+    let mut config = size_rule_config();
+    config.window_rules[1].action = crate::config::WindowAction::Float;
+    let mut state = new_window_monitor_state(config);
+    let large = size_rule_window(100, 800, 600);
+    state.injected_window_info.insert(100, large.clone());
+    state.handle_window_event(WindowEvent::Created(100, 0));
+    assert!(state.workspaces[&1][0].is_floating(100));
+    let mut small = large;
+    small.rect = Rect::new(100, 100, 200, 150);
+    state.injected_window_info.insert(100, small.clone());
+    state.reapply_window_rules(&state.compiled_rules.clone());
+    state.injected_enumerated_windows = Some(vec![small]);
+    assert_eq!(state.enumerate_and_add_windows().unwrap(), 0);
+    assert_eq!(state.find_window_workspace(100), Some((1, 0)));
+    assert!(state.workspaces[&1][0].is_floating(100));
+    assert!(!state.size_ignored_windows.contains(&100));
 }
 
 #[test]
@@ -18306,19 +19132,21 @@ fn test_matched_rule_returns_first_match_extras() {
         open_in_column: None,
         row: None,
         sticky: false,
+        match_max_width: None,
+        match_max_height: None,
     }];
     let state = AppState::new_with_config(config, test_monitors());
     let rule = state
-        .matched_rule("SomeClass", "Editor", "code.exe")
+        .matched_rule("SomeClass", "Editor", "code.exe", None)
         .expect("matches");
     assert_eq!(rule.open_on_workspace, Some(2));
     assert_eq!(rule.column_width, Some(0.25));
     assert!(
         state
-            .matched_rule("SomeClass", "Editor", "other.exe")
+            .matched_rule("SomeClass", "Editor", "other.exe", None)
             .is_none()
             || state
-                .matched_rule("SomeClass", "Editor", "other.exe")
+                .matched_rule("SomeClass", "Editor", "other.exe", None)
                 .unwrap()
                 .match_executable
                 .as_deref()
@@ -20610,4 +21438,85 @@ fn test_switch_workspace_when_paused_succeeds_without_error() {
     let response = state.handle_command(leopardwm_ipc::IpcCommand::SwitchWorkspace { index: 2 });
     assert_eq!(response, leopardwm_ipc::IpcResponse::Ok);
     assert_eq!(state.active_workspace_idx(state.focused_monitor), 1);
+}
+
+#[test]
+fn test_late_floating_feedback_preserves_target_and_records_external_geometry() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for (readable, delta) in [(true, 0), (true, 2), (true, 3), (false, 0)] {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_mismatched_landing_state(&owner, readable);
+        state.moved_or_resized_suppression.remove(&owner.hwnd);
+        if delta != 0 {
+            owner.resize(230 + delta, 450 + delta);
+        }
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        let expected = if readable && delta <= 2 {
+            Rect::new(-300, 0, 300, 560)
+        } else {
+            Rect::new(230 + delta, 0, 450 + delta, 560)
+        };
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            expected,
+            "readable={readable}, delta={delta}"
+        );
+    }
+}
+
+#[test]
+fn test_floating_return_to_old_landing_after_external_or_interactive_move() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for (interactive, deferred_return) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        let owner = OffscreenResizeOwner::new();
+        let mut state = floating_mismatched_landing_state(&owner, true);
+        state.moved_or_resized_suppression.remove(&owner.hwnd);
+        let placement_sequence = state.physical_request_seq;
+        if interactive {
+            state.handle_window_event(WindowEvent::MoveSizeStart(owner.hwnd));
+        }
+        owner.resize(400, 500);
+        state.handle_window_event(if interactive {
+            WindowEvent::MoveSizeEnd(owner.hwnd)
+        } else {
+            WindowEvent::MovedOrResized(owner.hwnd)
+        });
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            Rect::new(400, 0, 500, 560)
+        );
+        if deferred_return {
+            state.arm_moved_or_resized_suppression([owner.hwnd]);
+        }
+        owner.resize(230, 450);
+        state.handle_window_event(WindowEvent::MovedOrResized(owner.hwnd));
+        if deferred_return {
+            assert!(state.deferred_moved_or_resized.contains(&owner.hwnd));
+            state.moved_or_resized_suppression.remove(&owner.hwnd);
+            assert!(!state.recheck_deferred_window_moves());
+        }
+        assert_eq!(state.physical_request_seq, placement_sequence);
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            Rect::new(230, 0, 450, 560),
+            "interactive={interactive}, deferred_return={deferred_return}"
+        );
+        for index in [2, 1] {
+            assert!(matches!(
+                state.handle_command(IpcCommand::SwitchWorkspace { index }),
+                IpcResponse::Ok
+            ));
+        }
+        assert_eq!(owner.rect(), Rect::new(230, 0, 450, 560));
+        assert_eq!(
+            state.workspaces[&1][0].floating_windows()[0].rect,
+            Rect::new(230, 0, 450, 560)
+        );
+    }
 }

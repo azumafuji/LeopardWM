@@ -47,6 +47,7 @@ pub(crate) struct PhysicalPresentation {
     pub request_id: u64,
     pub invalidation_id: u64,
     pub confirmed: bool,
+    pub actual_visible_rect: Option<Rect>,
 }
 
 fn i32_sat(value: i64) -> i32 {
@@ -514,6 +515,19 @@ impl AppState {
                 })
     }
 
+    pub(crate) fn acknowledged_visible_rect(&self, window_id: u64) -> Option<Rect> {
+        if self
+            .current_pending_physical_presentation(window_id)
+            .is_some()
+            || !self.physical_landing_is_safe_to_expose(window_id)
+        {
+            return None;
+        }
+        self.last_physical_presentations
+            .get(&window_id)?
+            .actual_visible_rect
+    }
+
     pub(crate) fn apply_physical_projection(
         &mut self,
         placements: Vec<WindowPlacement>,
@@ -565,6 +579,7 @@ impl AppState {
                     request_id,
                     invalidation_id,
                     confirmed: false,
+                    actual_visible_rect: None,
                 },
             );
             physical.push(physical_placement);
@@ -701,6 +716,14 @@ impl AppState {
                         .is_some_and(|rect| parking_clears_monitors(rect, &rects)),
                     PhysicalKind::Unchanged => landing.actual_visible_rect.is_some(),
                 };
+            entry.actual_visible_rect = if entry.confirmed
+                && presentation.kind == PhysicalKind::Unchanged
+                && presentation.physical.visibility == Visibility::Visible
+            {
+                landing.actual_visible_rect
+            } else {
+                None
+            };
             if !entry.confirmed && landing.measurement_deferred && !landing.failed {
                 debug!(
                     "Physical placement of window {} is unconfirmed until its queued async frames apply; re-checking on a later pass",
