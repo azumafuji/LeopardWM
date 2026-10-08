@@ -1319,7 +1319,9 @@ impl AppState {
                         // remove its taskbar button until that workspace is
                         // switched to.
                         #[cfg(not(test))]
-                        let _ = leopardwm_platform_win32::move_window_offscreen(hwnd);
+                        if !self.paused {
+                            let _ = leopardwm_platform_win32::move_window_offscreen(hwnd);
+                        }
                         self.sync_inactive_workspace_taskbar_button(hwnd);
                     }
                     if let Some(snapshot) = snapshot {
@@ -1970,7 +1972,9 @@ impl AppState {
             for wid in transition.exit_rects.keys() {
                 if !self.is_application_fullscreen(*wid) {
                     #[cfg(not(test))]
-                    let _ = leopardwm_platform_win32::move_window_offscreen(*wid);
+                    if !self.paused {
+                        let _ = leopardwm_platform_win32::move_window_offscreen(*wid);
+                    }
                 }
             }
         }
@@ -2056,7 +2060,9 @@ impl AppState {
         for placement in &old_placements {
             if !animating || placement.visibility != leopardwm_core_layout::Visibility::Visible {
                 #[cfg(not(test))]
-                let _ = leopardwm_platform_win32::move_window_offscreen(placement.window_id);
+                if !self.paused {
+                    let _ = leopardwm_platform_win32::move_window_offscreen(placement.window_id);
+                }
             }
         }
         if animating {
@@ -2843,15 +2849,15 @@ impl AppState {
             self.previous_focused_hwnd = None;
         }
 
-        let col_loc = workspace.find_window_location(hwnd);
-        let col_info = col_loc.map(|(ci, _)| {
-            let col = &workspace.columns()[ci];
-            let visible = col
-                .windows()
-                .iter()
-                .filter(|w| !workspace.is_minimized(**w))
-                .count();
-            (ci, col.len(), visible)
+        let col_info = workspace.find_window_location_rc(hwnd).and_then(|(r, ci, _)| {
+            workspace.columns_for_row(r).get(ci).map(|col| {
+                let visible = col
+                    .windows()
+                    .iter()
+                    .filter(|w| !workspace.is_minimized(**w))
+                    .count();
+                (ci, col.len(), visible)
+            })
         });
         info!(
             "Window {} minimized (col={:?}, minimized_total={})",
@@ -3459,7 +3465,9 @@ impl AppState {
             }
             ApplicationFullscreenExitRoute::InactivePark => {
                 #[cfg(not(test))]
-                let _ = leopardwm_platform_win32::move_window_offscreen(hwnd);
+                if !self.paused {
+                    let _ = leopardwm_platform_win32::move_window_offscreen(hwnd);
+                }
                 self.sync_inactive_workspace_taskbar_button(hwnd);
             }
             ApplicationFullscreenExitRoute::ActiveTiledApply => {

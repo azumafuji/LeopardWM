@@ -1280,7 +1280,9 @@ impl AppState {
             for wid in transition.exit_rects.keys() {
                 if !self.is_application_fullscreen(*wid) {
                     #[cfg(not(test))]
-                    let _ = leopardwm_platform_win32::move_window_offscreen(*wid);
+                    if !self.paused {
+                        let _ = leopardwm_platform_win32::move_window_offscreen(*wid);
+                    }
                 }
             }
         }
@@ -1396,7 +1398,9 @@ impl AppState {
         for placement in &old_placements {
             if !animating || placement.visibility != Visibility::Visible {
                 #[cfg(not(test))]
-                let _ = leopardwm_platform_win32::move_window_offscreen(placement.window_id);
+                if !self.paused {
+                    let _ = leopardwm_platform_win32::move_window_offscreen(placement.window_id);
+                }
             }
         }
         if animating {

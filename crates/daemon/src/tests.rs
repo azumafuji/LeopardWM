@@ -20568,3 +20568,46 @@ fn test_floating_above_tiled_order_and_repeated_focus_are_idempotent() {
         assert!(state.floating_raise_order(100, &order, false).is_empty());
     }
 }
+
+#[test]
+fn test_mark_minimized_and_reflow_multi_row_different_row_does_not_panic() {
+    let mut config = test_config();
+    config.layout.rows.split = vec!["50%".to_string(), "50%".to_string()];
+    config.window_rules = vec![
+        config::WindowRule {
+            match_class: Some("RowTwoClass".to_string()),
+            row: Some(2), // row 2 (0-based 1)
+            ..Default::default()
+        },
+    ];
+    let mut state = AppState::new_with_config(config, test_monitors());
+    state.reduce_motion = true;
+
+    // Window 100 opens on row 1 (0-based index 1)
+    let mut w1 = make_test_window_info(100);
+    w1.class_name = "RowTwoClass".to_string();
+    state.injected_window_info.insert(100, w1);
+    state.handle_window_event(WindowEvent::Created(100, 0));
+
+    let ws = state.focused_workspace_mut().unwrap();
+    // Focus row 0 (which has 0 columns/windows)
+    ws.focus_row(0);
+    assert_eq!(ws.focused_row(), 0);
+    assert_eq!(ws.columns().len(), 0);
+    assert_eq!(ws.find_window_location_rc(100).map(|(r, _, _)| r), Some(1));
+
+    // Minimizing window 100 in row 1 while focused_row is row 0 must not panic
+    let result = state.mark_minimized_and_reflow(100);
+    assert!(result.is_some());
+    assert!(state.focused_workspace().unwrap().is_minimized(100));
+}
+
+#[test]
+fn test_switch_workspace_when_paused_succeeds_without_error() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = true;
+
+    let response = state.handle_command(leopardwm_ipc::IpcCommand::SwitchWorkspace { index: 2 });
+    assert_eq!(response, leopardwm_ipc::IpcResponse::Ok);
+    assert_eq!(state.active_workspace_idx(state.focused_monitor), 1);
+}

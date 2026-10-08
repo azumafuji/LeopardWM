@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, GetClassNameW, GetWindowRect,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed, SendMessageTimeoutW, SetWindowPos,
+    GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow, IsZoomed, SendMessageTimeoutW, SetWindowPos,
     SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG, SMTO_BLOCK, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WM_NULL,
 };
@@ -1252,14 +1252,8 @@ fn probe_placement_owners(
         .chain(omitted)
     {
         let was_marked = marked.contains(&window_id);
-        if !display_change && !was_marked {
-            continue;
-        }
         if was_marked {
             deferrals.pending.insert(window_id);
-        }
-        if !probe_marked {
-            continue;
         }
         let Ok(hwnd) = window_id_to_hwnd(window_id) else {
             continue;
@@ -1270,6 +1264,15 @@ fn probe_placement_owners(
             continue;
         }
         if unsafe { IsIconic(hwnd).as_bool() } {
+            continue;
+        }
+        if unsafe { IsHungAppWindow(hwnd).as_bool() } {
+            deferrals.pending.insert(window_id);
+            deferrals.wait_for_owner.insert(window_id);
+            deferrals.unresponsive.insert(window_id);
+            continue;
+        }
+        if !display_change && !was_marked && !probe_marked {
             continue;
         }
         let owner_thread = unsafe { GetWindowThreadProcessId(hwnd, None) };
