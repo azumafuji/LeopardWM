@@ -71,7 +71,7 @@ pub(crate) struct ScaledLayoutParams {
     pub default_column_width: i32,
     pub tab_strip_reserve_px: i32,
     pub row_gap: i32,
-    pub row_shares: Vec<f64>,
+    pub row_shares_by_workspace: Vec<Vec<f64>>,
 }
 
 impl ScaledLayoutParams {
@@ -88,7 +88,9 @@ impl ScaledLayoutParams {
         let outer_gap_top = scale_px(layout.outer_gap_top, scale_factor);
         let outer_gap_bottom = scale_px(layout.outer_gap_bottom, scale_factor);
         let row_gap = scale_px(layout.rows.gap, scale_factor);
-        let row_shares = layout.rows.parse_shares();
+        let row_shares_by_workspace: Vec<Vec<f64>> = (0..9)
+            .map(|idx| layout.rows.parse_shares_for_workspace(idx))
+            .collect();
         // Reserve room for the strip PLUS the inter-element gap below
         // it, so the strip's bottom edge sits `gap` pixels above the
         // active tab — same spacing as between adjacent columns and
@@ -114,12 +116,20 @@ impl ScaledLayoutParams {
             default_column_width,
             tab_strip_reserve_px,
             row_gap,
-            row_shares,
+            row_shares_by_workspace,
         }
     }
 
-    /// Apply scaled gap and width values to a workspace.
-    pub fn apply_to(&self, workspace: &mut Workspace) {
+    /// Row shares for a 0-based workspace index.
+    pub fn row_shares_for(&self, ws_idx: usize) -> &[f64] {
+        self.row_shares_by_workspace
+            .get(ws_idx)
+            .map(|s| s.as_slice())
+            .unwrap_or(&[1.0])
+    }
+
+    /// Apply scaled gap and width values to a workspace at a given 0-based index.
+    pub fn apply_to(&self, workspace: &mut Workspace, ws_idx: usize) {
         workspace.set_gap(self.gap);
         workspace.set_outer_gaps(
             self.outer_gap_left,
@@ -130,7 +140,7 @@ impl ScaledLayoutParams {
         workspace.set_default_column_width(self.default_column_width);
         workspace.set_tab_strip_reserve_px(self.tab_strip_reserve_px);
         workspace.set_row_gap(self.row_gap);
-        workspace.set_row_layout(&self.row_shares);
+        workspace.set_row_layout(self.row_shares_for(ws_idx));
     }
 }
 
@@ -225,14 +235,14 @@ impl AppState {
                 viewport_width,
             );
 
-            for workspace in ws_vec.iter_mut() {
+            for (ws_idx, workspace) in ws_vec.iter_mut().enumerate() {
                 // Read the previously-applied scaled gap values from the workspace
                 // (not the raw config values) so rescale_column_widths works correctly.
                 let old_gap = workspace.gap();
                 let (old_ol, old_or, _, _) = workspace.outer_gaps();
                 let was_center_single_column = workspace.center_single_column();
 
-                params.apply_to(workspace);
+                params.apply_to(workspace, ws_idx);
                 workspace.set_centering_mode(self.config.layout.centering_mode.into());
                 workspace.set_center_past_edges(self.config.layout.center_past_edges);
                 workspace.set_center_single_column(self.config.layout.center_single_column);

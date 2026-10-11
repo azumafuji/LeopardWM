@@ -20992,6 +20992,102 @@ fn test_apply_config_updates_row_layout_across_workspaces() {
     }
 }
 
+#[test]
+fn test_apply_config_updates_per_workspace_rows() {
+    let mut config = test_config();
+    config.layout.rows.workspaces = vec![
+        config::WorkspaceRowsConfig {
+            workspaces: vec![1],
+            split: vec!["50%".to_string(), "50%".to_string()],
+        },
+        config::WorkspaceRowsConfig {
+            workspaces: vec![2, 3],
+            split: vec!["40%".to_string(), "30%".to_string(), "30%".to_string()],
+        },
+    ];
+    let mut state = AppState::new_with_config(config, test_monitors());
+    let mon = state.focused_monitor;
+    state.ensure_workspace_exists(mon, 1);
+    state.ensure_workspace_exists(mon, 2);
+    state.ensure_workspace_exists(mon, 3);
+
+    let workspaces = state.workspaces.get(&mon).unwrap();
+    // Workspace 1 (index 0) has 2 rows
+    assert_eq!(workspaces[0].row_count(), 2);
+    // Workspace 2 (index 1) has 3 rows
+    assert_eq!(workspaces[1].row_count(), 3);
+    // Workspace 3 (index 2) has 3 rows
+    assert_eq!(workspaces[2].row_count(), 3);
+    // Workspace 4 (index 3) defaults to 1 row
+    assert_eq!(workspaces[3].row_count(), 1);
+
+    // Dynamic config update: change Workspace 1 to 1 row and Workspace 4 to 2 rows
+    let mut new_config = test_config();
+    new_config.layout.rows.workspaces = vec![
+        config::WorkspaceRowsConfig {
+            workspaces: vec![4],
+            split: vec!["50%".to_string(), "50%".to_string()],
+        },
+    ];
+    state.apply_config(new_config);
+
+    let workspaces = state.workspaces.get(&mon).unwrap();
+    // Workspace 1 now defaults to 1 row
+    assert_eq!(workspaces[0].row_count(), 1);
+    // Workspace 2 now defaults to 1 row
+    assert_eq!(workspaces[1].row_count(), 1);
+    // Workspace 4 now has 2 rows
+    assert_eq!(workspaces[3].row_count(), 2);
+}
+
+#[test]
+fn test_window_rules_respect_per_workspace_rows() {
+    let mut config = test_config();
+    config.layout.rows.workspaces = vec![
+        config::WorkspaceRowsConfig {
+            workspaces: vec![2],
+            split: vec!["50%".to_string(), "50%".to_string()],
+        },
+    ];
+    config.window_rules = vec![
+        config::WindowRule {
+            match_class: Some("WorkspaceOneClass".to_string()),
+            open_on_workspace: Some(1), // workspace 1 (1 row)
+            row: Some(2),               // row 2 clamps to 0
+            ..Default::default()
+        },
+        config::WindowRule {
+            match_class: Some("WorkspaceTwoClass".to_string()),
+            open_on_workspace: Some(2), // workspace 2 (2 rows)
+            row: Some(2),               // row 2 lands in row 1
+            ..Default::default()
+        },
+    ];
+    let mut state = AppState::new_with_config(config, test_monitors());
+    state.reduce_motion = false;
+
+    // Window 1: opens on workspace 1, row 2 requested -> clamps to 0 because workspace 1 has 1 row
+    let mut w1 = make_test_window_info(100);
+    w1.class_name = "WorkspaceOneClass".to_string();
+    state.injected_window_info.insert(100, w1);
+    state.handle_window_event(WindowEvent::Created(100, 0));
+
+    let mon = state.focused_monitor;
+    let ws1 = &state.workspaces.get(&mon).unwrap()[0];
+    assert_eq!(ws1.row_count(), 1);
+    assert_eq!(ws1.find_window_location_rc(100).map(|(r, _, _)| r), Some(0));
+
+    // Window 2: opens on workspace 2, row 2 requested -> lands on row 1
+    let mut w2 = make_test_window_info(200);
+    w2.class_name = "WorkspaceTwoClass".to_string();
+    state.injected_window_info.insert(200, w2);
+    state.handle_window_event(WindowEvent::Created(200, 0));
+
+    let ws2 = &state.workspaces.get(&mon).unwrap()[1];
+    assert_eq!(ws2.row_count(), 2);
+    assert_eq!(ws2.find_window_location_rc(200).map(|(r, _, _)| r), Some(1));
+}
+
 #[path = "maximized_admission_tests.rs"]
 mod maximized_admission_tests;
 

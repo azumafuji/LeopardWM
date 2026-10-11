@@ -1010,7 +1010,7 @@ input[type="range"]::-webkit-slider-thumb {
         <p class="section-desc">Multi-row scrolling strip layout.</p>
         <div class="card">
           <div class="field">
-            <div class="field-info"><div class="field-label">Row split</div><div class="field-desc">Row heights as percentages from top to bottom, e.g. "50%, 50%" or "100%" (max 4 rows)</div></div>
+            <div class="field-info"><div class="field-label">Row split</div><div class="field-desc">Default row heights as percentages from top to bottom, e.g. "50%, 50%" or "100%" (max 4 rows)</div></div>
             <input type="text" id="layout-rows-split" placeholder="100%">
           </div>
           <div class="field">
@@ -1018,6 +1018,15 @@ input[type="range"]::-webkit-slider-thumb {
             <input type="number" id="layout-rows-gap" min="0" max="100">
           </div>
         </div>
+        <h4 class="section-subtitle" style="margin-top:16px">Workspace row splits</h4>
+        <p class="section-desc">Row splits for specific workspaces (max 4 rows). Workspaces not listed default to a single row.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th style="width:40%">Workspaces</th><th>Row split</th><th style="width:36px"></th></tr></thead>
+            <tbody id="workspace-rows-body"></tbody>
+          </table>
+        </div>
+        <div class="table-actions"><button class="btn btn-sm" type="button" onclick="addWorkspaceRow({})">Add workspace row</button></div>
         <h3 class="section-subtitle" data-i18n="settings.text.workspace_names"></h3>
         <p class="section-desc" data-i18n="settings.text.optional_labels_for_workspaces_1_9_shown_in_lwm_query_workspace_and_sent_to"></p>
         <div class="card" id="workspace-names-card"></div>
@@ -1655,6 +1664,12 @@ function init(cfg) {
   var rowsSplit = (cfg.layout.rows && cfg.layout.rows.split) ? cfg.layout.rows.split.join(', ') : '100%';
   setVal('layout-rows-split', rowsSplit);
   setVal('layout-rows-gap', (cfg.layout.rows && cfg.layout.rows.gap != null) ? cfg.layout.rows.gap : 8);
+  var wsRowsBody = document.getElementById('workspace-rows-body');
+  if (wsRowsBody) {
+    wsRowsBody.innerHTML = '';
+    var wsRows = (cfg.layout && cfg.layout.rows && cfg.layout.rows.workspaces) || [];
+    wsRows.forEach(function(item) { addWorkspaceRow(item); });
+  }
   document.getElementById('width-presets-body').innerHTML = '';
   (cfg.layout.width_presets || [0.333,0.5,0.667]).forEach(function(v) { addPresetRow('width', v); });
   refreshDefaultWidthPresetOptions(cfg.layout.default_width_preset || 1);
@@ -2314,6 +2329,80 @@ function initRuleOptions(tr) {
   });
 }
 
+function parseWorkspaceInput(val) {
+  if (Array.isArray(val)) return val.slice();
+  var list = [];
+  String(val || '').split(',').forEach(function(part) {
+    part = part.trim();
+    if (!part) return;
+    if (part.indexOf('-') !== -1) {
+      var bounds = part.split('-');
+      var start = parseInt(bounds[0], 10);
+      var end = parseInt(bounds[1], 10);
+      if (!isNaN(start) && !isNaN(end) && start <= end) {
+        for (var i = start; i <= end; i++) {
+          if (i >= 1 && i <= 9 && list.indexOf(i) === -1) list.push(i);
+        }
+      }
+    } else {
+      var n = parseInt(part, 10);
+      if (!isNaN(n) && n >= 1 && n <= 9 && list.indexOf(n) === -1) list.push(n);
+    }
+  });
+  return list;
+}
+
+function addWorkspaceRow(item) {
+  var tbody = document.getElementById('workspace-rows-body');
+  if (!tbody) return;
+  var tr = document.createElement('tr');
+  item = item || {};
+  var wsVal = '';
+  if (Array.isArray(item.workspaces)) {
+    wsVal = item.workspaces.join(', ');
+  } else if (item.workspaces != null) {
+    wsVal = String(item.workspaces);
+  }
+  var splitVal = '';
+  if (Array.isArray(item.split)) {
+    splitVal = item.split.join(', ');
+  } else if (item.split != null) {
+    splitVal = String(item.split);
+  }
+  tr.innerHTML =
+    '<td><input type="text" class="ws-row-workspaces" value="' + escAttr(wsVal) + '" placeholder="1, 2"></td>' +
+    '<td><input type="text" class="ws-row-split" value="' + escAttr(splitVal) + '" placeholder="50%, 50%"></td>' +
+    '<td><button class="row-delete" type="button" onclick="removeWorkspaceRow(this)">' + deleteIcon + '</button></td>';
+  tbody.appendChild(tr);
+  wrapAllInputs(tr);
+  tr.querySelectorAll('input').forEach(function(input) {
+    input.addEventListener('input', function() { autoSave(500); });
+  });
+}
+
+function removeWorkspaceRow(button) {
+  var tr = button.closest('tr');
+  if (tr) tr.remove();
+  autoSave(0);
+}
+
+function readWorkspaceRows() {
+  var rows = [];
+  var list = document.querySelectorAll ? document.querySelectorAll('#workspace-rows-body tr') : [];
+  list.forEach(function(tr) {
+    var wsInput = tr.querySelector('.ws-row-workspaces');
+    var splitInput = tr.querySelector('.ws-row-split');
+    if (!wsInput || !splitInput) return;
+    var wsList = parseWorkspaceInput(wsInput.value);
+    if (wsList.length > 0) {
+      var splitParts = (splitInput.value.trim() || '50%, 50%').split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+      if (splitParts.length === 0) splitParts = ['100%'];
+      rows.push({ workspaces: wsList, split: splitParts });
+    }
+  });
+  return rows;
+}
+
 function escAttr(s) { return escHtml(s || ''); }
 
 function readConfig() {
@@ -2337,6 +2426,7 @@ function readConfig() {
       center_single_column: checked('layout-center_single_column'),
       center_past_edges: checked('layout-center_past_edges'),
       rows: {
+        workspaces: readWorkspaceRows(),
         split: (val('layout-rows-split') || '100%').split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; }),
         gap: num('layout-rows-gap')
       }
@@ -2729,6 +2819,12 @@ mod tests {
         assert!(SETTINGS_HTML.contains("rows: {"));
         assert!(SETTINGS_HTML.contains("split: (val('layout-rows-split')"));
         assert!(SETTINGS_HTML.contains("gap: num('layout-rows-gap')"));
+
+        assert!(SETTINGS_HTML.contains("id=\"workspace-rows-body\""));
+        assert!(SETTINGS_HTML.contains("addWorkspaceRow"));
+        assert!(SETTINGS_HTML.contains("removeWorkspaceRow"));
+        assert!(SETTINGS_HTML.contains("readWorkspaceRows"));
+        assert!(SETTINGS_HTML.contains("workspaces: readWorkspaceRows()"));
 
         // Behavior move_window_across_rows toggle
         assert!(SETTINGS_HTML.contains("id=\"behavior-move_window_across_rows\""));

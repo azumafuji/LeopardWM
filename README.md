@@ -189,8 +189,17 @@ Configure 1 to 4 independent horizontal scrolling rows per workspace. Each row b
 
 ```toml
 [layout.rows]
-split = ["1/2", "1/2"]  # 1 to 4 rows: fractions like "1/2", "1/3", or weights like "1", "2"
 gap = 8                 # vertical gap between rows in pixels (scaled per-monitor with DPI)
+
+# Configure rows per workspace (1 to 4 rows: fractions like "1/2", "1/3", or weights like "1", "2").
+# Workspaces without an explicit entry default to 1 row.
+[[layout.rows.workspaces]]
+workspaces = [1, 2]     # 1 or more workspaces (1-9)
+split = ["1/2", "1/2"]  # 2 equal rows
+
+[[layout.rows.workspaces]]
+workspace = 3           # single workspace
+split = ["1/3", "1/3", "1/3"]  # 3 rows
 
 [behavior]
 move_window_across_rows = true  # wrap/cross rows during vertical navigation

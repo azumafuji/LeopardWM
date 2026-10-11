@@ -1098,7 +1098,7 @@ impl AppState {
                 params.outer_gap_top,
                 params.outer_gap_bottom,
             );
-            params.apply_to(&mut workspace);
+            params.apply_to(&mut workspace, 0);
             workspace.set_centering_mode(config.layout.centering_mode.into());
             workspace.set_center_past_edges(config.layout.center_past_edges);
             workspace.set_center_single_column(config.layout.center_single_column);
@@ -1716,6 +1716,7 @@ impl AppState {
         let config = &self.config;
         let ws_vec = self.workspaces.get_mut(&monitor_id)?;
         while ws_vec.len() <= idx {
+            let cur_idx = ws_vec.len();
             let mut ws = Workspace::with_directional_gaps(
                 params.gap,
                 params.outer_gap_left,
@@ -1723,7 +1724,7 @@ impl AppState {
                 params.outer_gap_top,
                 params.outer_gap_bottom,
             );
-            params.apply_to(&mut ws);
+            params.apply_to(&mut ws, cur_idx);
             ws.set_centering_mode(config.layout.centering_mode.into());
             ws.set_center_past_edges(config.layout.center_past_edges);
             ws.set_center_single_column(config.layout.center_single_column);
