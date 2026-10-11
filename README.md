@@ -173,6 +173,18 @@ Most hotkeys use `Ctrl+Alt` as the base modifier. Layered pattern: base = focus,
 | `Ctrl+Alt+Shift+R` | Reload config |
 | `Win+Ctrl+Escape` | Emergency restore + panic-revert |
 
+These commands have no default keyboard binding and are also available in the
+Settings gesture menus:
+
+| Command | Action |
+|---|---|
+| `focus_next` / `focus_prev` | Focus the next / previous window across columns, wrapping at strip ends |
+| `scroll_left` / `scroll_right` | Move the strip viewport left / right by 100 px without changing focus |
+
+`scroll_up` and `scroll_down` under `[gestures]` default to `focus_next` and
+`focus_prev`. Hold `[hotkeys].scroll_modifier` (Ctrl+Alt by default) while using
+the mouse wheel to run them.
+
 > The scratchpad and sticky pins are session-scoped: they are keyed by window handle and reset when the daemon restarts.
 
 ## Multi-Row Layout
@@ -307,7 +319,7 @@ language = "en" # "en" (default) or "zh-CN"
 The open Settings window, tray menu, and daemon notifications use the selected
 language after saving or reloading config; no daemon restart is needed. Unsupported
 values fall back to English with a config warning. There is no automatic OS-language
-selection. Simplified Chinese is a **machine draft pending native-speaker review**.
+selection. Simplified Chinese is a **human-reviewed translation**.
 Locale files are embedded in the daemon, so editing a translation requires a rebuild.
 See the [localization contributor guide](docs/localization.md) for file locations,
 placeholders, validation, and the surfaces that remain English.
@@ -446,7 +458,9 @@ applies live on config reload; wheel events still reach the application, and
 modifier-plus-wheel navigation is unchanged. Non-Precision touchpads that send
 swipes as wheel events lose those swipes with it off. Precision Touchpads can
 keep native swipes with `raw_input = true`. `enabled = false` still disables all
-gesture support.
+gesture support. Changes to `enabled` apply live on Settings save or config
+reload. Re-enabling uses the native Raw Input setting from daemon startup;
+changing `raw_input` still requires a restart.
 
 Failed physical gestures are diagnosed with an opt-in, short capture — not by leaving general logging at TRACE. Capture is **default off**; turning it on does not change gesture behavior.
 
@@ -607,6 +621,12 @@ Thanks to everyone who has helped shape LeopardWM.
 
 <a href="https://github.com/Mihir-Null" title="Mihir Talati"><img src="https://avatars.githubusercontent.com/u/86654551?v=4&s=96" width="72" alt="Mihir Talati" /></a><br />
 <a href="https://github.com/Mihir-Null"><b>Mihir Talati</b></a> (<a href="https://github.com/Mihir-Null">@Mihir-Null</a>)
+
+<a href="https://github.com/c3us-dev" title="Conner C"><img src="https://avatars.githubusercontent.com/u/209130198?v=4&s=96" width="72" alt="Conner C" /></a><br />
+<a href="https://github.com/c3us-dev"><b>Conner C</b></a> (<a href="https://github.com/c3us-dev">@c3us-dev</a>)
+
+<a href="https://github.com/bd-dxg" title="冰冻大西瓜"><img src="https://avatars.githubusercontent.com/u/34816426?v=4&s=96" width="72" alt="冰冻大西瓜" /></a><br />
+<a href="https://github.com/bd-dxg"><b>冰冻大西瓜</b></a> (<a href="https://github.com/bd-dxg">@bd-dxg</a>)
 
 ## License
 

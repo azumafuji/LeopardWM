@@ -1429,6 +1429,7 @@ applyLocale(localeStrings, window._language || 'en');
 function refreshLocale(strings, language) {
   if (document.documentElement.lang === language) return;
   applyLocale(strings, language);
+  refreshCommandLabels();
   setCb('cb-appearance-language', language);
   document.querySelectorAll('.combobox').forEach(function(cb) {
     var selected = Array.from(cb.querySelectorAll('.combobox-option')).find(function(option) {
@@ -1783,9 +1784,8 @@ function init(cfg) {
 /* ── Delete icon (X) ─────────────────────────────────────────────────── */
 var deleteIcon = '<svg viewBox="0 0 12 12"><line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/></svg>';
 
-/* Hotkey tables derived from the single catalog the host injects
-   (window._hotkeyCatalog). Names, display order, and reset-to-defaults all
-   stay in sync with the Rust ipc::hotkeys catalog with no duplication. */
+/* The host catalog supplies display order, defaults, and fallback labels.
+   Locales supply translated names; a test keeps English names in sync. */
 var HOTKEY_CATALOG = window._hotkeyCatalog || [];
 var CMD_ORDER = HOTKEY_CATALOG.map(function(a) { return a.id; });
 var CMD_LABELS = {};
@@ -1795,13 +1795,33 @@ HOTKEY_CATALOG.forEach(function(a) {
   if (a.key) { DEFAULT_HOTKEYS[a.key] = a.id; }
 });
 
-function cmdLabel(cmd) { return CMD_LABELS[cmd] || cmd; }
+function cmdLabel(cmd) {
+  var localized = t('hotkeys.command.' + cmd);
+  return localized === ('hotkeys.command.' + cmd) ? (CMD_LABELS[cmd] || cmd) : localized;
+}
 /* The catalog label may carry a " (detail)" suffix; the short form (before the
    parenthetical) is what the hotkeys list shows, with the full text in a tooltip. */
 function cmdShortLabel(cmd) {
   var l = cmdLabel(cmd);
-  var i = l.indexOf(' (');
-  return i === -1 ? l : l.slice(0, i);
+  var i = l.search(/[（(]/);
+  return i === -1 ? l : l.slice(0, i).trimEnd();
+}
+
+function refreshCommandLabels() {
+  document.querySelectorAll('#hotkeys-body tr[data-cmd]').forEach(function(tr) {
+    var fullLabel = cmdLabel(tr.dataset.cmd);
+    var shortLabel = cmdShortLabel(tr.dataset.cmd);
+    var label = tr.querySelector('.hk-cmd-label');
+    label.textContent = shortLabel;
+    if (fullLabel === shortLabel) label.removeAttribute('title');
+    else label.title = fullLabel;
+  });
+  document.querySelectorAll('[id^="cb-gestures-"]').forEach(function(cb) {
+    cb.querySelectorAll('.combobox-option').forEach(function(option) {
+      option.textContent = option.dataset.value === '' ? t('settings.text.no_action') : cmdLabel(option.dataset.value);
+    });
+    cb.querySelector('.combobox-text').textContent = cb.dataset.value === '' ? t('settings.text.no_action') : cmdLabel(cb.dataset.value);
+  });
 }
 
 function updateScrollLabels() {
@@ -1998,10 +2018,11 @@ function attachRecorder(input) {
   });
 }
 
-function addHotkeyRow(key, cmd) {
+function addHotkeyRow(key, cmd, extra) {
   var tbody = document.getElementById('hotkeys-body');
   var tr = document.createElement('tr');
   tr.dataset.cmd = cmd;
+  if (extra) tr.dataset.extra = '1';
   /* Long labels carry a "(detail)" suffix; show the short name and move the
      parenthetical into a hover tooltip so the row stays one line. */
   var fullLabel = cmdLabel(cmd);
@@ -2063,8 +2084,8 @@ function defaultKeyForCmd(cmd) {
 }
 
 function resetHotkeyRow(tr) {
-  var defKey = defaultKeyForCmd(tr.dataset.cmd);
-  if (defKey) { tr.querySelector('.hk-key').value = defKey; refreshDuplicateWarnings(); autoSave(0); }
+  var defKey = tr.dataset.extra ? '' : defaultKeyForCmd(tr.dataset.cmd);
+  if (defKey || tr.dataset.extra) { tr.querySelector('.hk-key').value = defKey; refreshDuplicateWarnings(); autoSave(0); }
 }
 
 /* Show a dismissible warning for binds Windows reserves below the keyboard
@@ -2089,14 +2110,13 @@ function loadHotkeysSorted(bindings, scrollModifier, disabled) {
   var tbody = document.getElementById('hotkeys-body');
   tbody.innerHTML = '';
   var disabledSet = disabled || [];
-  /* Build cmd→key map from config */
-  var cmdToKey = {};
-  Object.entries(bindings).forEach(function(e) { cmdToKey[e[1]] = e[0]; });
+  var cmdToKeys = Object.create(null);
+  Object.entries(bindings).forEach(function(e) { (cmdToKeys[e[1]] = cmdToKeys[e[1]] || []).push(e[0]); });
   /* Render in defined order. A command the user disabled stays empty rather
      than falling back to its default. */
   CMD_ORDER.forEach(function(cmd) {
-    var key = disabledSet.indexOf(cmd) !== -1 ? '' : (cmdToKey[cmd] || defaultKeyForCmd(cmd));
-    addHotkeyRow(key, cmd);
+    var keys = cmdToKeys[cmd] || [disabledSet.indexOf(cmd) !== -1 ? '' : defaultKeyForCmd(cmd)];
+    keys.forEach(function(key, index) { addHotkeyRow(key, cmd, index > 0); });
   });
   /* Append any custom commands not in CMD_ORDER */
   Object.entries(bindings).forEach(function(e) {
@@ -2109,8 +2129,8 @@ function loadHotkeysSorted(bindings, scrollModifier, disabled) {
     '<td class="hk-cmd-label" data-i18n="settings.text.scroll_modifier">' + escHtml(t('settings.text.scroll_modifier')) + '</td>' +
     '<td><input type="text" class="hk-key" value="' + escAttr(scrollModifier || 'Ctrl+Alt') + '" data-i18n-placeholder="settings.text.e_g_ctrl_alt" placeholder="' + escAttr(t('settings.text.e_g_ctrl_alt')) + '"></td>' +
     '<td><button class="row-delete" data-i18n-title="settings.text.reset_to_default" title="' + escAttr(t('settings.text.reset_to_default')) + '" onclick="this.closest(\'tr\').querySelector(\'.hk-key\').value=\'Ctrl+Alt\';updateScrollLabels();autoSave(0);">' + resetIcon + '</button></td>';
-  var focusRows = tbody.querySelectorAll('tr[data-cmd="focus_down"]');
-  var anchor = focusRows.length ? focusRows[0] : null;
+  var focusRows = tbody.querySelectorAll('tr[data-cmd="focus_prev"]');
+  var anchor = focusRows.length ? focusRows[focusRows.length - 1] : null;
   if (anchor && anchor.nextSibling) { tbody.insertBefore(tr, anchor.nextSibling); }
   else { tbody.appendChild(tr); }
   wrapAllInputs(tr);
@@ -2523,16 +2543,16 @@ function readHotkeys() {
   return b;
 }
 
-/* Commands the user cleared: an empty row whose action has a default. These
-   are recorded so the daemon's defaults-merge won't resurrect the binding. */
+/* Commands with a default and no remaining binding are recorded so the
+   daemon's defaults-merge won't resurrect a binding the user cleared. */
 function readDisabledHotkeys() {
-  var d = [];
+  var bound = Object.create(null);
   document.querySelectorAll('#hotkeys-body tr[data-cmd]').forEach(function(tr) {
     var k = tr.querySelector('.hk-key').value.trim();
     var c = tr.dataset.cmd;
-    if (!k && c && defaultKeyForCmd(c)) d.push(c);
+    if (c) bound[c] = bound[c] || Boolean(k);
   });
-  return d;
+  return Object.keys(bound).filter(function(c) { return !bound[c] && defaultKeyForCmd(c); });
 }
 
 function readScrollModifier() {
@@ -2646,6 +2666,7 @@ mod tests {
 
         let payload = serde_json::json!({
             "page": SETTINGS_HTML,
+            "hotkeyCatalog": leopardwm_ipc::hotkeys::hotkey_catalog(),
             "languages": serde_json::from_str::<serde_json::Value>(&crate::locale::languages_json()).unwrap(),
             "english": serde_json::from_str::<serde_json::Value>(&crate::locale::page_json("en")).unwrap(),
             "chinese": serde_json::from_str::<serde_json::Value>(&crate::locale::page_json("zh-CN")).unwrap(),
@@ -2716,11 +2737,8 @@ mod tests {
     }
 
     #[test]
-    fn disabled_hotkeys_survive_settings_saves() {
-        assert!(SETTINGS_HTML.contains(
-            "var key = disabledSet.indexOf(cmd) !== -1 ? '' : (cmdToKey[cmd] || defaultKeyForCmd(cmd));"
-        ));
-        assert!(SETTINGS_HTML.contains("if (!k && c && defaultKeyForCmd(c)) d.push(c);"));
+    fn scroll_modifier_row_follows_linear_focus_navigation() {
+        assert!(SETTINGS_HTML.contains("tbody.querySelectorAll('tr[data-cmd=\"focus_prev\"]')"));
     }
 
     #[test]

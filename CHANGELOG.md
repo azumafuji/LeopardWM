@@ -13,6 +13,20 @@ All notable changes to LeopardWM will be documented in this file.
 - **Settings GUI row controls.** Visual editor in Settings for configuring row count, height splits, intra-row vertical gaps, the `move_window_across_rows` toggle, and row assignment in window rules.
 - **IPC Protocol v5.** Incremented protocol version to 5 with row-aware workspace snapshots (`rows`, `focused_row`, `row_index`), row layout broadcasts, and `FocusRow` / `MoveWindowToRow` commands.
 
+## 0.3.1
+
+### Fixes
+
+- **Saving Settings no longer drops extra shortcuts bound to the same command.** Each configured shortcut now has its own row.
+- **Settings now uses a native-speaker-reviewed Simplified Chinese translation, including hotkey and gesture command names.** Contributed by @bd-dxg. (#98, #143)
+- **Scrolling a window off-screen toward a neighbouring monitor no longer triggers a redundant layout update after the animation.**
+- **Scrolling a window into view from the side of a neighbouring monitor no longer drops the animation frame rate.** The focus border is now trimmed at the monitor edge when the scroll lands instead of on every frame.
+- **The tab bar now shows the configured colours.** Red and blue were swapped in the tab bar background, active tab and tab icons. (#140)
+- **Empty workspaces no longer leave a blank entry in Alt+Tab.** LeopardWM's invisible focus window, which keeps new apps on the empty workspace, is now hidden from Alt+Tab. (#136)
+- **Settings now offers all supported gesture commands.** Next and previous window focus and 100 px viewport scrolling are available in the gesture menus, including the default modifier-plus-wheel bindings. (#142)
+- **Turning gestures on or off now takes effect without restarting.** Settings saves and config reloads install or stop gesture detection immediately. Changing native three-finger swipe detection still requires a restart. (#142)
+- **The update check now uses rustls 0.23.45.** It fixes a TLS 1.3 handshake validation issue ([GHSA-2mjx-qc3c-rqvc](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc)).
+
 ## 0.3.0
 
 ### Features

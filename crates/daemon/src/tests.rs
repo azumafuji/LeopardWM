@@ -8938,6 +8938,68 @@ fn test_shutdown_mode_for_command_maps_shutdown_variants() {
 }
 
 #[test]
+fn test_gesture_hook_reconciles_desired_and_actual_state() {
+    for (installed, enabled, retry_install, expected) in [
+        (false, false, true, GestureHookChange::None),
+        (false, true, true, GestureHookChange::Install),
+        (false, true, false, GestureHookChange::None),
+        (true, false, false, GestureHookChange::Stop),
+        (true, true, false, GestureHookChange::None),
+        (true, true, true, GestureHookChange::None),
+    ] {
+        assert_eq!(
+            gesture_hook_change(installed, enabled, retry_install),
+            expected
+        );
+    }
+}
+
+#[test]
+fn test_gesture_forwarder_cancels_with_full_daemon_channel() {
+    let (event_tx, mut event_rx) = mpsc::channel(1);
+    event_tx
+        .try_send(DaemonEvent::Gesture(GestureEvent::ScrollUp))
+        .unwrap();
+    let (gesture_tx, gesture_rx) = std::sync::mpsc::channel();
+    gesture_tx.send(GestureEvent::ScrollDown).unwrap();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    use tracing_subscriber::layer::SubscriberExt;
+    struct BackpressureObserver(std::sync::mpsc::Sender<()>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for BackpressureObserver {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().target() == "leopardwm::gesture_forwarding" {
+                let _ = self.0.send(());
+            }
+        }
+    }
+    let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+    let subscriber = tracing_subscriber::registry().with(BackpressureObserver(blocked_tx));
+    let forward_cancel = cancel.clone();
+    let mut forwarder = Some(std::thread::spawn(move || {
+        tracing::subscriber::with_default(subscriber, || {
+            forward_gestures(gesture_rx, event_tx, forward_cancel);
+        });
+    }));
+    let blocked = blocked_rx.recv_timeout(Duration::from_secs(1));
+    cancel.store(true, Ordering::Release);
+    drop(gesture_tx);
+    assert!(join_with_timeout(&mut forwarder, Duration::from_secs(1)));
+    assert!(
+        blocked.is_ok(),
+        "forwarder never reached full-channel backpressure"
+    );
+    assert!(matches!(
+        event_rx.try_recv(),
+        Ok(DaemonEvent::Gesture(GestureEvent::ScrollUp))
+    ));
+    assert!(event_rx.try_recv().is_err());
+}
+
+#[test]
 fn test_gesture_command_classification_distinguishes_no_action_and_unknown() {
     assert!(matches!(
         classify_gesture_command(""),
@@ -9160,7 +9222,7 @@ fn test_cmd_query_hotkeys_appends_valid_non_catalog_actions() {
     config
         .hotkeys
         .bindings
-        .insert("Ctrl+Alt+N".to_string(), "focus_next".to_string());
+        .insert("Ctrl+Alt+N".to_string(), "width_third".to_string());
 
     let mut state = AppState::new_with_config(config, test_monitors());
     let IpcResponse::HotkeyList {
@@ -9171,8 +9233,8 @@ fn test_cmd_query_hotkeys_appends_valid_non_catalog_actions() {
     };
 
     let extra = hotkeys.last().unwrap();
-    assert_eq!(extra.action_id, "focus_next");
-    assert_eq!(extra.label, "Focus next");
+    assert_eq!(extra.action_id, "width_third");
+    assert_eq!(extra.label, "Width third");
     assert_eq!(extra.group, "Other");
     assert_eq!(extra.bindings, vec!["Ctrl+Alt+N"]);
     assert!(extra.enabled);
@@ -21521,6 +21583,12 @@ async fn test_taskbar_buttons_paused_tray_selection_keeps_buttons_shown_until_re
         idle_layout_reapply_timer: &mut None,
         display_change_apply_retry_timer: &mut None,
         mouse_hook_handle: &mut None,
+        gestures: &mut GestureRuntime {
+            startup_raw_input: false,
+            handle: None,
+            cancel: None,
+            retry_install: true,
+        },
     };
     for mode in [
         HideInactiveWorkspaces,

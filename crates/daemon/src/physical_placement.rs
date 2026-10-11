@@ -261,6 +261,7 @@ pub(crate) fn project_physical_rect(
 /// Both coordinates remain at or beyond the shared MoveOffScreen sentinel, so
 /// no-state recovery retains its narrow ownership test. The caller supplies
 /// visible-to-frame insets because the native move targets the outer frame.
+/// The returned origin is frame-space; dimensions retain the visible size.
 /// If an extreme virtual-desktop geometry cannot be represented, final native
 /// readback leaves the placement unconfirmed instead of treating it as safe.
 pub(crate) fn offscreen_park_rect(
@@ -269,9 +270,11 @@ pub(crate) fn offscreen_park_rect(
     insets: (i32, i32, i32, i32),
 ) -> Rect {
     const SENTINEL: i64 = leopardwm_platform_win32::MOVE_OFFSCREEN_SENTINEL_COORD as i64;
-    let (_, _, right, bottom) = insets;
-    let outer_width = i64::from(window.width.max(1)) + i64::from(right.max(0));
-    let outer_height = i64::from(window.height.max(1)) + i64::from(bottom.max(0));
+    let (left, top, right, bottom) = insets;
+    let outer_width =
+        i64::from(left.max(0)) + i64::from(window.width.max(1)) + i64::from(right.max(0));
+    let outer_height =
+        i64::from(top.max(0)) + i64::from(window.height.max(1)) + i64::from(bottom.max(0));
     let x = monitor_rects
         .iter()
         .map(|monitor| i64::from(monitor.x) - outer_width)
@@ -853,6 +856,105 @@ mod tests {
 
     fn reproduction_window() -> Rect {
         Rect::new(4320, 10, 1600, 1440)
+    }
+
+    #[test]
+    fn tiled_border_keeps_full_size_during_motion_and_trims_on_landing() {
+        for layout_transition in [false, true] {
+            let mut config = crate::config::Config::default();
+            config.layout.gap = 0;
+            config.layout.outer_gap_left = 0;
+            config.layout.outer_gap_right = 0;
+            config.layout.outer_gap_top = 0;
+            config.layout.outer_gap_bottom = 0;
+            config.appearance.active_border_position = "outside".into();
+            let mut state = AppState::new_with_config(
+                config,
+                vec![
+                    monitor(1, 0, 0, 1000, 1000),
+                    monitor(2, 1000, 0, 1000, 1000),
+                ],
+            );
+            state.reduce_motion = false;
+            let workspace = &mut state.workspaces.get_mut(&1).unwrap()[0];
+            workspace.insert_window(100, Some(1000)).unwrap();
+            workspace.insert_window(200, Some(1000)).unwrap();
+            state.previous_focused_hwnd = Some(200);
+            if layout_transition {
+                state.workspaces.get_mut(&1).unwrap()[0].set_scroll_offset(1000.0);
+                state.start_layout_transition_with_duration(
+                    HashMap::from([(200, Rect::new(1000, 0, 1000, 1000))]),
+                    100,
+                );
+            } else {
+                state.workspaces.get_mut(&1).unwrap()[0].start_scroll_animation(
+                    1000.0,
+                    1000,
+                    Some(100),
+                    Some(leopardwm_core_layout::Easing::Linear),
+                );
+            }
+
+            let mut previous_x = None;
+            for _ in 0..2 {
+                state.tick_animations(25);
+                let logical = state.compute_window_layout_rect(200).unwrap();
+                assert!(logical.x > 0 && logical.x < 1000);
+                state.apply_physical_projection(vec![placement(200, logical, Visibility::Visible)]);
+                let overlay = state
+                    .compute_tiled_border_overlay_rect(200, logical, 2)
+                    .unwrap();
+                assert_eq!(overlay, Rect::new(logical.x - 1, -1, 1002, 1002));
+                assert!(overlay.x + overlay.width > 1000);
+                if let Some(x) = previous_x {
+                    assert!(
+                        overlay.x < x,
+                        "the full-sized border must move between frames"
+                    );
+                }
+                previous_x = Some(overlay.x);
+            }
+
+            state.tick_animations(100);
+            assert!(!state.is_animating());
+            let logical = state.compute_window_layout_rect(200).unwrap();
+            assert_eq!(logical, Rect::new(0, 0, 1000, 1000));
+            state.apply_physical_projection(vec![placement(200, logical, Visibility::Visible)]);
+            assert_eq!(
+                state.compute_tiled_border_overlay_rect(200, logical, 2),
+                Some(Rect::new(-1, -1, 1001, 1002)),
+                "the resting border must end exactly at the neighboring monitor edge"
+            );
+
+            state.start_layout_transition_with_duration(
+                HashMap::from([(100, Rect::new(-500, 0, 1000, 1000))]),
+                100,
+            );
+            assert_eq!(
+                state.compute_tiled_border_overlay_rect(200, logical, 2),
+                Some(Rect::new(-1, -1, 1001, 1002)),
+                "a transition of another window must not untrim the resting border"
+            );
+
+            state.abort_layout_transition();
+            state.workspaces.get_mut(&2).unwrap()[0]
+                .insert_window(300, Some(1000))
+                .unwrap();
+            for resize_delta in [0, -100] {
+                let snapshot = state.snapshot_layout();
+                assert_eq!(snapshot.get(&200), Some(&logical));
+                state.workspaces.get_mut(&2).unwrap()[0].resize_focused_column(resize_delta);
+                state.start_layout_transition_with_duration(snapshot, 100);
+                let unchanged = state.compute_window_layout_rect(200).unwrap();
+                assert_eq!(unchanged, logical);
+                assert_eq!(
+                    state.compute_tiled_border_overlay_rect(200, unchanged, 2),
+                    Some(Rect::new(-1, -1, 1001, 1002)),
+                    "an unchanged window included in the layout snapshot must stay trimmed"
+                );
+                state.abort_layout_transition();
+            }
+        }
     }
 
     #[test]
@@ -1794,7 +1896,12 @@ mod tests {
             PhysicalDecision::Parked { rect } => rect,
             other => panic!("expected zero visible slice to park, got {other:?}"),
         };
-        let outer = leopardwm_platform_win32::visible_rect_to_frame_rect(parked, insets, false);
+        let outer = Rect::new(
+            parked.x,
+            parked.y,
+            parked.width + insets.0 + insets.2,
+            parked.height + insets.1 + insets.3,
+        );
         assert!(leopardwm_platform_win32::is_move_offscreen_sentinel_rect(
             &outer
         ));
@@ -1825,8 +1932,7 @@ mod tests {
         assert!(slice.width < window.width);
         let parked = offscreen_park_rect(window, &[owner, neighbor], (7, 1, 7, 8));
         assert_eq!((parked.width, parked.height), (window.width, window.height));
-        let outer =
-            leopardwm_platform_win32::visible_rect_to_frame_rect(parked, (7, 1, 7, 8), false);
+        let outer = Rect::new(parked.x, parked.y, parked.width + 14, parked.height + 9);
         assert!(leopardwm_platform_win32::is_move_offscreen_sentinel_rect(
             &outer
         ));
