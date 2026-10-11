@@ -59,6 +59,9 @@ pub(crate) struct DragState {
     /// source column by membership instead of trusting `current_column_index`
     /// verbatim — mirrors `MoveOrigin.sibling`.
     pub(crate) source_column_peers: Vec<u64>,
+    /// Column width of the dragged window at drag start, used to preserve
+    /// column width when moving across rows or creating new columns.
+    pub(crate) source_column_width: Option<i32>,
 }
 
 /// Where a column would be inserted if dropped at the current position.

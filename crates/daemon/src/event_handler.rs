@@ -3181,22 +3181,30 @@ impl AppState {
             return;
         }
 
-        let (is_tiled, source_monitor, source_ws_idx, source_row, source_window_slot, col_idx) =
+        let (is_tiled, source_monitor, source_ws_idx, source_row, source_window_slot, col_idx, source_column_width) =
             if let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) {
                 let is_floating = self
                     .workspaces
                     .get(&monitor_id)
                     .and_then(|v| v.get(ws_idx))
                     .is_none_or(|ws| ws.is_floating(hwnd));
-                let (source_row, source_window_slot, col_idx) = if !is_floating {
+                let (source_row, source_window_slot, col_idx, source_column_width) = if !is_floating {
                     self.workspaces
                         .get(&monitor_id)
                         .and_then(|v| v.get(ws_idx))
-                        .and_then(|ws| ws.find_window_location_rc(hwnd))
-                        .map(|(row, col, slot)| (row, slot, col))
-                        .unwrap_or((0, 0, 0))
+                        .and_then(|ws| {
+                            ws.find_window_location_rc(hwnd).map(|(row, col, slot)| {
+                                let width = ws
+                                    .rows()
+                                    .get(row)
+                                    .and_then(|r| r.column(col))
+                                    .map(|c| c.width());
+                                (row, slot, col, width)
+                            })
+                        })
+                        .unwrap_or((0, 0, 0, None))
                 } else {
-                    (0, 0, 0)
+                    (0, 0, 0, None)
                 };
                 (
                     !is_floating,
@@ -3205,6 +3213,7 @@ impl AppState {
                     source_row,
                     source_window_slot,
                     col_idx,
+                    source_column_width,
                 )
             } else {
                 (
@@ -3214,6 +3223,7 @@ impl AppState {
                     0,
                     0,
                     0,
+                    None,
                 )
             };
         self.drag_state = Some(DragState {
@@ -3231,6 +3241,7 @@ impl AppState {
             preview_mode: crate::state::DragPreviewMode::None,
             target_column_peers: Vec::new(),
             source_column_peers: Vec::new(),
+            source_column_width,
         });
         // Disable DWM-managed position interpolation on the
         // dragged window so its final SetWindowPos on drop
@@ -3344,8 +3355,23 @@ impl AppState {
                     let _ = ws.remove_window(crate::state::DRAG_PLACEHOLDER_HWND);
                 }
             }
-            // Shift+drop: column reorder (already live-reordered, or cross-monitor).
-            if target_monitor == drag.source_monitor {
+            let target_viewport = self.layout_viewport(target_monitor);
+            let target_ws_idx = self.active_workspace_idx(target_monitor);
+            let target_row = self
+                .workspaces
+                .get(&target_monitor)
+                .and_then(|v| v.get(target_ws_idx))
+                .map(|ws| {
+                    let cursor_y = leopardwm_platform_win32::get_cursor_pos()
+                        .map(|(_, y)| y)
+                        .unwrap_or(win_info.rect.y + win_info.rect.height / 2);
+                    crate::drag::target_row_for_cursor(ws, target_viewport, cursor_y)
+                })
+                .unwrap_or(0);
+
+            // Shift+drop: column reorder on same row (already live-reordered),
+            // or cross-row / cross-monitor column move.
+            if target_monitor == drag.source_monitor && target_row == drag.source_row {
                 self.snap_back_tiled(drag.source_monitor, drag.source_workspace_idx);
             } else {
                 self.execute_cross_monitor_drag(hwnd, &drag, target_monitor, &win_info.rect);

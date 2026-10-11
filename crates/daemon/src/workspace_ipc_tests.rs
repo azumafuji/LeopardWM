@@ -540,6 +540,7 @@ fn drag_preview_keeps_temporarily_detached_window_in_source_workspace() {
         preview_mode: DragPreviewMode::Body,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
     state.publish_workspace_state_if_changed();
     assert!(records(&state).iter().any(|r| matches!(r, R::Window { monitor_device_name, hwnd: 10, .. } if monitor_device_name == "DISPLAY1")));

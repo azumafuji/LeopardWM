@@ -1525,6 +1525,7 @@ mod tests {
             preview_mode: DragPreviewMode::None,
             target_column_peers: Vec::new(),
             source_column_peers: Vec::new(),
+            source_column_width: None,
         });
         dragging.start_workspace_switch_transition(
             std::collections::HashMap::from([(500, boundary_rect)]),

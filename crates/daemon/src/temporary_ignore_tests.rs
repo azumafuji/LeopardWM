@@ -110,6 +110,7 @@ fn in_membership_drag(hwnd: u64) -> DragState {
         preview_mode: DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     }
 }
 

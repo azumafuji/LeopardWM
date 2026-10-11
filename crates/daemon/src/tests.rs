@@ -3793,6 +3793,7 @@ fn seed_drag_session(state: &mut AppState, hwnd: u64) {
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
     if let Some(ws) = state
         .workspaces
@@ -3831,6 +3832,7 @@ fn safe_band_drag_fixture() -> AppState {
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
     state
 }
@@ -3997,6 +3999,7 @@ fn test_body_preview_shift_restores_multi_window_source_before_same_monitor_reor
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     let target = *state.snapshot_layout().get(&200).unwrap();
@@ -4061,6 +4064,7 @@ fn test_body_preview_shift_restores_multi_window_source_without_reorder() {
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     let target = *state.snapshot_layout().get(&200).unwrap();
@@ -4133,6 +4137,7 @@ fn test_body_preview_shift_restores_multi_window_source_before_cross_monitor_dro
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     let target = *state.snapshot_layout().get(&200).unwrap();
@@ -4222,6 +4227,7 @@ fn test_body_to_safe_band_then_shift_restores_multi_window_source() {
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     let target = *state.snapshot_layout().get(&200).unwrap();
@@ -4344,6 +4350,7 @@ fn test_body_to_no_target_then_cross_monitor_shift_restores_multi_window_source(
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     let target = *state.snapshot_layout().get(&200).unwrap();
@@ -4453,6 +4460,7 @@ fn test_body_preview_shift_restores_same_column_reordered_slot() {
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     // Same-column reorder: drag 100 from slot 0 down into slot 1.
@@ -4610,6 +4618,7 @@ fn test_safe_band_drop_follows_surviving_target_column_after_peer_lifecycle_shif
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     let target = *state.snapshot_layout().get(&200).unwrap();
@@ -4678,6 +4687,7 @@ fn test_safe_band_drop_snaps_back_when_target_identity_vanishes_entirely() {
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     let target = *state.snapshot_layout().get(&200).unwrap();
@@ -4737,6 +4747,7 @@ fn test_shift_restore_follows_surviving_source_column_after_peer_lifecycle_shift
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     // Body-preview onto the target column (below its safe band) so the
@@ -4825,6 +4836,7 @@ fn test_shift_restore_creates_new_column_when_no_source_peer_survives() {
         preview_mode: crate::state::DragPreviewMode::None,
         target_column_peers: Vec::new(),
         source_column_peers: Vec::new(),
+        source_column_width: None,
     });
 
     let target_rect = *state.snapshot_layout().get(&200).unwrap();
@@ -13109,6 +13121,7 @@ fn test_floating_placement_and_special_states_preserve_stored_geometry() {
                     preview_mode: crate::state::DragPreviewMode::None,
                     target_column_peers: Vec::new(),
                     source_column_peers: Vec::new(),
+                    source_column_width: None,
                 });
             }
             "transition" => state.start_layout_transition_with_duration(
@@ -18545,6 +18558,237 @@ fn test_drag_cursor_hit_test_identifies_target_row() {
 
     assert_eq!(crate::drag::target_row_for_cursor(ws, viewport, 200), 0);
     assert_eq!(crate::drag::target_row_for_cursor(ws, viewport, 700), 1);
+}
+
+#[test]
+fn test_drag_window_to_empty_row_creates_column() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = false;
+    state.reduce_motion = false;
+    let mon = state.focused_monitor;
+    {
+        let ws = state.focused_workspace_mut().unwrap();
+        ws.set_row_gap(0);
+        ws.set_row_layout(&[0.5, 0.5]);
+        ws.insert_window_in_row(100, 0, Some(400)).unwrap();
+        ws.insert_window_in_row(101, 0, Some(400)).unwrap();
+    }
+    state.injected_window_info.insert(100, make_test_window_info(100));
+    state.drag_state = Some(DragState {
+        hwnd: 100,
+        is_tiled: true,
+        source_monitor: mon,
+        source_workspace_idx: 0,
+        source_row: 0,
+        source_window_slot: 0,
+        current_row_index: 0,
+        current_column_index: 0,
+        last_drop_target: None,
+        last_hint_update: None,
+        removed_from_source: false,
+        preview_mode: crate::state::DragPreviewMode::None,
+        target_column_peers: Vec::new(),
+        source_column_peers: Vec::new(),
+        source_column_width: Some(400),
+    });
+
+    // Move cursor to row 1 (y = 700)
+    state.update_drag_hint_at(100, 200, 700, mon, false);
+    let drag = state.drag_state.take().unwrap();
+    assert_eq!(drag.last_drop_target.map(|t| t.target_row), Some(1));
+    assert_eq!(drag.last_drop_target.map(|t| t.insert_index), Some(0));
+
+    // Finalize drop
+    state.finalize_drag_merge(100, &drag, mon, &Rect::new(200, 700, 400, 400));
+    let ws = state.focused_workspace().unwrap();
+    assert_eq!(ws.find_window_location_rc(100), Some((1, 0, 0)));
+    assert_eq!(ws.find_window_location_rc(101), Some((0, 0, 0)));
+}
+
+#[test]
+fn test_drag_window_merge_into_existing_column_in_target_row() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = false;
+    state.reduce_motion = false;
+    let mon = state.focused_monitor;
+    {
+        let ws = state.focused_workspace_mut().unwrap();
+        ws.set_row_gap(0);
+        ws.set_row_layout(&[0.5, 0.5]);
+        ws.insert_window_in_row(100, 0, Some(400)).unwrap();
+        ws.insert_window_in_row(200, 1, Some(400)).unwrap();
+    }
+    state.injected_window_info.insert(100, make_test_window_info(100));
+    state.drag_state = Some(DragState {
+        hwnd: 100,
+        is_tiled: true,
+        source_monitor: mon,
+        source_workspace_idx: 0,
+        source_row: 0,
+        source_window_slot: 0,
+        current_row_index: 0,
+        current_column_index: 0,
+        last_drop_target: None,
+        last_hint_update: None,
+        removed_from_source: false,
+        preview_mode: crate::state::DragPreviewMode::None,
+        target_column_peers: Vec::new(),
+        source_column_peers: Vec::new(),
+        source_column_width: Some(400),
+    });
+
+    let target = *state.snapshot_layout().get(&200).unwrap();
+    // Hover over window 200 in row 1
+    state.update_drag_hint_at(100, target.x + target.width / 2, target.y + target.height / 2, mon, false);
+    let drag = state.drag_state.take().unwrap();
+    assert_eq!(drag.last_drop_target.map(|t| t.target_row), Some(1));
+    assert_eq!(drag.last_drop_target.map(|t| t.insert_index), Some(0));
+    assert_eq!(drag.last_drop_target.and_then(|t| t.window_slot), Some(1));
+
+    state.finalize_drag_merge(100, &drag, mon, &target);
+    let ws = state.focused_workspace().unwrap();
+    assert_eq!(ws.find_window_location_rc(200), Some((1, 0, 0)));
+    assert_eq!(ws.find_window_location_rc(100), Some((1, 0, 1)));
+}
+
+#[test]
+fn test_drag_window_to_new_column_in_target_row_with_existing_columns() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = false;
+    state.reduce_motion = false;
+    let mon = state.focused_monitor;
+    {
+        let ws = state.focused_workspace_mut().unwrap();
+        ws.set_row_gap(0);
+        ws.set_row_layout(&[0.5, 0.5]);
+        ws.insert_window_in_row(100, 0, Some(400)).unwrap();
+        ws.insert_window_in_row(200, 1, Some(400)).unwrap();
+    }
+    state.injected_window_info.insert(100, make_test_window_info(100));
+    state.drag_state = Some(DragState {
+        hwnd: 100,
+        is_tiled: true,
+        source_monitor: mon,
+        source_workspace_idx: 0,
+        source_row: 0,
+        source_window_slot: 0,
+        current_row_index: 0,
+        current_column_index: 0,
+        last_drop_target: None,
+        last_hint_update: None,
+        removed_from_source: false,
+        preview_mode: crate::state::DragPreviewMode::None,
+        target_column_peers: Vec::new(),
+        source_column_peers: Vec::new(),
+        source_column_width: Some(400),
+    });
+
+    let target = *state.snapshot_layout().get(&200).unwrap();
+    // Hover past the right edge of window 200 in row 1
+    state.update_drag_hint_at(100, target.x + target.width + 100, target.y + target.height / 2, mon, false);
+    let drag = state.drag_state.take().unwrap();
+    assert_eq!(drag.last_drop_target.map(|t| t.target_row), Some(1));
+    assert_eq!(drag.last_drop_target.map(|t| t.insert_index), Some(1));
+    assert_eq!(drag.last_drop_target.and_then(|t| t.window_slot), None);
+
+    state.finalize_drag_merge(100, &drag, mon, &Rect::new(target.x + target.width + 100, target.y, 400, 400));
+    let ws = state.focused_workspace().unwrap();
+    assert_eq!(ws.find_window_location_rc(200), Some((1, 0, 0)));
+    assert_eq!(ws.find_window_location_rc(100), Some((1, 1, 0)));
+}
+
+#[test]
+fn test_shift_drag_column_to_another_row_on_same_monitor() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = false;
+    state.reduce_motion = false;
+    let mon = state.focused_monitor;
+    {
+        let ws = state.focused_workspace_mut().unwrap();
+        ws.set_row_gap(0);
+        ws.set_row_layout(&[0.5, 0.5]);
+        ws.insert_window_in_row(100, 0, Some(400)).unwrap();
+        ws.insert_window_in_column(101, 0).unwrap();
+        ws.insert_window_in_row(200, 1, Some(400)).unwrap();
+    }
+    state.injected_window_info.insert(100, make_test_window_info(100));
+    state.drag_state = Some(DragState {
+        hwnd: 100,
+        is_tiled: true,
+        source_monitor: mon,
+        source_workspace_idx: 0,
+        source_row: 0,
+        source_window_slot: 0,
+        current_row_index: 0,
+        current_column_index: 0,
+        last_drop_target: None,
+        last_hint_update: None,
+        removed_from_source: false,
+        preview_mode: crate::state::DragPreviewMode::None,
+        target_column_peers: Vec::new(),
+        source_column_peers: Vec::new(),
+        source_column_width: Some(400),
+    });
+
+    let target = *state.snapshot_layout().get(&200).unwrap();
+    // Shift drag to row 1 past column 200
+    state.update_drag_hint_at(100, target.x + target.width + 100, target.y + target.height / 2, mon, true);
+    assert!(matches!(state.pending_drag_hint, Some(DragHintAction::ShowGhost { .. })));
+
+    let drag = state.drag_state.take().unwrap();
+    state.execute_cross_monitor_drag(100, &drag, mon, &Rect::new(target.x + target.width + 100, target.y + 10, 400, 400));
+    let ws = state.focused_workspace().unwrap();
+    assert_eq!(ws.find_window_location_rc(200), Some((1, 0, 0)));
+    assert_eq!(ws.find_window_location_rc(100), Some((1, 1, 0)));
+    assert_eq!(ws.find_window_location_rc(101), Some((1, 1, 1)));
+}
+
+#[test]
+fn test_drag_window_to_new_row_preserves_column_width() {
+    let mut state = AppState::new_with_config(test_config(), test_monitors());
+    state.paused = false;
+    state.reduce_motion = false;
+    let mon = state.focused_monitor;
+    {
+        let ws = state.focused_workspace_mut().unwrap();
+        ws.set_row_gap(0);
+        ws.set_row_layout(&[0.5, 0.5]);
+        // Insert window with non-default custom width 550
+        ws.insert_window_in_row(100, 0, Some(550)).unwrap();
+        ws.insert_window_in_row(101, 0, Some(400)).unwrap();
+    }
+    state.injected_window_info.insert(100, make_test_window_info(100));
+    state.drag_state = Some(DragState {
+        hwnd: 100,
+        is_tiled: true,
+        source_monitor: mon,
+        source_workspace_idx: 0,
+        source_row: 0,
+        source_window_slot: 0,
+        current_row_index: 0,
+        current_column_index: 0,
+        last_drop_target: None,
+        last_hint_update: None,
+        removed_from_source: false,
+        preview_mode: crate::state::DragPreviewMode::None,
+        target_column_peers: Vec::new(),
+        source_column_peers: Vec::new(),
+        source_column_width: Some(550),
+    });
+
+    // Move cursor to empty row 1 (y = 700)
+    state.update_drag_hint_at(100, 200, 700, mon, false);
+
+    // Verify placeholder in row 1 received the source column width (550)
+    let ws = state.focused_workspace().unwrap();
+    assert_eq!(ws.rows()[1].column(0).unwrap().width(), 550);
+
+    let drag = state.drag_state.take().unwrap();
+    state.finalize_drag_merge(100, &drag, mon, &Rect::new(200, 700, 550, 400));
+    let ws = state.focused_workspace().unwrap();
+    assert_eq!(ws.find_window_location_rc(100), Some((1, 0, 0)));
+    // Window in row 1 preserved custom width 550
+    assert_eq!(ws.rows()[1].column(0).unwrap().width(), 550);
 }
 
 /// Float the focused window `wid` (sticky must then keep it floating).
