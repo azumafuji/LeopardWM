@@ -52,6 +52,7 @@ jobs:
         shell: bash
         run: |
           VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p target/wix
           # WiX 3.14 is pre-installed at this path on windows-latest runners.
           cargo wix -p leopardwm-daemon -I wix/main.wxs \
             --target x86_64-pc-windows-msvc \
