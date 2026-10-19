@@ -51,13 +51,16 @@ jobs:
       - name: Build MSI installers
         shell: bash
         run: |
+          VERSION=${GITHUB_REF_NAME#v}
           # WiX 3.14 is pre-installed at this path on windows-latest runners.
           cargo wix -p leopardwm-daemon -I wix/main.wxs \
             --target x86_64-pc-windows-msvc \
+            --output target/wix/LeopardWM-${VERSION}-x86_64.msi \
             --no-build --nocapture \
             --bin-path "C:\Program Files (x86)\WiX Toolset v3.14\bin"
           cargo wix -p leopardwm-daemon -I wix/main.wxs \
             --target aarch64-pc-windows-msvc \
+            --output target/wix/LeopardWM-${VERSION}-arm64.msi \
             --no-build --nocapture \
             --bin-path "C:\Program Files (x86)\WiX Toolset v3.14\bin"
           cp target/wix/*.msi .

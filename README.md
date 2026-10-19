@@ -119,16 +119,20 @@ See [Contributing](CONTRIBUTING.md#development-setup) for development checks and
 ```bash
 git clone https://github.com/jcardama/LeopardWM.git
 cd LeopardWM
+
+# For x86_64:
 cargo build --release
+# For ARM64:
+cargo build --release --target aarch64-pc-windows-msvc
 ```
 
 Start the daemon:
 
 ```bash
-./target/release/leopardwm.exe
-# or if built with an explicit target:
-# ./target/x86_64-pc-windows-msvc/release/leopardwm.exe
-# ./target/aarch64-pc-windows-msvc/release/leopardwm.exe
+# x86_64:
+./target/x86_64-pc-windows-msvc/release/leopardwm.exe
+# ARM64:
+./target/aarch64-pc-windows-msvc/release/leopardwm.exe
 ```
 
 A default config is created automatically at `%APPDATA%\leopardwm\config\config.toml`. Customize via the tray icon → Settings, or edit the file directly.

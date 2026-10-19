@@ -3,14 +3,13 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
-if (-not $env:VCINSTALLDIR) {
+if (-not $env:VCINSTALLDIR -and [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64) {
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vswhere) {
         $vsPath = & $vswhere -latest -products * -property installationPath
         $devShell = Join-Path $vsPath "Common7\Tools\Launch-VsDevShell.ps1"
         if (Test-Path $devShell) {
-            $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64) { 'arm64' } else { 'x64' }
-            & $devShell -Arch $arch -HostArch $arch | Out-Null
+            & $devShell -Arch arm64 -SkipAutomaticLocation | Out-Null
         }
     }
 }
