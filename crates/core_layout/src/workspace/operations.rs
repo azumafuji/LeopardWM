@@ -151,21 +151,32 @@ impl Workspace {
         }
     }
 
-    /// Move the focused column left (swap with the column to its left).
+    fn nearest_active_column_left(&self, column_index: usize) -> Option<usize> {
+        (0..column_index)
+            .rev()
+            .find(|&index| self.is_column_active(&self.columns[index]))
+    }
+
+    fn nearest_active_column_right(&self, column_index: usize) -> Option<usize> {
+        (column_index + 1..self.columns.len())
+            .find(|&index| self.is_column_active(&self.columns[index]))
+    }
+
+    /// Swap the focused column with the nearest active column to its left,
+    /// skipping minimized-only columns without moving them.
     pub fn move_column_left(&mut self) {
-        if self.focused_column > 0 {
-            self.columns
-                .swap(self.focused_column, self.focused_column - 1);
-            self.focused_column -= 1;
+        if let Some(left) = self.nearest_active_column_left(self.focused_column) {
+            self.columns.swap(self.focused_column, left);
+            self.focused_column = left;
         }
     }
 
-    /// Move the focused column right (swap with the column to its right).
+    /// Swap the focused column with the nearest active column to its right,
+    /// skipping minimized-only columns without moving them.
     pub fn move_column_right(&mut self) {
-        if self.focused_column + 1 < self.columns.len() {
-            self.columns
-                .swap(self.focused_column, self.focused_column + 1);
-            self.focused_column += 1;
+        if let Some(right) = self.nearest_active_column_right(self.focused_column) {
+            self.columns.swap(self.focused_column, right);
+            self.focused_column = right;
         }
     }
 
@@ -237,6 +248,7 @@ impl Workspace {
             }
         }
         self.clamp_focus_indices();
+        self.sync_active_tab_to_focus();
         Some(col)
     }
 
@@ -264,7 +276,8 @@ impl Workspace {
         self.clamp_focus_indices();
     }
 
-    /// Move the focused window to the column on the left (joining it).
+    /// Join the nearest active column to the left, skipping minimized-only columns.
+    /// If none exists, unstack to the left (no-op for a lone window).
     /// Focus follows the moved window. If the source column becomes empty it is removed.
     /// In a Tabbed receiver, the moved window becomes the new active tab
     /// (consistent with the "user-initiated keyboard move" intent).
@@ -272,12 +285,10 @@ impl Workspace {
         if self.columns.is_empty() {
             return;
         }
-        if self.focused_column == 0 {
-            // At the left edge there's no column to move into; instead unstack
-            // the window into a new column at the left edge (no-op if not stacked).
+        let Some(target_idx) = self.nearest_active_column_left(self.focused_column) else {
             self.expel_to_left();
             return;
-        }
+        };
         let Some(wid) =
             self.columns[self.focused_column].remove_at_index(self.focused_window_in_column)
         else {
@@ -287,24 +298,21 @@ impl Workspace {
         if source_empty {
             self.columns.remove(self.focused_column);
         }
-        // Target is now one index to the left (or same index if source was removed)
-        let target_idx = self.focused_column - 1;
         self.columns[target_idx].add_window(wid);
         self.focused_column = target_idx;
         self.focused_window_in_column = self.columns[target_idx].len() - 1;
         self.sync_active_tab_to_focus();
     }
 
-    /// Move the focused window to the column on the right (joining it).
+    /// Join the nearest active column to the right, skipping minimized-only columns.
+    /// If none exists, unstack to the right (no-op for a lone window).
     /// Focus follows the moved window. If the source column becomes empty it is removed.
     /// In a Tabbed receiver, the moved window becomes the new active tab.
     pub fn move_window_right(&mut self) {
-        if self.focused_column + 1 >= self.columns.len() {
-            // At the right edge: unstack into a new column off the end
-            // instead of a dead-end (no-op if the column isn't stacked).
+        let Some(mut target_idx) = self.nearest_active_column_right(self.focused_column) else {
             self.expel_to_right();
             return;
-        }
+        };
         let Some(wid) =
             self.columns[self.focused_column].remove_at_index(self.focused_window_in_column)
         else {
@@ -313,15 +321,11 @@ impl Workspace {
         let source_empty = self.columns[self.focused_column].is_empty();
         if source_empty {
             self.columns.remove(self.focused_column);
-            // Right column shifted left into focused_column's slot
-            self.columns[self.focused_column].add_window(wid);
-            self.focused_window_in_column = self.columns[self.focused_column].len() - 1;
-        } else {
-            let right_idx = self.focused_column + 1;
-            self.columns[right_idx].add_window(wid);
-            self.focused_column = right_idx;
-            self.focused_window_in_column = self.columns[right_idx].len() - 1;
+            target_idx -= 1;
         }
+        self.columns[target_idx].add_window(wid);
+        self.focused_column = target_idx;
+        self.focused_window_in_column = self.columns[target_idx].len() - 1;
         self.sync_active_tab_to_focus();
     }
 
@@ -378,44 +382,42 @@ impl Workspace {
         self.focused_window_in_column = 0;
     }
 
-    /// Pull the top window of the column to the right into the focused
-    /// column (the inverse of expel). The window is appended to the focused
-    /// column's stack and becomes focused; if the right column empties, it
-    /// is removed. No-op if there is no column to the right.
+    /// Append and focus the first non-minimized window from the nearest
+    /// active column to the right, skipping minimized-only columns.
+    /// Remove the source column if it empties.
+    /// No-op if there is no non-minimized window to the right.
     pub fn consume_from_right(&mut self) {
-        let right = self.focused_column + 1;
-        if right >= self.columns.len() {
-            return;
+        if let Some(right) = self.nearest_active_column_right(self.focused_column) {
+            self.consume_from_column(right);
         }
-        let Some(wid) = self.columns[right].remove_at_index(0) else {
-            return;
-        };
-        if self.columns[right].is_empty() {
-            self.columns.remove(right);
-        }
-        self.columns[self.focused_column].add_window(wid);
-        self.focused_window_in_column = self.columns[self.focused_column].len().saturating_sub(1);
-        // If the focused column is tabbed, make the consumed window the
-        // active (visible) tab rather than leaving the old tab showing.
-        self.sync_active_tab_to_focus();
     }
 
-    /// Pull the top window of the column to the left into the focused
-    /// column (the inverse of expel). The window is appended to the focused
-    /// column's stack and becomes focused; if the left column empties, it
-    /// is removed and the focus index follows the focused column. No-op if
-    /// there is no column to the left.
+    /// Append and focus the first non-minimized window from the nearest
+    /// active column to the left, skipping minimized-only columns.
+    /// Remove the source column if it empties.
+    /// No-op if there is no non-minimized window to the left.
     pub fn consume_from_left(&mut self) {
-        if self.focused_column == 0 {
-            return;
+        if let Some(left) = self.nearest_active_column_left(self.focused_column) {
+            self.consume_from_column(left);
         }
-        let left = self.focused_column - 1;
-        let Some(wid) = self.columns[left].remove_at_index(0) else {
+    }
+
+    fn consume_from_column(&mut self, source: usize) {
+        let Some(window_index) = self.columns[source]
+            .windows()
+            .iter()
+            .position(|wid| !self.minimized_windows.contains(wid))
+        else {
             return;
         };
-        if self.columns[left].is_empty() {
-            self.columns.remove(left);
-            self.focused_column -= 1;
+        let Some(wid) = self.columns[source].remove_at_index(window_index) else {
+            return;
+        };
+        if self.columns[source].is_empty() {
+            self.columns.remove(source);
+            if source < self.focused_column {
+                self.focused_column -= 1;
+            }
         }
         self.columns[self.focused_column].add_window(wid);
         self.focused_window_in_column = self.columns[self.focused_column].len().saturating_sub(1);
@@ -427,11 +429,15 @@ impl Workspace {
     /// Swap the focused window with the one above in the same column.
     /// In a Tabbed column, `swap_windows` keeps `active_idx` tracking the
     /// same window (handled inside `Column::swap_windows`).
+    /// No-op when there is no focused tiled window or it is already at the top.
     pub fn move_window_up_in_column(&mut self) {
-        if self.focused_window_in_column == 0 {
+        let Some(column) = self.columns.get_mut(self.focused_column) else {
+            return;
+        };
+        if self.focused_window_in_column == 0 || self.focused_window_in_column >= column.len() {
             return;
         }
-        self.columns[self.focused_column].swap_windows(
+        column.swap_windows(
             self.focused_window_in_column,
             self.focused_window_in_column - 1,
         );
@@ -440,11 +446,15 @@ impl Workspace {
     }
 
     /// Swap the focused window with the one below in the same column.
+    /// No-op when there is no focused tiled window or it is already at the bottom.
     pub fn move_window_down_in_column(&mut self) {
-        if self.focused_window_in_column + 1 >= self.columns[self.focused_column].len() {
+        let Some(column) = self.columns.get_mut(self.focused_column) else {
+            return;
+        };
+        if self.focused_window_in_column >= column.len().saturating_sub(1) {
             return;
         }
-        self.columns[self.focused_column].swap_windows(
+        column.swap_windows(
             self.focused_window_in_column,
             self.focused_window_in_column + 1,
         );

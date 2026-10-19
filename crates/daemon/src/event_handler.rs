@@ -530,25 +530,23 @@ impl AppState {
         is_maximized: &mut impl FnMut(u64) -> bool,
     ) {
         if action == config::WindowAction::Tile {
-            let last_input = self.native_ms_since_last_user_input().and_then(|age| {
-                std::time::Instant::now()
-                    .checked_sub(std::time::Duration::from_millis(u64::from(age)))
-            });
-            self.post_admission_maximize_restore_eligible
-                .insert(hwnd, (last_input, 0));
+            if let Some(press_count) = self.native_user_press_count() {
+                self.post_admission_maximize_restore_eligible
+                    .insert(hwnd, (press_count, 0));
+            }
         }
         if maximized_at_admission {
             self.queue_maximized_admission_restore(hwnd, now, queue, is_maximized);
         }
     }
 
-    fn native_ms_since_last_user_input(&self) -> Option<u32> {
+    fn native_user_press_count(&self) -> Option<u64> {
         #[cfg(test)]
         {
-            self.injected_input_age_ms
+            self.injected_press_count
         }
         #[cfg(not(test))]
-        leopardwm_platform_win32::ms_since_last_user_input()
+        leopardwm_platform_win32::user_press_count()
     }
 
     fn queue_maximized_admission_restore(
@@ -593,14 +591,14 @@ impl AppState {
     fn try_restore_post_admission_maximize(
         &mut self,
         hwnd: u64,
-        input_age_ms: &mut impl FnMut() -> Option<u32>,
+        press_count: &mut impl FnMut() -> Option<u64>,
         queue: &mut impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
         is_maximized: &mut impl FnMut(u64) -> bool,
     ) -> bool {
         if self.pending_maximized_admission_restores.contains(&hwnd) {
             return false;
         }
-        let Some((admission_last_input, restores_issued)) = self
+        let Some((admission_press_count, restores_issued)) = self
             .post_admission_maximize_restore_eligible
             .get(&hwnd)
             .copied()
@@ -614,21 +612,10 @@ impl AppState {
             self.post_admission_maximize_restore_eligible.remove(&hwnd);
             return false;
         }
-        let Some(admission_last_input) = admission_last_input else {
-            self.post_admission_maximize_restore_eligible.remove(&hwnd);
-            return false;
-        };
-        let Some(last_input) = input_age_ms().and_then(|age| {
-            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(u64::from(age)))
-        }) else {
-            self.post_admission_maximize_restore_eligible.remove(&hwnd);
-            return false;
-        };
-        const INPUT_TIMESTAMP_JITTER: std::time::Duration = std::time::Duration::from_millis(50);
-        if last_input.saturating_duration_since(admission_last_input) > INPUT_TIMESTAMP_JITTER {
+        if press_count() != Some(admission_press_count) {
             self.post_admission_maximize_restore_eligible.remove(&hwnd);
             debug!(
-                "User input ended post-admission maximize restores for {}",
+                "User press or unavailable observers ended post-admission maximize restores for {}",
                 hwnd
             );
             return false;
@@ -648,7 +635,7 @@ impl AppState {
         #[cfg(test)]
         let maximized = self.injected_window_maximized.get(&hwnd).copied();
         #[cfg(test)]
-        let input_age_ms = self.native_ms_since_last_user_input();
+        let press_count = self.native_user_press_count();
         self.on_maximized_admission_restored_with_native_ops(
             hwnd,
             token,
@@ -656,10 +643,10 @@ impl AppState {
             || {
                 #[cfg(test)]
                 {
-                    input_age_ms
+                    press_count
                 }
                 #[cfg(not(test))]
-                leopardwm_platform_win32::ms_since_last_user_input()
+                leopardwm_platform_win32::user_press_count()
             },
             leopardwm_platform_win32::queue_maximized_window_restore,
             |window_id| {
@@ -677,7 +664,7 @@ impl AppState {
         hwnd: u64,
         token: u64,
         worker_still_maximized: bool,
-        mut input_age_ms: impl FnMut() -> Option<u32>,
+        mut press_count: impl FnMut() -> Option<u64>,
         mut queue: impl FnMut(u64) -> Result<bool, leopardwm_platform_win32::Win32Error>,
         mut is_maximized: impl FnMut(u64) -> bool,
     ) {
@@ -703,7 +690,7 @@ impl AppState {
         } else if still_maximized
             && self.try_restore_post_admission_maximize(
                 hwnd,
-                &mut input_age_ms,
+                &mut press_count,
                 &mut queue,
                 &mut is_maximized,
             )
@@ -1511,6 +1498,7 @@ impl AppState {
         // entries for windows that no longer exist.
         self.last_placed_layout_rects.remove(&hwnd);
         self.deferred_moved_or_resized.remove(&hwnd);
+        self.deferred_physical_landings.remove(&hwnd);
         self.size_ignored_windows.remove(&hwnd);
         self.window_move_recheck_attempts.remove(&hwnd);
         leopardwm_platform_win32::forget_offscreen_placement(hwnd);
@@ -3493,7 +3481,7 @@ impl AppState {
         }
     }
 
-    /// Replay suppressed moves once placement feedback settles, and re-check off-screen drift.
+    /// Re-check deferred landings, replay suppressed moves and re-check off-screen drift.
     pub(crate) fn recheck_deferred_window_moves(&mut self) -> bool {
         let mut checked = false;
         let mut deferred = std::mem::take(&mut self.deferred_moved_or_resized);
@@ -3508,35 +3496,72 @@ impl AppState {
                             .is_some_and(|visibility| visibility != Visibility::Visible)
                 }),
         );
+        let replay_windows = deferred.clone();
+        deferred.extend(self.deferred_physical_landings.iter().copied());
         deferred.retain(|hwnd| {
             if self.is_managed_member(*hwnd) {
                 return true;
             }
             self.window_move_recheck_attempts.remove(hwnd);
+            self.deferred_physical_landings.remove(hwnd);
             false
         });
         let mut deferred = deferred.into_iter();
         while let Some(hwnd) = deferred.next() {
             let visibility = self.current_physical_visibility(hwnd);
-            let workspace = self
-                .find_window_workspace(hwnd)
+            let location = self.find_window_workspace(hwnd);
+            let inactive_replay = replay_windows.contains(&hwnd)
+                && location.is_some_and(|(monitor_id, ws_idx)| {
+                    ws_idx != self.active_workspace_idx(monitor_id)
+                });
+            let workspace = location
                 .and_then(|(monitor_id, ws_idx)| self.workspaces.get(&monitor_id)?.get(ws_idx));
-            if visibility.is_none() || workspace.is_none_or(|ws| ws.is_minimized(hwnd)) {
+            if (visibility.is_none() && !inactive_replay)
+                || workspace.is_none_or(|ws| ws.is_minimized(hwnd))
+            {
                 self.window_move_recheck_attempts.remove(&hwnd);
+                self.deferred_physical_landings.remove(&hwnd);
+                continue;
+            }
+            if !replay_windows.contains(&hwnd)
+                && (leopardwm_platform_win32::pending_async_position(hwnd)
+                    || defer_snapback_while_settling(
+                        self.window_managed_at.get(&hwnd).copied(),
+                        self.window_last_maximized_at.get(&hwnd).copied(),
+                        std::time::Instant::now(),
+                    ))
+            {
                 continue;
             }
             if self.applying_layout
                 || self.display_change_pending
                 || self.should_suppress_moved_or_resized(hwnd)
             {
-                self.deferred_moved_or_resized.insert(hwnd);
+                if replay_windows.contains(&hwnd) {
+                    self.deferred_moved_or_resized.insert(hwnd);
+                }
                 continue;
             }
+            let finalize_landing = !inactive_replay
+                && self.deferred_physical_landings.contains(&hwnd)
+                && !leopardwm_platform_win32::pending_async_position(hwnd);
             let before = self.physical_request_seq;
-            self.on_window_moved_or_resized(hwnd, true);
+            if finalize_landing {
+                self.last_placed_layout_rects.remove(&hwnd);
+                if let Err(error) = self.apply_layout() {
+                    warn!(
+                        "Failed to finalize deferred placement of window {}: {}",
+                        hwnd, error
+                    );
+                }
+            } else {
+                self.deferred_physical_landings.remove(&hwnd);
+                self.on_window_moved_or_resized(hwnd, true);
+            }
             if self.physical_request_seq != before {
                 checked = true;
-                self.deferred_moved_or_resized.extend(deferred);
+                self.deferred_moved_or_resized
+                    .extend(deferred.filter(|hwnd| replay_windows.contains(hwnd)));
                 break;
             }
         }
@@ -3552,17 +3577,17 @@ impl AppState {
         #[cfg(test)]
         let maximized = self.injected_window_maximized.get(&hwnd).copied();
         #[cfg(test)]
-        let input_age_ms = self.native_ms_since_last_user_input();
+        let press_count = self.native_user_press_count();
         self.on_window_moved_or_resized_with_native_ops(
             hwnd,
             periodic_recheck,
             || {
                 #[cfg(test)]
                 {
-                    input_age_ms
+                    press_count
                 }
                 #[cfg(not(test))]
-                leopardwm_platform_win32::ms_since_last_user_input()
+                leopardwm_platform_win32::user_press_count()
             },
             leopardwm_platform_win32::queue_maximized_window_restore,
             |window_id| {
@@ -3579,7 +3604,7 @@ impl AppState {
         &mut self,
         hwnd: u64,
         periodic_recheck: bool,
-        mut input_age_ms: impl FnMut() -> Option<u32>,
+        mut press_count: impl FnMut() -> Option<u64>,
         mut queue_maximized_restore: impl FnMut(
             u64,
         )
@@ -3626,7 +3651,7 @@ impl AppState {
             } else if native_maximized
                 && self.try_restore_post_admission_maximize(
                     hwnd,
-                    &mut input_age_ms,
+                    &mut press_count,
                     &mut queue_maximized_restore,
                     &mut is_maximized,
                 )
@@ -3762,14 +3787,16 @@ impl AppState {
                 return;
             }
         }
-        // Non-drag: if the window is managed (tiled), snap it back to its layout position.
-        // For floating windows, retain external geometry changes and refresh the border.
+        // Non-drag moves restore inactive parking or reconcile active window geometry.
         if let Some((monitor_id, ws_idx)) = self.find_window_workspace(hwnd) {
+            if self.on_inactive_workspace_window_moved(hwnd, monitor_id, ws_idx, &mut is_maximized)
+            {
+                return;
+            }
             let workspace = &self.workspaces[&monitor_id][ws_idx];
-            let is_floating = workspace.is_floating(hwnd);
             let is_minimized = workspace.is_minimized(hwnd);
 
-            if is_floating {
+            if workspace.is_floating(hwnd) {
                 self.on_floating_window_moved_or_resized(
                     hwnd,
                     monitor_id,
@@ -3955,6 +3982,40 @@ impl AppState {
                 }
             }
         }
+    }
+
+    fn on_inactive_workspace_window_moved(
+        &mut self,
+        hwnd: u64,
+        monitor_id: leopardwm_platform_win32::MonitorId,
+        ws_idx: usize,
+        is_maximized: &mut impl FnMut(u64) -> bool,
+    ) -> bool {
+        let workspace = &self.workspaces[&monitor_id][ws_idx];
+        if ws_idx == self.active_workspace_idx(monitor_id)
+            || self.sticky_windows.contains(&hwnd)
+            || workspace.fullscreen_window_id() == Some(hwnd)
+            || workspace.is_minimized(hwnd)
+            || is_maximized(hwnd)
+        {
+            return false;
+        }
+        if self.layout_transition.is_some() {
+            self.deferred_moved_or_resized.insert(hwnd);
+            return true;
+        }
+        self.window_move_recheck_attempts.remove(&hwnd);
+        self.window_last_maximized_at.remove(&hwnd);
+        if leopardwm_platform_win32::get_window_chrome_rect(hwnd)
+            .is_some_and(|rect| !leopardwm_platform_win32::is_move_offscreen_sentinel_rect(&rect))
+            && self.park_inactive_workspace_window(hwnd)
+        {
+            debug!(
+                "Managed window {} on an inactive workspace moved back on screen; parking it again",
+                hwnd
+            );
+        }
+        true
     }
 
     fn on_floating_window_moved_or_resized(

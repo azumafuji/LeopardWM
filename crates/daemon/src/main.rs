@@ -493,6 +493,41 @@ fn install_hotkey_hook(
     }
 }
 
+fn setup_input_hooks(
+    config: &Config,
+    event_tx: mpsc::Sender<DaemonEvent>,
+    skip_hotkeys: bool,
+) -> (
+    HotkeyState,
+    Option<leopardwm_platform_win32::MousePressHookHandle>,
+) {
+    let hotkeys = if skip_hotkeys {
+        info!("Hotkeys disabled by command-line flag");
+        HotkeyState {
+            handle: setup_system_event_handle(),
+            hook: None,
+            mapping: HashMap::new(),
+            requested_count: 0,
+            registered_count: 0,
+            failed_binds: Vec::new(),
+            recording: false,
+        }
+    } else {
+        setup_hotkeys(config, event_tx)
+    };
+    let mouse_presses = match leopardwm_platform_win32::install_mouse_press_hook() {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            warn!(
+                "Mouse press hook unavailable; post-admission maximize restores are disabled: {}",
+                error
+            );
+            None
+        }
+    };
+    (hotkeys, mouse_presses)
+}
+
 fn setup_system_event_handle() -> Option<leopardwm_platform_win32::SystemEventHandle> {
     match register_system_events() {
         Ok(handle) => Some(handle),
@@ -745,7 +780,7 @@ struct EventLoopCtx<'a> {
     hotkey_state: &'a mut HotkeyState,
     tray_manager: &'a Option<tray::TrayManager>,
     snap_hint_overlay: &'a Option<OverlayWindow>,
-    settings_sync_tx: &'a std::sync::mpsc::Sender<settings::SettingsEvent>,
+    settings_sync_tx: &'a Arc<std::sync::mpsc::Sender<settings::SettingsEvent>>,
     settings_handle: &'a mut Option<settings::SettingsWindowHandle>,
     animation_worker: &'a animation_worker::AnimationWorkerHandle,
     animation_active: &'a mut bool,
@@ -1220,7 +1255,7 @@ async fn spawn_tab_forwarders(
         std::sync::mpsc::channel::<crate::events::TabRenameResult>();
     {
         let mut state_guard = state.lock().await;
-        state_guard.rename_result_tx = Some(rename_result_tx);
+        state_guard.rename_result_tx = Some(Arc::new(rename_result_tx));
     }
     {
         let event_tx_for_rename = event_tx.clone();
@@ -2453,7 +2488,7 @@ async fn handle_tray_event(ctx: &mut EventLoopCtx<'_>, tray_event: tray::TrayEve
             };
             *ctx.settings_handle = settings::SettingsWindowHandle::open(
                 config_snapshot,
-                ctx.settings_sync_tx.clone(),
+                Arc::downgrade(ctx.settings_sync_tx),
                 None,
                 hc,
                 ctx.hotkey_state.failed_binds.clone(),
@@ -2468,7 +2503,7 @@ async fn handle_tray_event(ctx: &mut EventLoopCtx<'_>, tray_event: tray::TrayEve
             };
             *ctx.settings_handle = settings::SettingsWindowHandle::open(
                 config_snapshot,
-                ctx.settings_sync_tx.clone(),
+                Arc::downgrade(ctx.settings_sync_tx),
                 Some("about"),
                 hc,
                 ctx.hotkey_state.failed_binds.clone(),
@@ -2632,8 +2667,7 @@ async fn handle_tray_event(ctx: &mut EventLoopCtx<'_>, tray_event: tray::TrayEve
     }
 }
 
-/// Check eventless focus disappearance and deferred moves after placement
-/// feedback suppression ends.
+/// Check eventless focus disappearance, deferred landings and suppressed moves.
 fn spawn_periodic_ticker(event_tx: &mpsc::Sender<DaemonEvent>) {
     let tx = event_tx.clone();
     tokio::spawn(async move {
@@ -2648,7 +2682,7 @@ fn spawn_periodic_ticker(event_tx: &mpsc::Sender<DaemonEvent>) {
     });
 }
 
-/// Prune vanished tracked focus, replay suppressed moves and re-check off-screen drift,
+/// Prune vanished tracked focus, re-check deferred landings, suppressed moves and off-screen drift,
 /// and start the animation worker when either check changes the layout.
 async fn handle_periodic_check(ctx: &mut EventLoopCtx<'_>) {
     let mut state = ctx.state.lock().await;
@@ -2890,7 +2924,7 @@ async fn handle_tab_action_with_restore(
                     .and_then(|ws| ws.column(column_idx))
                     .and_then(|col| col.get(tab_idx));
                 let icon = target_hwnd_opt.and_then(leopardwm_platform_win32::get_window_icon);
-                let tx = s.rename_result_tx.clone();
+                let tx = s.rename_result_tx.as_ref().map(Arc::downgrade);
                 let guard = s.rename_dialog_active.clone();
                 // Second clone — needed for the spawn-failure
                 // path below since the closure consumes `guard`.
@@ -2913,7 +2947,7 @@ async fn handle_tab_action_with_restore(
                                         warn!("Rename popup failed to open: {}", e);
                                         None
                                     });
-                                if let Some(sender) = tx {
+                                if let Some(sender) = tx.and_then(|tx| tx.upgrade()) {
                                     let _ = sender.send(crate::events::TabRenameResult {
                                         monitor,
                                         workspace_idx,
@@ -3358,9 +3392,12 @@ async fn handle_animation_frame_applied(
         // border by one vsync — windows updated at vsync N,
         // border at vsync N+1 — which is what the user noticed
         // as "border scrolling at a different framerate".
-        if let Some(hwnd) = state.previous_focused_hwnd {
-            if state.config.appearance.active_border {
-                state.show_border(hwnd);
+        // send_animation_frame updates the border itself for continuing frames.
+        if !running && !state.is_animating() {
+            if let Some(hwnd) = state.previous_focused_hwnd {
+                if state.config.appearance.active_border {
+                    state.show_border(hwnd);
+                }
             }
         }
         if running || state.is_animating() {
@@ -3827,20 +3864,8 @@ async fn main() -> Result<()> {
     let _hook_handle = setup_window_hooks(&config, &event_tx, &mut thread_handles);
 
     // Register global hotkeys (mutable to support reload)
-    let mut hotkey_state = if args.skip_hotkeys() {
-        info!("Hotkeys disabled by command-line flag");
-        HotkeyState {
-            handle: setup_system_event_handle(),
-            hook: None,
-            mapping: HashMap::new(),
-            requested_count: 0,
-            registered_count: 0,
-            failed_binds: Vec::new(),
-            recording: false,
-        }
-    } else {
-        setup_hotkeys(&config, event_tx.clone())
-    };
+    let (mut hotkey_state, _mouse_press_hook) =
+        setup_input_hooks(&config, event_tx.clone(), args.skip_hotkeys());
 
     // Install mouse hook for focus-follows-mouse (if enabled). Kept mutable so
     // a tray/Settings toggle can install or drop it live (see sync_mouse_hook).
@@ -3914,6 +3939,7 @@ async fn main() -> Result<()> {
 
     // Settings window forwarding channel + handle
     let (settings_sync_tx, settings_sync_rx) = std::sync::mpsc::channel();
+    let settings_sync_tx = Arc::new(settings_sync_tx);
     match spawn_forwarding_thread(
         "settings-fwd",
         settings_sync_rx,
@@ -4130,6 +4156,14 @@ async fn main() -> Result<()> {
     ctx.gestures.stop();
     stop_animation_worker_and_run_recovery(animation_worker, &state, event_rx).await;
     quit_fallback.complete();
+
+    state.lock().await.close_forwarding_channels();
+    leopardwm_platform_win32::clear_system_event_senders();
+    drop(_hook_handle);
+    drop(mouse_hook_handle);
+    drop(tray_manager);
+    drop(_settings_handle);
+    drop(settings_sync_tx);
 
     // Join forwarding threads with timeout for graceful shutdown
     info!("Waiting for forwarding threads to exit...");

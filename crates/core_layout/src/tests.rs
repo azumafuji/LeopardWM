@@ -750,6 +750,77 @@ mod tests {
     }
 
     #[test]
+    fn test_move_column_skips_minimized_column_and_restores_order() {
+        let mut ws = Workspace::new();
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.insert_window(2, Some(400)).unwrap();
+        ws.insert_window(3, Some(400)).unwrap();
+        ws.mark_minimized(2);
+        ws.test_set_focus_unchecked(2, 0);
+
+        ws.move_column_left();
+
+        assert_eq!(ws.columns()[0].windows(), &[3]);
+        assert_eq!(ws.columns()[1].windows(), &[2]);
+        assert_eq!(ws.columns()[2].windows(), &[1]);
+        assert_eq!(ws.focused_column_index(), 0);
+        assert_eq!(ws.focused_window(), Some(3));
+
+        ws.move_column_right();
+
+        assert_eq!(ws.columns()[0].windows(), &[1]);
+        assert_eq!(ws.columns()[1].windows(), &[2]);
+        assert_eq!(ws.columns()[2].windows(), &[3]);
+        assert_eq!(ws.focused_column_index(), 2);
+        assert_eq!(ws.focused_window(), Some(3));
+    }
+
+    #[test]
+    fn test_move_column_noop_beyond_active_edge() {
+        for move_left in [true, false] {
+            let mut ws = Workspace::new();
+            ws.insert_window(1, Some(400)).unwrap();
+            ws.insert_window(2, Some(400)).unwrap();
+            ws.insert_window(3, Some(400)).unwrap();
+            ws.mark_minimized(1);
+            ws.mark_minimized(3);
+            ws.test_set_focus_unchecked(1, 0);
+
+            if move_left {
+                ws.move_column_left();
+            } else {
+                ws.move_column_right();
+            }
+
+            assert_eq!(ws.columns()[0].windows(), &[1]);
+            assert_eq!(ws.columns()[1].windows(), &[2]);
+            assert_eq!(ws.columns()[2].windows(), &[3]);
+            assert_eq!(ws.focused_column_index(), 1);
+            assert_eq!(ws.focused_window(), Some(2));
+        }
+    }
+
+    #[test]
+    fn test_move_column_skips_minimized_column_to_mixed_column() {
+        let mut ws = Workspace::new();
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.insert_window_in_column(4, 0).unwrap();
+        ws.insert_window(2, Some(400)).unwrap();
+        ws.insert_window(3, Some(400)).unwrap();
+        ws.mark_minimized(1);
+        ws.mark_minimized(2);
+        ws.test_set_focus_unchecked(2, 0);
+
+        ws.move_column_left();
+
+        assert_eq!(ws.columns()[0].windows(), &[3]);
+        assert_eq!(ws.columns()[1].windows(), &[2]);
+        assert_eq!(ws.columns()[2].windows(), &[1, 4]);
+        assert_eq!(ws.focused_column_index(), 0);
+        assert_eq!(ws.focused_window(), Some(3));
+    }
+
+    #[test]
     fn test_reorder_column_forward() {
         let mut ws = Workspace::new();
         ws.insert_window(1, Some(400)).unwrap();
@@ -4128,6 +4199,114 @@ mod tests {
     }
 
     #[test]
+    fn test_move_window_left_skips_minimized_column() {
+        for stacked in [false, true] {
+            let mut ws = Workspace::new();
+            ws.insert_window(1, Some(400)).unwrap();
+            ws.insert_window(2, Some(400)).unwrap();
+            ws.insert_window(3, Some(400)).unwrap();
+            if stacked {
+                ws.insert_window_in_column(4, 2).unwrap();
+            }
+            ws.mark_minimized(2);
+            ws.test_set_focus_unchecked(2, 0);
+
+            ws.move_window_left();
+
+            assert_eq!(ws.column_count(), if stacked { 3 } else { 2 });
+            assert_eq!(ws.columns()[0].windows(), &[1, 3]);
+            assert_eq!(ws.columns()[1].windows(), &[2]);
+            if stacked {
+                assert_eq!(ws.columns()[2].windows(), &[4]);
+            }
+            assert_eq!(ws.focused_column_index(), 0);
+            assert_eq!(ws.focused_window(), Some(3));
+            assert!(ws.is_minimized(2));
+        }
+    }
+
+    #[test]
+    fn test_move_window_right_skips_minimized_column() {
+        for stacked in [false, true] {
+            let mut ws = Workspace::new();
+            ws.insert_window(1, Some(400)).unwrap();
+            ws.insert_window(2, Some(400)).unwrap();
+            ws.insert_window(3, Some(400)).unwrap();
+            if stacked {
+                ws.insert_window_in_column(4, 0).unwrap();
+            }
+            ws.mark_minimized(2);
+            ws.test_set_focus_unchecked(0, 0);
+
+            ws.move_window_right();
+
+            assert_eq!(ws.column_count(), if stacked { 3 } else { 2 });
+            let target = if stacked { 2 } else { 1 };
+            if stacked {
+                assert_eq!(ws.columns()[0].windows(), &[4]);
+            }
+            assert_eq!(ws.columns()[target - 1].windows(), &[2]);
+            assert_eq!(ws.columns()[target].windows(), &[3, 1]);
+            assert_eq!(ws.focused_column_index(), target);
+            assert_eq!(ws.focused_window(), Some(1));
+            assert!(ws.is_minimized(2));
+        }
+    }
+
+    #[test]
+    fn test_move_window_left_beyond_active_edge_unstacks_or_noops() {
+        for stacked in [false, true] {
+            let mut ws = Workspace::new();
+            ws.insert_window(1, Some(400)).unwrap();
+            ws.insert_window(2, Some(400)).unwrap();
+            if stacked {
+                ws.insert_window_in_column(3, 1).unwrap();
+            }
+            ws.mark_minimized(1);
+            ws.test_set_focus_unchecked(1, 0);
+
+            ws.move_window_left();
+
+            assert_eq!(ws.column_count(), if stacked { 3 } else { 2 });
+            assert_eq!(ws.columns()[0].windows(), &[1]);
+            assert_eq!(ws.columns()[1].windows(), &[2]);
+            if stacked {
+                assert_eq!(ws.columns()[2].windows(), &[3]);
+            }
+            assert_eq!(ws.focused_column_index(), 1);
+            assert_eq!(ws.focused_window(), Some(2));
+            assert!(ws.is_minimized(1));
+        }
+    }
+
+    #[test]
+    fn test_move_window_right_beyond_active_edge_unstacks_or_noops() {
+        for stacked in [false, true] {
+            let mut ws = Workspace::new();
+            ws.insert_window(1, Some(400)).unwrap();
+            ws.insert_window(2, Some(400)).unwrap();
+            if stacked {
+                ws.insert_window_in_column(3, 0).unwrap();
+            }
+            ws.mark_minimized(2);
+            ws.test_set_focus_unchecked(0, 0);
+
+            ws.move_window_right();
+
+            assert_eq!(ws.column_count(), if stacked { 3 } else { 2 });
+            let target = if stacked { 1 } else { 0 };
+            if stacked {
+                assert_eq!(ws.columns()[0].windows(), &[3]);
+            }
+            assert_eq!(ws.columns()[target].windows(), &[1]);
+            assert_eq!(ws.columns()[target + 1].windows(), &[2]);
+            assert_eq!(ws.focused_column_index(), target);
+            assert_eq!(ws.focused_window(), Some(1));
+            assert!(ws.is_minimized(2));
+        }
+    }
+
+    #[test]
     fn test_expel_to_left() {
         let mut ws = Workspace::new();
         ws.insert_window(1, Some(400)).unwrap();
@@ -4228,6 +4407,82 @@ mod tests {
     }
 
     #[test]
+    fn test_consume_from_right_skips_minimized_column() {
+        let mut ws = Workspace::new();
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.insert_window(2, Some(400)).unwrap();
+        ws.insert_window(3, Some(400)).unwrap();
+        ws.mark_minimized(2);
+        ws.test_set_focus_unchecked(0, 0);
+
+        ws.consume_from_right();
+
+        assert_eq!(ws.column_count(), 2);
+        assert_eq!(ws.columns()[0].windows(), &[1, 3]);
+        assert_eq!(ws.columns()[1].windows(), &[2]);
+        assert_eq!(ws.focused_column_index(), 0);
+        assert_eq!(ws.focused_window(), Some(3));
+        assert!(ws.is_minimized(2));
+    }
+
+    #[test]
+    fn test_consume_from_right_skips_minimized_top_window() {
+        let mut ws = Workspace::new();
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.insert_window(2, Some(400)).unwrap();
+        ws.insert_window_in_column(3, 1).unwrap();
+        ws.mark_minimized(2);
+        ws.test_set_focus_unchecked(0, 0);
+
+        ws.consume_from_right();
+
+        assert_eq!(ws.column_count(), 2);
+        assert_eq!(ws.columns()[0].windows(), &[1, 3]);
+        assert_eq!(ws.columns()[1].windows(), &[2]);
+        assert_eq!(ws.focused_column_index(), 0);
+        assert_eq!(ws.focused_window(), Some(3));
+        assert!(ws.is_minimized(2));
+    }
+
+    #[test]
+    fn test_consume_from_left_skips_minimized_column() {
+        let mut ws = Workspace::new();
+        ws.insert_window(3, Some(400)).unwrap();
+        ws.insert_window(2, Some(400)).unwrap();
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.mark_minimized(2);
+        ws.test_set_focus_unchecked(2, 0);
+
+        ws.consume_from_left();
+
+        assert_eq!(ws.column_count(), 2);
+        assert_eq!(ws.columns()[0].windows(), &[2]);
+        assert_eq!(ws.columns()[1].windows(), &[1, 3]);
+        assert_eq!(ws.focused_column_index(), 1);
+        assert_eq!(ws.focused_window(), Some(3));
+        assert!(ws.is_minimized(2));
+    }
+
+    #[test]
+    fn test_consume_from_left_skips_minimized_top_window() {
+        let mut ws = Workspace::new();
+        ws.insert_window(2, Some(400)).unwrap();
+        ws.insert_window_in_column(3, 0).unwrap();
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.mark_minimized(2);
+        ws.test_set_focus_unchecked(1, 0);
+
+        ws.consume_from_left();
+
+        assert_eq!(ws.column_count(), 2);
+        assert_eq!(ws.columns()[0].windows(), &[2]);
+        assert_eq!(ws.columns()[1].windows(), &[1, 3]);
+        assert_eq!(ws.focused_column_index(), 1);
+        assert_eq!(ws.focused_window(), Some(3));
+        assert!(ws.is_minimized(2));
+    }
+
+    #[test]
     fn test_consume_noop_without_neighbor() {
         let mut ws = Workspace::new();
         ws.insert_window(1, Some(400)).unwrap();
@@ -4317,6 +4572,83 @@ mod tests {
 
         assert_eq!(ws.columns()[0].windows(), &[1, 2]);
         assert_eq!(ws.focused_window_index_in_column(), 1);
+    }
+
+    #[test]
+    fn test_movement_on_empty_tiled_strip_is_noop() {
+        let empty = Workspace::new();
+        let mut emptied = Workspace::new();
+        emptied.insert_window(1, Some(400)).unwrap();
+        emptied.remove_window(1).unwrap();
+        let mut floating_only = Workspace::new();
+        floating_only
+            .add_floating(2, Rect::new(10, 20, 400, 300))
+            .unwrap();
+
+        type Movement = fn(&mut Workspace);
+        let movements: [(&str, Movement); 12] = [
+            ("column left", Workspace::move_column_left),
+            ("column right", Workspace::move_column_right),
+            ("column start", Workspace::move_column_to_start),
+            ("column end", Workspace::move_column_to_end),
+            ("window left", Workspace::move_window_left),
+            ("window right", Workspace::move_window_right),
+            ("window up", Workspace::move_window_up_in_column),
+            ("window down", Workspace::move_window_down_in_column),
+            ("expel left", Workspace::expel_to_left),
+            ("expel right", Workspace::expel_to_right),
+            ("consume left", Workspace::consume_from_left),
+            ("consume right", Workspace::consume_from_right),
+        ];
+        for (state, workspace) in [
+            ("empty", empty),
+            ("last window removed", emptied),
+            ("floating only", floating_only),
+        ] {
+            assert_eq!(workspace.focused_window(), None);
+            let before = serde_json::to_value(&workspace).unwrap();
+            for (name, movement) in movements {
+                let mut ws = workspace.clone();
+                // Repeated input must also leave membership, geometry and focus unchanged.
+                for _ in 0..2 {
+                    movement(&mut ws);
+                    assert_eq!(
+                        serde_json::to_value(&ws).unwrap(),
+                        before,
+                        "{name} changed {state} workspace"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_vertical_movement_in_tabbed_column_preserves_window_focus() {
+        let mut ws = ws_3_tabs();
+        ws.toggle_focused_column_tabbed_mode();
+        ws.set_active_tab(0, 1).unwrap();
+        let focused = ws.focused_window();
+
+        ws.move_window_down_in_column();
+        assert_eq!(ws.columns()[0].windows(), &[1, 3, 2]);
+        assert_eq!(ws.focused_window(), focused);
+        assert_eq!(ws.focused_window_index_in_column(), 2);
+        assert_eq!(ws.columns()[0].active_tab_idx(), Some(2));
+
+        let bottom = serde_json::to_value(&ws).unwrap();
+        ws.move_window_down_in_column();
+        assert_eq!(serde_json::to_value(&ws).unwrap(), bottom);
+
+        ws.move_window_up_in_column();
+        ws.move_window_up_in_column();
+        assert_eq!(ws.columns()[0].windows(), &[2, 1, 3]);
+        assert_eq!(ws.focused_window(), focused);
+        assert_eq!(ws.focused_window_index_in_column(), 0);
+        assert_eq!(ws.columns()[0].active_tab_idx(), Some(0));
+
+        let top = serde_json::to_value(&ws).unwrap();
+        ws.move_window_up_in_column();
+        assert_eq!(serde_json::to_value(&ws).unwrap(), top);
     }
 
     #[test]
@@ -4895,6 +5227,96 @@ mod tests {
             .collect();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].window_id, 1);
+    }
+
+    #[test]
+    fn test_column_removal_synchronizes_replacement_tab() {
+        for remove_whole_column in [false, true] {
+            for remove_left in [false, true] {
+                let mut ws = ws_3_tabs();
+                ws.toggle_focused_column_tabbed_mode();
+                ws.set_active_tab(0, 2).unwrap();
+                ws.insert_window(99, Some(400)).unwrap();
+                if remove_left {
+                    ws.reorder_column(1, 0);
+                }
+                assert_eq!(ws.focused_window(), Some(99));
+
+                if remove_whole_column {
+                    let removed = ws.remove_column(ws.focused_column_index()).unwrap();
+                    assert_eq!(removed.windows(), &[99]);
+                } else {
+                    ws.remove_window(99).unwrap();
+                }
+
+                // Keep the existing replacement-focus policy and show that same window.
+                assert_eq!(ws.column_count(), 1);
+                assert_eq!(ws.columns()[0].windows(), &[1, 2, 3]);
+                assert_eq!(ws.focused_column_index(), 0);
+                assert_eq!(ws.focused_window_index_in_column(), 0);
+                assert_eq!(ws.focused_window(), Some(1));
+                assert_eq!(ws.columns()[0].active_tab_idx(), Some(0));
+                let visible: Vec<_> = ws
+                    .compute_placements(Rect::new(0, 0, 1920, 1080))
+                    .into_iter()
+                    .filter(|p| p.visibility == Visibility::Visible)
+                    .map(|p| p.window_id)
+                    .collect();
+                assert_eq!(visible, vec![1]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_column_removal_clamps_replacement_tab_focus() {
+        let mut ws = ws_3_tabs();
+        ws.remove_window(3).unwrap();
+        ws.toggle_focused_column_tabbed_mode();
+        ws.set_active_tab(0, 0).unwrap();
+        ws.insert_window(99, Some(400)).unwrap();
+        ws.insert_window_in_column(100, 1).unwrap();
+        ws.insert_window_in_column(101, 1).unwrap();
+        ws.set_focus(1, 2).unwrap();
+
+        let removed = ws.remove_column(1).unwrap();
+        assert_eq!(removed.windows(), &[99, 100, 101]);
+        assert_eq!(ws.columns()[0].windows(), &[1, 2]);
+        assert_eq!(ws.focused_column_index(), 0);
+        assert_eq!(ws.focused_window_index_in_column(), 1);
+        assert_eq!(ws.focused_window(), Some(2));
+        assert_eq!(ws.columns()[0].active_tab_idx(), Some(1));
+    }
+
+    #[test]
+    fn test_nonfocused_column_removal_preserves_tab_focus() {
+        for remove_whole_column in [false, true] {
+            for remove_left in [false, true] {
+                let mut ws = ws_3_tabs();
+                ws.toggle_focused_column_tabbed_mode();
+                ws.set_active_tab(0, 2).unwrap();
+                ws.insert_window(99, Some(400)).unwrap();
+                if remove_left {
+                    ws.reorder_column(1, 0);
+                }
+                let removed_index = ws.focused_column_index();
+                let tabbed_index = usize::from(remove_left);
+                ws.set_focus(tabbed_index, 2).unwrap();
+
+                if remove_whole_column {
+                    let removed = ws.remove_column(removed_index).unwrap();
+                    assert_eq!(removed.windows(), &[99]);
+                } else {
+                    ws.remove_window(99).unwrap();
+                }
+
+                assert_eq!(ws.column_count(), 1);
+                assert_eq!(ws.columns()[0].windows(), &[1, 2, 3]);
+                assert_eq!(ws.focused_column_index(), 0);
+                assert_eq!(ws.focused_window_index_in_column(), 2);
+                assert_eq!(ws.focused_window(), Some(3));
+                assert_eq!(ws.columns()[0].active_tab_idx(), Some(2));
+            }
+        }
     }
 
     #[test]

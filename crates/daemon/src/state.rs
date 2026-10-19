@@ -522,6 +522,7 @@ pub(crate) struct AppState {
     pub(crate) tab_strip_hide_count: AtomicUsize,
     #[cfg(test)]
     pub(crate) tab_strip_update_count: AtomicUsize,
+    pub(crate) tab_icon_cache: std::collections::HashMap<u64, Option<isize>>,
     /// Tab strip overlays — one per tabbed column across all visible
     /// workspaces. Keyed by `(monitor, workspace_idx, column_idx)`.
     /// `helpers.rs::update_tab_strip` reconciles this map against the
@@ -602,6 +603,7 @@ pub(crate) struct AppState {
     /// Per-window suppression deadline for MovedOrResized events after apply_layout().
     pub(crate) moved_or_resized_suppression: HashMap<u64, std::time::Instant>,
     pub(crate) deferred_moved_or_resized: HashSet<u64>,
+    pub(crate) deferred_physical_landings: HashSet<u64>,
     pub(crate) size_ignored_windows: HashSet<u64>,
     pub(crate) window_move_recheck_attempts: HashMap<u64, WindowMoveRecheckAttempt>,
     /// Last-placed layout rect per managed window (in layout coordinates, the
@@ -700,8 +702,7 @@ pub(crate) struct AppState {
     pub(crate) window_managed_at: HashMap<u64, std::time::Instant>,
     pub(crate) pending_maximized_admission_restores: HashSet<u64>,
     /// Admission input baseline and restores issued for this lifetime, including the admission restore.
-    pub(crate) post_admission_maximize_restore_eligible:
-        HashMap<u64, (Option<std::time::Instant>, u8)>,
+    pub(crate) post_admission_maximize_restore_eligible: HashMap<u64, (u64, u8)>,
     /// Last time each tiled window was seen maximized. Lets a window that opens
     /// maximized and momentarily restores itself mid-burst (an app opening
     /// several windows/tabs at once) re-assert maximize instead of being snapped
@@ -831,7 +832,7 @@ pub(crate) struct AppState {
     #[cfg(test)]
     pub(crate) injected_window_maximized: HashMap<u64, bool>,
     #[cfg(test)]
-    pub(crate) injected_input_age_ms: Option<u32>,
+    pub(crate) injected_press_count: Option<u64>,
     #[cfg(test)]
     pub(crate) departing_foreground_evidence_reads: usize,
     /// Test-only GetTickCount stand-in for last-window departure arming.
@@ -919,7 +920,8 @@ pub(crate) struct AppState {
     /// startup (parallel to `install_tab_strip`); the spawned dialog
     /// thread posts a `TabRenameResult` here, which a forwarder thread
     /// translates to `DaemonEvent::TabRenameSubmitted`.
-    pub(crate) rename_result_tx: Option<std::sync::mpsc::Sender<crate::events::TabRenameResult>>,
+    pub(crate) rename_result_tx:
+        Option<Arc<std::sync::mpsc::Sender<crate::events::TabRenameResult>>>,
 }
 
 /// Suppresses stale focus notifications from the exact HWND left behind by a
@@ -1162,6 +1164,7 @@ impl AppState {
             // — there's no global "the strip" anymore. `install_tab_strip`
             // just stashes the action sender so subsequent spawns can wire
             // it to the same DaemonEvent drain.
+            tab_icon_cache: std::collections::HashMap::new(),
             tab_strip_overlays: std::collections::HashMap::new(),
             tab_strip_action_tx: None,
             overview_open: false,
@@ -1190,6 +1193,7 @@ impl AppState {
             pending_drag_hint: None,
             moved_or_resized_suppression: HashMap::new(),
             deferred_moved_or_resized: HashSet::new(),
+            deferred_physical_landings: HashSet::new(),
             size_ignored_windows: HashSet::new(),
             window_move_recheck_attempts: HashMap::new(),
             last_placed_layout_rects: HashMap::new(),
@@ -1288,7 +1292,7 @@ impl AppState {
             #[cfg(test)]
             injected_window_maximized: HashMap::new(),
             #[cfg(test)]
-            injected_input_age_ms: None,
+            injected_press_count: None,
             #[cfg(test)]
             departing_foreground_evidence_reads: 0,
             #[cfg(test)]
@@ -1545,16 +1549,10 @@ impl AppState {
     /// the overlay receives `tab_action_tx` and posts to it on
     /// WM_LBUTTONDOWN / WM_MBUTTONUP / WM_RBUTTONUP / close-X hit; main.rs
     /// drains the matching receiver and routes the action.
-    ///
-    /// Skipped in test builds (would create real layered DWM windows).
     pub(crate) fn install_tab_strip(
         &mut self,
         tab_action_tx: std::sync::mpsc::Sender<leopardwm_platform_win32::tab_strip::TabActionEvent>,
     ) {
-        if cfg!(test) {
-            drop(tab_action_tx);
-            return;
-        }
         // Stash the sender for on-demand spawning. `update_tab_strip`
         // creates one `TabStripOverlay` per tabbed column the next time
         // it runs — all of them share this cloned sender so click /
@@ -1564,18 +1562,19 @@ impl AppState {
 
     /// Install the overview event sender. The overlay itself is created
     /// lazily on first `show_overview`; this just stashes the channel.
-    ///
-    /// Skipped in test builds (the overlay would create a real top-level
-    /// window) — with no sender, `show_overview` skips overlay creation.
     pub(crate) fn install_overview(
         &mut self,
         event_tx: std::sync::mpsc::Sender<leopardwm_platform_win32::overview::OverviewEvent>,
     ) {
-        if cfg!(test) {
-            drop(event_tx);
-            return;
-        }
         self.overview_event_tx = Some(event_tx);
+    }
+
+    pub(crate) fn close_forwarding_channels(&mut self) {
+        self.tab_strip_overlays.clear();
+        self.tab_strip_action_tx.take();
+        self.overview_overlay.take();
+        self.overview_event_tx.take();
+        self.rename_result_tx.take();
     }
 
     /// Install the debounced save-request sender. Stashed at startup; the
@@ -1744,8 +1743,10 @@ pub(crate) fn merged_cleanup_window_ids(
 }
 
 pub(crate) fn run_visibility_recovery_pass(managed_window_ids: &[u64], context_label: &str) {
+    leopardwm_platform_win32::stop_placement_mover();
     use leopardwm_platform_win32::{
-        enumerate_windows, restore_windows_moved_offscreen, uncloak_all_managed_windows,
+        enumerate_windows, restore_windows_moved_offscreen_and_uncloak_managed,
+        uncloak_all_managed_windows,
     };
     use tracing::warn;
 
@@ -1761,7 +1762,10 @@ pub(crate) fn run_visibility_recovery_pass(managed_window_ids: &[u64], context_l
     };
     let recovery_window_ids = merged_cleanup_window_ids(managed_window_ids, &discovered_window_ids);
 
-    match restore_windows_moved_offscreen(&recovery_window_ids) {
+    match restore_windows_moved_offscreen_and_uncloak_managed(
+        &recovery_window_ids,
+        managed_window_ids,
+    ) {
         Ok(restored) => {
             if restored > 0 {
                 info!(

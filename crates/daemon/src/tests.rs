@@ -85,6 +85,38 @@ fn pump_window_style_worker_until_idle() {
     }
 }
 
+#[tokio::test]
+#[allow(clippy::arc_with_non_send_sync)]
+async fn shutdown_closes_state_forwarders_while_state_is_alive() {
+    let state = Arc::new(Mutex::new(AppState::new_with_config(
+        test_config(),
+        test_monitors(),
+    )));
+    let (event_tx, _event_rx) = mpsc::channel(16);
+    let mut handles = Vec::new();
+    spawn_tab_forwarders(&state, &event_tx, &mut handles).await;
+    spawn_overview_forwarder(&state, &event_tx, &mut handles).await;
+    assert_eq!(handles.len(), 3);
+    let pending_dialog = Arc::downgrade(state.lock().await.rename_result_tx.as_ref().unwrap());
+
+    state.lock().await.close_forwarding_channels();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    for handle in handles {
+        let name = handle.thread().name().unwrap().to_owned();
+        let mut handle = Some(handle);
+        assert!(
+            join_with_timeout(
+                &mut handle,
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            ),
+            "{name} did not exit within the shutdown bound while AppState is alive"
+        );
+    }
+    assert!(pending_dialog.upgrade().is_none());
+    drop(state);
+}
+
 fn test_config() -> Config {
     Config::default()
 }
@@ -12555,6 +12587,239 @@ fn test_protected_only_animation_frame_dispatches_and_settles_transition() {
     drop(worker);
 }
 
+#[tokio::test]
+async fn test_animation_frame_handler_updates_border_once() {
+    let mut app = AppState::new_with_config(test_config(), test_monitors());
+    app.paused = false;
+    app.config.appearance.active_border = true;
+    app.previous_focused_hwnd = Some(100);
+    app.workspaces.get_mut(&1).unwrap()[0]
+        .insert_window(100, Some(800))
+        .unwrap();
+    app.layout_transition = Some(crate::state::LayoutTransition {
+        start_rects: HashMap::from([(100, Rect::new(0, 0, 800, 1040))]),
+        exit_rects: HashMap::new(),
+        exit_provenance: HashMap::new(),
+        elapsed_ms: 0,
+        duration_ms: 10_000,
+        easing: leopardwm_core_layout::Easing::default(),
+        ghosted_wids: HashSet::new(),
+        suppress_landing_focus_resync: false,
+        defer_focus_border: false,
+    });
+    let cancelled = app.apply_worker_cancelled.clone();
+    let epoch = app.apply_epoch.clone();
+    let (event_tx, mut event_rx) = mpsc::channel(8);
+    let worker =
+        animation_worker::AnimationWorkerHandle::spawn(event_tx.clone(), cancelled.clone())
+            .unwrap();
+    assert!(app.send_animation_frame(&worker).unwrap());
+    assert_eq!(
+        app.border_show_count.load(Ordering::Relaxed),
+        1,
+        "the first frame needs its border"
+    );
+    let Some(DaemonEvent::AnimationFrameApplied(frame)) =
+        tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+    else {
+        panic!("expected worker frame completion");
+    };
+    app.border_show_count.store(0, Ordering::Relaxed);
+    #[allow(clippy::arc_with_non_send_sync)]
+    let state = Arc::new(Mutex::new(app));
+    let (settings_tx, _settings_rx) = std::sync::mpsc::channel();
+    let settings_tx = Arc::new(settings_tx);
+    let quit = quit_fallback::QuitFallback::new(
+        cancelled,
+        epoch,
+        || {},
+        |_| {},
+        |_| {},
+        quit_fallback::QuitTiming::default(),
+    );
+    let mut ctx = EventLoopCtx {
+        quit_fallback: &quit,
+        state: &state,
+        event_tx: &event_tx,
+        hotkey_state: &mut HotkeyState {
+            handle: None,
+            hook: None,
+            mapping: HashMap::new(),
+            requested_count: 0,
+            registered_count: 0,
+            failed_binds: Vec::new(),
+            recording: false,
+        },
+        tray_manager: &None,
+        snap_hint_overlay: &None,
+        settings_sync_tx: &settings_tx,
+        settings_handle: &mut None,
+        animation_worker: &worker,
+        animation_active: &mut true,
+        last_frame_instant: &mut None,
+        snap_hint_timer_handle: &mut None,
+        focus_follows_mouse_timer: &mut None,
+        display_change_timer: &mut None,
+        idle_layout_reapply_timer: &mut None,
+        display_change_apply_retry_timer: &mut None,
+        mouse_hook_handle: &mut None,
+        gestures: &mut GestureRuntime {
+            startup_raw_input: false,
+            handle: None,
+            cancel: None,
+            retry_install: true,
+        },
+    };
+    handle_animation_frame_applied(&mut ctx, frame).await;
+    assert!(
+        *ctx.animation_active,
+        "the handler must dispatch another frame"
+    );
+    assert_eq!(
+        state.lock().await.border_show_count.load(Ordering::Relaxed),
+        1
+    );
+}
+
+#[tokio::test]
+async fn test_animation_worker_paces_current_move_before_reporting_frame() {
+    use leopardwm_core_layout::{Visibility, WindowPlacement};
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::time::Instant;
+
+    struct DelayedOwner {
+        window_id: u64,
+        stop: std::sync::mpsc::Sender<()>,
+        join: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for DelayedOwner {
+        fn drop(&mut self) {
+            let _ = self.stop.send(());
+            if let Some(join) = self.join.take() {
+                join.join().unwrap();
+            }
+            leopardwm_platform_win32::clear_suspected_oversize(self.window_id);
+        }
+    }
+
+    let mut inconclusive = Vec::new();
+    for attempt in 1..=5 {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (pump_tx, pump_rx) = std::sync::mpsc::channel();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let join = std::thread::spawn(move || {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                DispatchMessageW, GetQueueStatus, PeekMessageW, MSG, PM_REMOVE, QS_ALLINPUT,
+            };
+            let window = ResizeTestWindow::new(300);
+            let mut message = MSG::default();
+            unsafe {
+                while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                    DispatchMessageW(&message);
+                }
+            }
+            ready_tx.send(window.id()).unwrap();
+            let deadline = Instant::now() + Duration::from_millis(200);
+            let arrival = loop {
+                // ALLINPUT includes posted and sent internal window-manager work;
+                // unlike PeekMessage, GetQueueStatus never dispatches the move.
+                if unsafe { GetQueueStatus(QS_ALLINPUT) } >> 16 != 0 {
+                    break Instant::now();
+                }
+                if Instant::now() >= deadline {
+                    let _ = pump_tx.send(None);
+                    return;
+                }
+                if stop_rx.try_recv() != Err(std::sync::mpsc::TryRecvError::Empty) {
+                    return;
+                }
+                std::thread::yield_now();
+            };
+            // Anchor to queued work, not frame dispatch: 24 ms is beyond one
+            // 60-Hz refresh (~17 ms) but below the earliest 33 ms drain deadline.
+            // Even the permitted 5 ms pump slippage leaves 4 ms for draining.
+            std::thread::sleep(Duration::from_millis(24));
+            let pump_start = Instant::now();
+            pump_tx.send(Some((arrival, pump_start))).unwrap();
+            while stop_rx.try_recv() == Err(std::sync::mpsc::TryRecvError::Empty) {
+                unsafe {
+                    while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                        DispatchMessageW(&message);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let owner = DelayedOwner {
+            window_id: ready_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            stop: stop_tx,
+            join: Some(join),
+        };
+        assert!(!leopardwm_platform_win32::pending_async_position(
+            owner.window_id
+        ));
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let worker = animation_worker::AnimationWorkerHandle::spawn(
+            event_tx,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        worker
+            .send_frame(animation_worker::FrameRequest {
+                placements: vec![WindowPlacement {
+                    window_id: owner.window_id,
+                    rect: Rect::new(500, 100, 300, 600),
+                    visibility: Visibility::Visible,
+                    column_index: 0,
+                }],
+                ghost_updates: Vec::new(),
+                platform_config: leopardwm_platform_win32::PlatformConfig::default(),
+                physical_request_id: 1,
+                physical_invalidation_id: 1,
+                physical_dispatch_request_id: Arc::new(AtomicU64::new(1)),
+                physical_invalidation: Arc::new(AtomicU64::new(1)),
+            })
+            .unwrap();
+        let Some(DaemonEvent::AnimationFrameApplied(frame)) =
+            tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+                .await
+                .unwrap()
+        else {
+            panic!("expected worker frame completion");
+        };
+        let reported_position = leopardwm_platform_win32::get_window_chrome_rect(owner.window_id);
+        let reported_pending = leopardwm_platform_win32::pending_async_position(owner.window_id);
+        let Some((arrival, pump_start)) = pump_rx.recv_timeout(Duration::from_secs(2)).unwrap()
+        else {
+            inconclusive.push(format!("attempt {attempt}: no queued move within 200 ms"));
+            continue;
+        };
+        let pump_delay = pump_start.duration_since(arrival);
+        if pump_delay > Duration::from_millis(29) {
+            inconclusive.push(format!("attempt {attempt}: pump delay {pump_delay:?}"));
+            continue;
+        }
+        eprintln!(
+            "animation pacing: inconclusive_retries={}, pump_delay={pump_delay:?}",
+            inconclusive.len()
+        );
+        assert!(frame.apply_result.is_ok());
+        assert_eq!(
+            reported_position.unwrap().x,
+            500,
+            "the submitted move must apply before the worker reports the frame"
+        );
+        assert!(
+            !reported_pending,
+            "the submitted move must drain before the worker reports the frame"
+        );
+        return;
+    }
+    panic!("all five arrival-anchored pacing attempts were inconclusive: {inconclusive:?}");
+}
+
 #[test]
 fn test_send_animation_frame_skips_after_apply_worker_cancelled() {
     let mut state = AppState::new_with_config(test_config(), test_monitors());
@@ -13447,6 +13712,115 @@ fn test_visible_replay_renews_old_one_shot_attempt_and_bounds_its_immediate_repe
     assert!(!state.recheck_deferred_window_moves());
     assert_eq!(state.physical_request_seq, before + 1);
     assert_eq!(owner.rect().width, 200);
+}
+
+fn consume_visible_recheck_landing(
+    state: &mut AppState,
+    owner: &OffscreenResizeOwner,
+    measurement_deferred: bool,
+    failed: bool,
+    readable: bool,
+) {
+    let dispatched =
+        state.apply_physical_projection(vec![leopardwm_core_layout::WindowPlacement {
+            window_id: owner.hwnd,
+            rect: Rect::new(0, 0, 300, 560),
+            visibility: leopardwm_core_layout::Visibility::Visible,
+            column_index: 0,
+        }]);
+    let (request_id, invalidation_id) = state.physical_request_ids();
+    state.consume_physical_landings(
+        request_id,
+        invalidation_id,
+        &[leopardwm_platform_win32::PlacementLanding {
+            window_id: owner.hwnd,
+            requested_rect: dispatched[0].rect,
+            requested_visibility: leopardwm_core_layout::Visibility::Visible,
+            actual_visible_rect: readable.then(|| owner.rect()),
+            actual_outer_rect: readable.then(|| owner.rect()),
+            failed,
+            unreadable: !readable && !measurement_deferred,
+            measurement_deferred,
+        }],
+        &[],
+    );
+}
+
+#[test]
+fn test_deferred_landing_is_superseded_or_cleared_on_unmanage() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    for replacement in [
+        Some((false, false, true)),
+        Some((false, false, false)),
+        Some((true, true, false)),
+        None,
+    ] {
+        let mut state = visible_resize_recheck_state(owner.hwnd);
+        owner.resize(0, 200);
+        consume_visible_recheck_landing(&mut state, &owner, true, false, false);
+        assert!(state.deferred_physical_landings.contains(&owner.hwnd));
+        if let Some((deferred, failed, readable)) = replacement {
+            consume_visible_recheck_landing(&mut state, &owner, deferred, failed, readable);
+        } else {
+            state.take_managed_lifetime_token(owner.hwnd);
+        }
+        assert!(!state.deferred_physical_landings.contains(&owner.hwnd));
+        state.moved_or_resized_suppression.clear();
+        let before = state.physical_request_seq;
+        assert!(!state.recheck_deferred_window_moves());
+        assert_eq!(state.physical_request_seq, before);
+        assert_eq!(owner.rect().width, 200);
+    }
+}
+
+#[test]
+fn test_deferred_landing_retries_after_maximize_settling_without_move_event() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = visible_resize_recheck_state(owner.hwnd);
+    owner.resize(0, 200);
+    consume_visible_recheck_landing(&mut state, &owner, true, false, false);
+    let now = std::time::Instant::now();
+    state.window_managed_at.insert(owner.hwnd, now);
+    state.window_last_maximized_at.insert(owner.hwnd, now);
+    state.moved_or_resized_suppression.clear();
+    let before = state.physical_request_seq;
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before);
+    assert_eq!(owner.rect().width, 200);
+    let settled = now - Duration::from_secs(60);
+    state.window_managed_at.insert(owner.hwnd, settled);
+    state.window_last_maximized_at.insert(owner.hwnd, settled);
+    assert!(state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before + 1);
+    assert_eq!(owner.rect(), Rect::new(0, 0, 300, 560));
+    state.moved_or_resized_suppression.clear();
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before + 1);
+}
+
+#[test]
+fn test_deferred_landing_without_move_event_is_rechecked_once() {
+    let _serial = REAL_WINDOW_STYLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let owner = OffscreenResizeOwner::new();
+    let mut state = visible_resize_recheck_state(owner.hwnd);
+    owner.resize(0, 200);
+    consume_visible_recheck_landing(&mut state, &owner, true, false, false);
+    state.moved_or_resized_suppression.clear();
+    let before = state.physical_request_seq;
+    assert!(state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before + 1);
+    assert_eq!(owner.rect(), Rect::new(0, 0, 300, 560));
+    state.moved_or_resized_suppression.clear();
+    assert!(!state.recheck_deferred_window_moves());
+    assert_eq!(state.physical_request_seq, before + 1);
 }
 
 #[test]
@@ -20979,6 +21353,7 @@ async fn test_taskbar_buttons_paused_tray_selection_keeps_buttons_shown_until_re
     let state = Arc::new(Mutex::new(state));
     let (event_tx, _event_rx) = mpsc::channel(8);
     let (settings_tx, _settings_rx) = std::sync::mpsc::channel();
+    let settings_tx = Arc::new(settings_tx);
     let worker =
         animation_worker::AnimationWorkerHandle::spawn(event_tx.clone(), cancelled.clone())
             .unwrap();

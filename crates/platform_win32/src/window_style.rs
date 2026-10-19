@@ -333,7 +333,7 @@ enum WindowStyleRequest {
         window_id: WindowId,
         hwnd: usize,
         identity: WindowIdentity,
-        completion_sender: Option<Sender<crate::WindowEvent>>,
+        completion_sender: Option<std::sync::Weak<Sender<crate::WindowEvent>>>,
     },
     Barrier(SyncSender<()>),
 }
@@ -373,7 +373,9 @@ fn window_style_worker() -> &'static Sender<WindowStyleRequest> {
                             completion_sender,
                         } => {
                             restore_maximized_window_with(window_id, hwnd, identity, |event| {
-                                if let Some(sender) = completion_sender {
+                                if let Some(sender) =
+                                    completion_sender.and_then(|sender| sender.upgrade())
+                                {
                                     let _ = sender.send(event);
                                 }
                             });
@@ -399,7 +401,7 @@ pub fn queue_maximized_window_restore(window_id: WindowId) -> Result<bool, Win32
             window_id
         )));
     }
-    let completion_sender = crate::event_hooks::clone_event_sender();
+    let completion_sender = crate::event_hooks::weak_event_sender();
     let will_report = completion_sender.is_some();
     window_style_worker()
         .send(WindowStyleRequest::RestoreMaximized {
@@ -746,6 +748,8 @@ pub(crate) fn emergency_restore_maximizebox(window_ids: &[WindowId], deadline: s
         GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_ASYNCWINDOWPOS,
         SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     };
+    let mut entries = entries;
+    entries.sort_by_key(|&(id, _)| crate::placement::is_marked_placement_owner(id));
     for (id, identity) in entries {
         if std::time::Instant::now() >= deadline {
             break;
@@ -760,7 +764,13 @@ pub(crate) fn emergency_restore_maximizebox(window_ids: &[WindowId], deadline: s
             let style = GetWindowLongW(hwnd, GWL_STYLE);
             const MAXIMIZEBOX: i32 = 0x0001_0000;
             if style & MAXIMIZEBOX == 0 {
+                if !crate::placement::can_recover_placement_owner(id, hwnd, Some(deadline)) {
+                    continue;
+                }
                 SetWindowLongW(hwnd, GWL_STYLE, style | MAXIMIZEBOX);
+                if !crate::placement::can_recover_placement_owner(id, hwnd, Some(deadline)) {
+                    continue;
+                }
                 let _ = SetWindowPos(
                     hwnd,
                     None,
@@ -769,7 +779,11 @@ pub(crate) fn emergency_restore_maximizebox(window_ids: &[WindowId], deadline: s
                     0,
                     0,
                     SWP_FRAMECHANGED
-                        | SWP_ASYNCWINDOWPOS
+                        | if crate::placement::is_marked_placement_owner(id) {
+                            windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS(0)
+                        } else {
+                            SWP_ASYNCWINDOWPOS
+                        }
                         | SWP_NOMOVE
                         | SWP_NOSIZE
                         | SWP_NOZORDER
@@ -799,10 +813,11 @@ pub fn restore_maximizebox_panic_recovery() {
         }
         (window_ids, *in_flight)
     };
-    let window_ids: Vec<_> = window_ids
+    let mut window_ids: Vec<_> = window_ids
         .into_iter()
         .filter(|entry| Some(*entry) != in_flight)
         .collect();
+    window_ids.sort_by_key(|&(id, _)| crate::placement::is_marked_placement_owner(id));
 
     if window_ids.is_empty() {
         return;
@@ -813,7 +828,12 @@ pub fn restore_maximizebox_panic_recovery() {
         window_ids.len()
     );
 
+    let mut recovered_unmarked = false;
     for &(wid, identity) in &window_ids {
+        if !recovered_unmarked && crate::placement::is_marked_placement_owner(wid) {
+            crate::visibility::uncloak_unmarked_windows_for_recovery();
+            recovered_unmarked = true;
+        }
         // Direct Win32 call — don't use restore_maximizebox since tracking set is already drained
         use windows::Win32::UI::WindowsAndMessaging::{
             GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
@@ -833,7 +853,13 @@ pub fn restore_maximizebox_panic_recovery() {
             const WS_MAXIMIZEBOX_VAL: i32 = 0x0001_0000;
             if (style & WS_MAXIMIZEBOX_VAL) == 0 {
                 let new_style = style | WS_MAXIMIZEBOX_VAL;
+                if !crate::placement::can_recover_placement_owner(wid, hwnd, None) {
+                    continue;
+                }
                 SetWindowLongW(hwnd, GWL_STYLE, new_style);
+                if !crate::placement::can_recover_placement_owner(wid, hwnd, None) {
+                    continue;
+                }
                 let _ = SetWindowPos(
                     hwnd,
                     None,
@@ -1783,7 +1809,7 @@ mod tests {
     }
 
     #[test]
-    fn test_queued_maximized_restore_completion_survives_sender_clear() {
+    fn test_queued_maximized_restore_does_not_hold_channel_open_after_shutdown() {
         let _sender_lock = crate::event_hooks::GLOBAL_SENDER_TEST_LOCK
             .lock()
             .unwrap_or_else(crate::recover_poisoned_mutex);
@@ -1792,18 +1818,17 @@ mod tests {
         let _sender_fixture = CompletionSenderFixture::install(sender);
         let fixture = HiddenFramedFixture::create();
         let window_id = fixture.window_id();
-        let token = crate::window_identity::stamp_managed_lifetime_token(window_id).unwrap();
+        crate::window_identity::stamp_managed_lifetime_token(window_id).unwrap();
         let blocker = block_style_worker("LeopardWMCompletionSenderCleared");
         queue_maximized_window_restore(window_id).unwrap();
         crate::event_hooks::clear_event_sender();
+        let completion = events.recv_timeout(Duration::from_secs(1));
         blocker.0.release();
         pump_until_window_style_idle();
-        assert!(matches!(events.recv_timeout(Duration::from_millis(200)),
-            Ok(crate::WindowEvent::MaximizedAdmissionRestored {
-                window_id: reported_id,
-                managed_lifetime_token: reported_token,
-                still_maximized: false,
-            }) if reported_id == window_id && reported_token == token));
+        assert_eq!(
+            completion.unwrap_err(),
+            mpsc::RecvTimeoutError::Disconnected
+        );
     }
 
     #[test]

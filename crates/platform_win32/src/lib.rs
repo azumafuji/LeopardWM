@@ -40,6 +40,7 @@ pub mod inspect;
 mod placement;
 mod system;
 mod types;
+mod user_press;
 mod visibility;
 mod window_identity;
 mod window_query;
@@ -49,6 +50,7 @@ pub use gestures::*;
 pub use hotkeys::*;
 pub use keyboard_hook::*;
 pub use mouse_hook::*;
+pub use user_press::{install_mouse_press_hook, user_press_count, MousePressHookHandle};
 
 // Re-export public API from submodules
 pub use elevation::{
@@ -76,8 +78,9 @@ pub use placement::{
     dwm_cloak_window, dwm_uncloak_all, dwm_uncloak_window, forget_offscreen_placement,
     get_window_frame_insets, get_window_invisible_insets, get_window_style_bits,
     is_placement_cloaked, is_placement_parked, mark_ghost_cloaked, offscreen_placement_matches,
-    park_window_for_placement, set_dwm_transitions_disabled, unmark_ghost_cloaked,
-    visible_rect_to_frame_rect, ApplyPlacementsResult, HeightViolation, PlacementCache,
+    park_window_for_placement, pending_async_position, set_dwm_transitions_disabled,
+    stop_placement_mover, unmark_ghost_cloaked, visible_rect_to_frame_rect,
+    wait_for_animation_positions, ApplyPlacementsResult, HeightViolation, PlacementCache,
     PlacementLanding, WidthViolation,
 };
 pub use system::{
@@ -89,7 +92,8 @@ pub use visibility::{
     cascade_windows, emergency_restore_windows, is_move_offscreen_sentinel_position,
     is_move_offscreen_sentinel_rect, move_window_offscreen, position_window,
     queue_window_offscreen, restore_all_windows_moved_offscreen_best_effort,
-    restore_window_moved_offscreen, restore_windows_moved_offscreen, uncloak_all_managed_windows,
+    restore_window_moved_offscreen, restore_windows_moved_offscreen,
+    restore_windows_moved_offscreen_and_uncloak_managed, uncloak_all_managed_windows,
     uncloak_all_visible_windows,
 };
 pub use window_identity::{
