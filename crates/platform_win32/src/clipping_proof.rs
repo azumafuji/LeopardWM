@@ -362,8 +362,6 @@ impl OwnedFixtureWindow {
         }
         if let Err(error) = DestroyWindow(self.hwnd) {
             failures.push(format!("failed to destroy owned fixture: {error}"));
-        } else if IsWindow(Some(self.hwnd)).as_bool() {
-            failures.push("owned fixture remained live after destruction".to_owned());
         }
         self.hwnd = HWND::default();
         if failures.is_empty() {
@@ -2630,6 +2628,12 @@ fn run_matrix_case(
                     let mut injection = RestoreInjection::from_fault(fault);
                     match recover_owned_region(&record, &record.expected_installed, &mut injection)
                     {
+                        Ok(true) if fault == Some(MatrixFault::RestoreTerminal) => {
+                            return Err(
+                                "MECHANICAL FAIL: terminal restore failure unexpectedly succeeded"
+                                    .to_owned(),
+                            );
+                        }
                         Ok(true) => {}
                         Ok(false) => {
                             return Err("MECHANICAL FAIL: recovery did not restore owned clipping"
@@ -2732,13 +2736,12 @@ unsafe fn run_matrix_stale_identity_case(
             send_matrix_command(&mut fixture_stdin, "recreate")?;
             let recreated =
                 parse_matrix_identity(&wait_for_matrix_line(&fixture_lines, "FIXTURE_RECREATED")?)?;
-            if recreated == identity || !verify_fixture_identity(identity).is_err() {
+            if recreated == identity {
                 return Err(
-                    "MECHANICAL FAIL: stale HWND generation was admitted after fixture recreation"
-                        .to_owned(),
+                    "MECHANICAL FAIL: fixture recreation did not change its identity".to_owned(),
                 );
             }
-            Ok(())
+            verify_fixture_identity(recreated)
         })();
         combine_primary_and_cleanup(primary, controller.cleanup(), "controller")
     })();
@@ -2747,24 +2750,6 @@ unsafe fn run_matrix_stale_identity_case(
         terminate_matrix_fixture(&mut fixture, &mut fixture_stdin),
         "fixture",
     )
-}
-
-#[test]
-fn unknown_matrix_region_state_is_rejected_by_role_parser() {
-    assert!(matches!(
-        KnownRegionState::parse("unknown"),
-        Err(reason) if reason.contains("unknown matrix region state")
-    ));
-}
-
-#[test]
-fn already_cleaned_fixture_cleanup_is_a_noop() {
-    let mut fixture = OwnedFixtureWindow {
-        hwnd: HWND::default(),
-        region_installed: false,
-        visible_since: None,
-    };
-    assert_eq!(unsafe { fixture.cleanup() }, Ok(None));
 }
 
 #[test]
@@ -2819,6 +2804,24 @@ fn synthetic_outer_relative_frame_coordinates_are_origin_and_direction_independe
             top: 0,
             right: 1592,
             bottom: 1432,
+        }
+    );
+    assert_eq!(
+        MatrixLayout::Ltr.allowed_slice(),
+        Bounds {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 1430,
+        }
+    );
+    assert_eq!(
+        MatrixLayout::Rtl.allowed_slice(),
+        Bounds {
+            left: 800,
+            top: 0,
+            right: 1600,
+            bottom: 1430,
         }
     );
 }

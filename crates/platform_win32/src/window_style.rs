@@ -2,6 +2,7 @@
 
 use crate::types::Win32Error;
 use crate::window_id_to_hwnd;
+use crate::window_identity::{capture_window_identity, window_identity_matches, WindowIdentity};
 use leopardwm_core_layout::WindowId;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -18,10 +19,6 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
-// ============================================================================
-// Border color
-// ============================================================================
-
 /// Set the DWM border color for a window (Windows 11+).
 ///
 /// Returns Ok(true) if the border was set, Ok(false) if the API is unsupported.
@@ -33,7 +30,6 @@ pub fn set_window_border_color(hwnd: WindowId, color: u32) -> Result<bool, Win32
             return Err(Win32Error::WindowNotFound(window_id));
         }
 
-        // DWMWA_BORDER_COLOR = 34
         const DWMWA_BORDER_COLOR: u32 = 34;
         let colorref = color;
         let result = DwmSetWindowAttribute(
@@ -76,46 +72,8 @@ fn is_border_color_unsupported_hresult(code: windows::core::HRESULT) -> bool {
     code.0 == E_INVALIDARG_HRESULT || code.0 == E_NOTIMPL_HRESULT
 }
 
-// ============================================================================
-// Snap layout suppression (WS_MAXIMIZEBOX removal)
-// ============================================================================
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct WindowIdentity {
-    process_id: u32,
-    thread_id: u32,
-    managed_lifetime_token: Option<u64>,
-}
-
-fn capture_window_identity(hwnd: HWND) -> Option<WindowIdentity> {
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-
-    let mut process_id = 0;
-    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
-    (thread_id != 0).then_some(WindowIdentity {
-        process_id,
-        thread_id,
-        managed_lifetime_token: crate::window_identity::read_managed_lifetime_token(
-            hwnd.0 as usize as u64,
-        )
-        .ok()
-        .flatten(),
-    })
-}
-
-fn window_identity_matches(hwnd: HWND, identity: WindowIdentity) -> bool {
-    (unsafe { IsWindow(Some(hwnd)).as_bool() })
-        && capture_window_identity(hwnd).is_some_and(|current| {
-            current.process_id == identity.process_id
-                && current.thread_id == identity.thread_id
-                && identity
-                    .managed_lifetime_token
-                    .is_none_or(|token| current.managed_lifetime_token == Some(token))
-        })
-}
-
-/// Global set of window IDs whose WS_MAXIMIZEBOX style has been removed.
-/// Used for panic recovery when AppState may be poisoned/unavailable.
+/// Tracks window identities queued for WS_MAXIMIZEBOX removal.
+/// Available for panic recovery when AppState is poisoned or unavailable.
 static SNAP_DISABLED_HWNDS: Mutex<Option<HashMap<WindowId, WindowIdentity>>> = Mutex::new(None);
 static PENDING_RESTORES: OnceLock<Mutex<HashMap<(WindowId, WindowIdentity), usize>>> =
     OnceLock::new();
@@ -193,10 +151,6 @@ impl Drop for InFlightStyleRequestGuard {
         self.retire();
     }
 }
-
-// ============================================================================
-// Maximize-box geometry diagnostics
-// ============================================================================
 
 const MAXIMIZEBOX_GEOMETRY_TARGET: &str = "leopardwm::window_style";
 const MAXIMIZEBOX_GEOMETRY_EVENT: &str = "maximizebox_geometry";
@@ -286,7 +240,6 @@ fn log_maximizebox_geometry(
     correlation_id: u64,
     set_window_pos_hr: Option<i32>,
 ) {
-    // Skip Win32 geometry queries unless this dedicated debug target is enabled.
     if !tracing::enabled!(target: MAXIMIZEBOX_GEOMETRY_TARGET, tracing::Level::DEBUG) {
         return;
     }
@@ -687,7 +640,8 @@ pub fn restore_maximizebox(window_id: WindowId) -> Result<bool, Win32Error> {
     Ok(true)
 }
 
-/// Wait until every window style request queued before this call has completed.
+/// Wait up to `timeout` for all previously queued window style requests.
+/// Returns whether the worker reached the barrier; `false` does not cancel requests.
 pub fn wait_for_window_style_requests(timeout: Duration) -> bool {
     let Some(worker) = WINDOW_STYLE_WORKER.get() else {
         return true;
@@ -712,6 +666,46 @@ pub fn restore_maximizebox_all(window_ids: &[WindowId]) {
                 tracing::warn!("Failed to restore WS_MAXIMIZEBOX for window {}: {}", wid, e);
             }
         }
+    }
+}
+
+fn recover_maximizebox(
+    window_id: WindowId,
+    hwnd: HWND,
+    deadline: Option<std::time::Instant>,
+    async_unmarked: bool,
+) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SET_WINDOW_POS_FLAGS,
+        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE);
+        const MAXIMIZEBOX: i32 = 0x0001_0000;
+        if style & MAXIMIZEBOX != 0
+            || !crate::placement::can_recover_placement_owner(window_id, hwnd, deadline)
+        {
+            return;
+        }
+        SetWindowLongW(hwnd, GWL_STYLE, style | MAXIMIZEBOX);
+        let responsive = crate::placement::can_recover_placement_owner(window_id, hwnd, deadline);
+        // Queue the frame refresh if the owner stopped answering after the style changed.
+        let dispatch = if !responsive
+            || (async_unmarked && !crate::placement::is_marked_placement_owner(window_id))
+        {
+            SWP_ASYNCWINDOWPOS
+        } else {
+            SET_WINDOW_POS_FLAGS(0)
+        };
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | dispatch | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 
@@ -744,10 +738,6 @@ pub(crate) fn emergency_restore_maximizebox(window_ids: &[WindowId], deadline: s
         entries.retain(|entry| Some(*entry) != *in_flight && window_ids.contains(&entry.0));
         entries
     };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_ASYNCWINDOWPOS,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    };
     let mut entries = entries;
     entries.sort_by_key(|&(id, _)| crate::placement::is_marked_placement_owner(id));
     for (id, identity) in entries {
@@ -760,37 +750,7 @@ pub(crate) fn emergency_restore_maximizebox(window_ids: &[WindowId], deadline: s
         if !window_identity_matches(hwnd, identity) {
             continue;
         }
-        unsafe {
-            let style = GetWindowLongW(hwnd, GWL_STYLE);
-            const MAXIMIZEBOX: i32 = 0x0001_0000;
-            if style & MAXIMIZEBOX == 0 {
-                if !crate::placement::can_recover_placement_owner(id, hwnd, Some(deadline)) {
-                    continue;
-                }
-                SetWindowLongW(hwnd, GWL_STYLE, style | MAXIMIZEBOX);
-                if !crate::placement::can_recover_placement_owner(id, hwnd, Some(deadline)) {
-                    continue;
-                }
-                let _ = SetWindowPos(
-                    hwnd,
-                    None,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_FRAMECHANGED
-                        | if crate::placement::is_marked_placement_owner(id) {
-                            windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS(0)
-                        } else {
-                            SWP_ASYNCWINDOWPOS
-                        }
-                        | SWP_NOMOVE
-                        | SWP_NOSIZE
-                        | SWP_NOZORDER
-                        | SWP_NOACTIVATE,
-                );
-            }
-        }
+        recover_maximizebox(id, hwnd, Some(deadline), true);
     }
 }
 
@@ -835,42 +795,16 @@ pub fn restore_maximizebox_panic_recovery() {
             recovered_unmarked = true;
         }
         // Direct Win32 call — don't use restore_maximizebox since tracking set is already drained
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-        };
         let Ok(hwnd) = window_id_to_hwnd(wid) else {
             continue;
         };
         if !window_identity_matches(hwnd, identity) {
             continue;
         }
-        unsafe {
-            if !IsWindow(Some(hwnd)).as_bool() {
-                continue;
-            }
-            let style = GetWindowLongW(hwnd, GWL_STYLE);
-            const WS_MAXIMIZEBOX_VAL: i32 = 0x0001_0000;
-            if (style & WS_MAXIMIZEBOX_VAL) == 0 {
-                let new_style = style | WS_MAXIMIZEBOX_VAL;
-                if !crate::placement::can_recover_placement_owner(wid, hwnd, None) {
-                    continue;
-                }
-                SetWindowLongW(hwnd, GWL_STYLE, new_style);
-                if !crate::placement::can_recover_placement_owner(wid, hwnd, None) {
-                    continue;
-                }
-                let _ = SetWindowPos(
-                    hwnd,
-                    None,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-            }
+        if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
+            continue;
         }
+        recover_maximizebox(wid, hwnd, None, false);
     }
 
     eprintln!(
@@ -1009,18 +943,6 @@ mod tests {
             result.unwrap_err(),
             Win32Error::WindowNotFound(u64::MAX)
         ));
-    }
-
-    #[test]
-    fn test_restore_maximizebox_all_empty_is_noop() {
-        restore_maximizebox_all(&[]);
-    }
-
-    #[test]
-    fn test_restore_maximizebox_panic_recovery_no_panic() {
-        let _guard = lock_snap_tracking_fixture();
-        // Should not panic even with empty tracking set
-        restore_maximizebox_panic_recovery();
     }
 
     const WS_MAXIMIZEBOX_BIT: i32 = 0x0001_0000;

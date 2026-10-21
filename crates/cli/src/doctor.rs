@@ -1,5 +1,3 @@
-//! Diagnostic checks (doctor) and log collection for bug reports.
-
 use crate::daemon_cmds::find_daemon_binary;
 use crate::ipc_client::{probe_daemon_running, send_command};
 use anyhow::Result;
@@ -9,11 +7,10 @@ use leopardwm_ipc::{
     NativeSwipeStatus,
 };
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// Result of a single diagnostic check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CheckResult {
     Pass(String),
@@ -68,11 +65,8 @@ pub(crate) fn daemon_log_path(
     }
 }
 
-/// The `behavior.log_level` in the config file and what it writes. A missing
-/// file, missing key, or unrecognized value means info, as in daemon startup.
-/// The daemon applies the level only at startup, so this is the configured
-/// level, not necessarily the running daemon's. A file that exists but cannot
-/// be read is unknown, because the daemon may be able to read it.
+/// Configured `behavior.log_level`, not the running daemon's; a missing file, key, or unknown
+/// value means info, and an existing but unreadable file is unknown.
 pub(crate) fn configured_log_level(config: Option<(PathBuf, io::Result<String>)>) -> String {
     const LEVELS: [(&str, &str); 5] = [
         ("trace", "everything is written"),
@@ -159,12 +153,27 @@ fn print_daemon_log_check(status: Option<&DaemonLogStatus>, uptime_seconds: Opti
         Some(uptime_seconds.is_some()),
         &leopardwm_ipc::log_dir().join("leopardwm-daemon.log"),
     );
-    let modified = fs::metadata(path)
+    daemon_log_check_from_paths(
+        status,
+        uptime_seconds,
+        &path,
+        doctor_config_path().0.as_deref(),
+    )
+    .print();
+}
+
+fn daemon_log_check_from_paths(
+    status: Option<&DaemonLogStatus>,
+    uptime_seconds: Option<u64>,
+    log_path: &Path,
+    config_path: Option<&Path>,
+) -> CheckResult {
+    let modified = fs::metadata(log_path)
         .and_then(|metadata| metadata.modified())
         .ok();
-    let config = doctor_config_path().0.map(|path| {
-        let text = fs::read_to_string(&path);
-        (path, text)
+    let config = config_path.map(|path| {
+        let text = fs::read_to_string(path);
+        (path.to_path_buf(), text)
     });
     daemon_log_check(
         status,
@@ -173,20 +182,25 @@ fn print_daemon_log_check(status: Option<&DaemonLogStatus>, uptime_seconds: Opti
         uptime_seconds,
         &configured_log_level(config),
     )
-    .print();
 }
 
 impl CheckResult {
     pub(crate) fn print(&self) {
+        self.write_to(&mut io::stdout())
+            .expect("failed printing to stdout");
+    }
+
+    fn write_to(&self, out: &mut impl Write) -> io::Result<()> {
         match self {
-            CheckResult::Pass(msg) => println!("[PASS] {}", msg),
-            CheckResult::Warn(msg) => println!("[WARN] {}", msg),
-            CheckResult::Fail(msg) => println!("[FAIL] {}", msg),
+            CheckResult::Pass(msg) => writeln!(out, "[PASS] {}", msg),
+            CheckResult::Warn(msg) => writeln!(out, "[WARN] {}", msg),
+            CheckResult::Fail(msg) => writeln!(out, "[FAIL] {}", msg),
         }
     }
 }
 
-/// Get the config file path (first one that exists, or the primary default).
+/// Returns the first existing config path, if any, and a display path that falls back to the
+/// primary default.
 pub(crate) fn doctor_config_path() -> (Option<PathBuf>, PathBuf) {
     let primary = ProjectDirs::from("", "", "leopardwm")
         .map(|dirs| dirs.config_dir().join("config.toml"))
@@ -212,7 +226,6 @@ pub(crate) fn doctor_config_path() -> (Option<PathBuf>, PathBuf) {
     (None, primary)
 }
 
-/// Validate that a file contains valid TOML.
 pub(crate) fn validate_toml_file(path: &std::path::Path) -> Result<(), String> {
     let content = fs::read_to_string(path).map_err(|e| format!("Cannot read file: {}", e))?;
     content
@@ -300,7 +313,6 @@ pub(crate) fn blocked_windows_check(
     }
 }
 
-/// Get the Windows version string.
 pub(crate) fn get_windows_version() -> String {
     #[cfg(windows)]
     {
@@ -323,7 +335,6 @@ pub(crate) fn get_windows_version() -> String {
     }
 }
 
-/// Handle the doctor command (run diagnostic checks).
 pub(crate) async fn handle_doctor() -> Result<()> {
     println!("LeopardWM Doctor");
     println!("===============");
@@ -468,132 +479,191 @@ pub(crate) async fn handle_doctor() -> Result<()> {
     Ok(())
 }
 
-/// Collect diagnostic logs into a text report for bug reports.
+pub(crate) enum CollectLogsDaemon {
+    NotRunning,
+    ProbeFailed(anyhow::Error),
+    Running(Result<IpcResponse>),
+}
+
 pub(crate) async fn handle_collect_logs() -> Result<()> {
-    println!("LeopardWM Log Collection");
-    println!("=======================\n");
+    let config = doctor_config_path();
+    let log_dir = leopardwm_ipc::log_dir();
+    let daemon = match probe_daemon_running() {
+        Ok(false) => CollectLogsDaemon::NotRunning,
+        Ok(true) => CollectLogsDaemon::Running(send_command(IpcCommand::HealthCheck).await),
+        Err(error) => CollectLogsDaemon::ProbeFailed(error),
+    };
+    write_collect_logs_report(
+        &mut io::stdout(),
+        config,
+        &log_dir,
+        daemon,
+        find_daemon_binary().as_deref(),
+    )?;
+    Ok(())
+}
 
-    println!("## Environment");
-    println!("OS: {}", get_windows_version());
-    println!("CLI Version: {}", env!("CARGO_PKG_VERSION"));
-    println!();
+pub(crate) fn write_collect_logs_report(
+    out: &mut impl Write,
+    (found_path, display_path): (Option<PathBuf>, PathBuf),
+    log_dir: &Path,
+    daemon: CollectLogsDaemon,
+    daemon_binary: Option<&Path>,
+) -> io::Result<()> {
+    writeln!(out, "LeopardWM Log Collection")?;
+    writeln!(out, "=======================\n")?;
 
-    let (found_path, display_path) = doctor_config_path();
+    writeln!(out, "## Environment")?;
+    writeln!(out, "OS: {}", get_windows_version())?;
+    writeln!(out, "CLI Version: {}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(out)?;
+
     match &found_path {
         Some(path) => {
-            println!("## Config ({}):", path.display());
+            writeln!(out, "## Config ({}):", path.display())?;
             match fs::read_to_string(path) {
-                Ok(content) => println!("{}", content),
-                Err(e) => println!("  (error reading: {})", e),
+                Ok(content) => writeln!(out, "{}", content)?,
+                Err(e) => writeln!(out, "  (error reading: {})", e)?,
             }
         }
-        None => println!(
+        None => writeln!(
+            out,
             "## Config: not found (expected at {})",
             display_path.display()
-        ),
+        )?,
     }
-    println!();
+    writeln!(out)?;
 
-    println!("## Native Touchpad Swipes");
-    let probe = probe_daemon_running();
-    let running = probe.as_ref().ok().copied();
+    writeln!(out, "## Native Touchpad Swipes")?;
+    let running = match &daemon {
+        CollectLogsDaemon::NotRunning => Some(false),
+        CollectLogsDaemon::ProbeFailed(_) => None,
+        CollectLogsDaemon::Running(_) => Some(true),
+    };
     let mut log_status = None;
     let mut log_uptime = None;
-    if running == Some(true) {
-        match send_command(IpcCommand::HealthCheck).await {
+    match daemon {
+        CollectLogsDaemon::Running(health) => match health {
             Ok(IpcResponse::HealthInfo {
                 native_swipes,
                 daemon_log,
                 uptime_seconds,
                 ..
             }) => {
-                native_swipes_check(native_swipes.as_ref()).print();
+                native_swipes_check(native_swipes.as_ref()).write_to(out)?;
                 log_status = daemon_log;
                 log_uptime = Some(uptime_seconds);
             }
-            Ok(other) => println!("  (status unavailable: unexpected health response: {other:?})"),
-            Err(error) => println!("  (status unavailable: health query failed: {error})"),
+            Ok(other) => writeln!(
+                out,
+                "  (status unavailable: unexpected health response: {other:?})"
+            )?,
+            Err(error) => writeln!(out, "  (status unavailable: health query failed: {error})")?,
+        },
+        CollectLogsDaemon::ProbeFailed(error) => {
+            writeln!(
+                out,
+                "  (status unavailable: could not check daemon state: {error})"
+            )?;
         }
-    } else {
-        if let Err(error) = probe {
-            println!("  (status unavailable: could not check daemon state: {error})");
-        } else {
-            println!("  (status unavailable because the daemon is not running)");
+        CollectLogsDaemon::NotRunning => {
+            writeln!(
+                out,
+                "  (status unavailable because the daemon is not running)"
+            )?;
         }
     }
-    println!();
+    writeln!(out)?;
 
-    let log_dir = leopardwm_ipc::log_dir();
     let (log_path, source) = daemon_log_path(
         log_status.as_ref(),
         running,
         &log_dir.join("leopardwm-daemon.log"),
     );
-    println!("Daemon log file read: {} ({source})", log_path.display());
-    print_daemon_log_check(log_status.as_ref(), log_uptime);
-    print!(
+    writeln!(
+        out,
+        "Daemon log file read: {} ({source})",
+        log_path.display()
+    )?;
+    daemon_log_check_from_paths(
+        log_status.as_ref(),
+        log_uptime,
+        &log_path,
+        found_path.as_deref(),
+    )
+    .write_to(out)?;
+    write!(
+        out,
         "{}",
         format_file_section("Daemon Log", &log_path, Some(100))
-    );
-    println!();
+    )?;
+    writeln!(out)?;
 
     let err_log_path = log_dir.join("leopardwm-daemon.err.log");
-    println!("## Daemon Error Log ({}):", err_log_path.display());
+    writeln!(out, "## Daemon Error Log ({}):", err_log_path.display())?;
     match fs::read_to_string(&err_log_path) {
-        Ok(content) if !content.trim().is_empty() => println!("{}", content),
-        Ok(_) => println!("  (empty)"),
-        Err(e) => println!("  (not found or unreadable: {})", e),
+        Ok(content) if !content.trim().is_empty() => writeln!(out, "{}", content)?,
+        Ok(_) => writeln!(out, "  (empty)")?,
+        Err(e) => writeln!(out, "  (not found or unreadable: {})", e)?,
     }
-    println!();
+    writeln!(out)?;
 
-    // Watchdog tracing log. Daemon bootstrap stderr and early panics are kept
-    // separately in the daemon error log above.
     let watchdog_log_path = log_dir.join("leopardwm-watchdog.log");
-    print!(
+    write!(
+        out,
         "{}",
         format_file_section("Watchdog Log", &watchdog_log_path, Some(100))
-    );
-    println!();
+    )?;
+    writeln!(out)?;
 
     let watchdog_err_log_path = log_dir.join("leopardwm-watchdog.err.log");
-    println!(
+    writeln!(
+        out,
         "## Watchdog Error Log ({}):",
         watchdog_err_log_path.display()
-    );
+    )?;
     match fs::read_to_string(&watchdog_err_log_path) {
-        Ok(content) if !content.trim().is_empty() => println!("{}", content),
-        Ok(_) => println!("  (empty)"),
-        Err(e) => println!("  (not found or unreadable: {})", e),
+        Ok(content) if !content.trim().is_empty() => writeln!(out, "{}", content)?,
+        Ok(_) => writeln!(out, "  (empty)")?,
+        Err(e) => writeln!(out, "  (not found or unreadable: {})", e)?,
     }
-    println!();
+    writeln!(out)?;
 
     let capture_path = log_dir.join(leopardwm_ipc::GESTURE_CAPTURE_LOG_FILE);
-    print!(
+    write!(
+        out,
         "{}",
         format_file_section("Gesture Capture", &capture_path, None)
-    );
-    println!("  Note: this is the full capture file, not a last-100 tail.");
-    println!(
+    )?;
+    writeln!(
+        out,
+        "  Note: this is the full capture file, not a last-100 tail."
+    )?;
+    writeln!(
+        out,
         "  Presence of this file does not mean a capture is running now. Capture is startup-only and default off."
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "  For touchpad gesture reports, share this section or the capture file itself rather than the tailed daemon log."
-    );
-    println!();
+    )?;
+    writeln!(out)?;
 
-    println!("## Daemon Binary:");
-    match find_daemon_binary() {
-        Some(path) => println!("  Found: {}", path.display()),
-        None => println!("  Not found"),
+    writeln!(out, "## Daemon Binary:")?;
+    match daemon_binary {
+        Some(path) => writeln!(out, "  Found: {}", path.display())?,
+        None => writeln!(out, "  Not found")?,
     }
 
-    println!("\n---");
-    println!("Copy the above output and attach it to your bug report.");
+    writeln!(out, "\n---")?;
+    writeln!(
+        out,
+        "Copy the above output and attach it to your bug report."
+    )?;
     Ok(())
 }
 
-/// Format a log file as a collect-logs section. `tail_lines = None` dumps the
-/// whole file so dedicated capture reports are not truncated to last-100.
+/// Use `tail_lines = None` to preserve complete dedicated capture reports.
 pub(crate) fn format_file_section(heading: &str, path: &Path, tail_lines: Option<usize>) -> String {
     let mut out = format!("## {heading} ({}):\n", path.display());
     match fs::read_to_string(path) {

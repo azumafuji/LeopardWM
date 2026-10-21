@@ -45,6 +45,18 @@ Run commands from the repository root.
 Read `agent_docs/architecture.md` for crate relationships, the daemon module map, and data flow.
 </important>
 
+<important if="adding a timeout or bounded wait to a step of shutdown, quit, or emergency recovery">
+A step that can now give up early changes what every later step sees. Check each later step that assumes the earlier one finished, and add a regression with a slow but responsive owner that finishes just after the wait, alongside the hung one.
+</important>
+
+<important if="writing a test that drives a Win32 failure path with an invalid window or handle">
+Use a handle that can never be valid, such as window id 0. Windows can hand a destroyed window's handle to another window, so a test that probes with one can change a window it doesn't own.
+</important>
+
+<important if="writing a test that records queued-owner or async-position entries, or runs emergency recovery">
+Hold `placement::tests::OWNER_SWEEP.read()` for the whole test. Other tests sweep those process-global maps in parallel and can clear your entry before you assert on it.
+</important>
+
 <important if="creating a release, tagging, or updating CHANGELOG.md">
 Read `agent_docs/release.md` for the release checklist and changelog format.
 </important>

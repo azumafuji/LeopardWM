@@ -1,13 +1,9 @@
 //! Global hotkey matching via a low-level keyboard hook.
 //!
-//! A `WH_KEYBOARD_LL` hook is LeopardWM's sole hotkey matcher: it inspects every
-//! key-down, and when the modifiers and key match a configured bind it swallows
-//! the keystroke and re-emits it as a [`HotkeyEvent`] so the daemon runs the
-//! bound command. Matching here (rather than `RegisterHotKey`) lets us tell
-//! left/right modifiers apart, so AltGr (Left Ctrl + Right Alt on international
-//! layouts) types normally instead of firing Ctrl+Alt binds.
-//!
-//! Mirrors the dedicated-thread + message-pump pattern in `gestures.rs`.
+//! A `WH_KEYBOARD_LL` hook inspects key-downs, swallows configured chords, and
+//! emits hotkey or Settings-recorder events. Matching here rather than with
+//! `RegisterHotKey` distinguishes left/right modifiers, so AltGr (Left Ctrl +
+//! Right Alt on international layouts) does not fire Ctrl+Alt binds.
 
 use crate::{
     fn_mod_bit, recover_poisoned_mutex, HotkeyEvent, HotkeyId, Modifiers, Win32Error,
@@ -48,14 +44,12 @@ pub enum KeyboardHookEvent {
     Recorded { modifiers: Modifiers, vk: u32 },
 }
 
-/// Sender the hook proc uses to deliver matched binds to the daemon.
 static HOOK_SENDER: std::sync::Mutex<Option<mpsc::Sender<KeyboardHookEvent>>> =
     std::sync::Mutex::new(None);
-/// The set of binds the hook should match.
 static HOOK_BINDS: std::sync::Mutex<Vec<HotkeyBind>> = std::sync::Mutex::new(Vec::new());
-/// Virtual-keys of currently-held matched main keys. Lets us fire once per
-/// physical press and swallow auto-repeat, tracking each key independently so a
-/// second matched key held at the same time can't reset the first.
+/// Held main keys, including unmatched presses: adding modifiers during
+/// auto-repeat must not turn an existing press into a new hotkey. Each key is
+/// tracked independently so another held key cannot reset its repeat guard.
 static HOOK_HELD: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
 // A hotkey consumed over the overview owns its repeats until key-up, even
 // if modifiers change and the next repeat would otherwise reach WM_KEYDOWN.
@@ -70,13 +64,10 @@ static HOOK_FN_HELD: std::sync::Mutex<u16> = std::sync::Mutex::new(0);
 /// F13–F24 keys held while Settings recording is active, including keys that
 /// are not configured as normal hotkey modifiers.
 static HOOK_RECORDING_FN_HELD: std::sync::Mutex<u16> = std::sync::Mutex::new(0);
-/// The singleton hook's Settings capture mode.
 static HOOK_RECORDING: AtomicBool = AtomicBool::new(false);
 /// Recorded key whose auto-repeat remains swallowed until its key-up arrives.
 static HOOK_RECORDED_PENDING: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
 
-// Modifier virtual-key codes (both the generic and left/right variants the
-// low-level hook reports).
 const VK_SHIFT: i32 = 0x10;
 const VK_CONTROL: i32 = 0x11;
 const VK_MENU: i32 = 0x12; // Alt
@@ -154,8 +145,7 @@ enum Action {
     },
 }
 
-// While recording, bare Esc/Tab/Backspace/Delete pass through; representable chords
-// are captured, and unrepresentable chords are swallowed while capture remains armed.
+// Bare Esc/Tab/Backspace/Delete must remain usable as Settings recording controls.
 fn is_recording_control(vk: u32, modifiers: Modifiers) -> bool {
     modifiers == Modifiers::default() && matches!(vk, VK_ESCAPE | VK_TAB | VK_BACK | VK_DELETE)
 }
@@ -639,7 +629,7 @@ unsafe fn keyboard_ll_hook_inner(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> 
         }
     };
 
-    if is_new_press {
+    if is_new_press && kb.dwExtraInfo != crate::user_press::SELF_INJECTED_INPUT_TAG {
         crate::user_press::record_user_press();
     }
 
@@ -794,7 +784,7 @@ unsafe fn send_menu_mask(vk: u16) {
                 wScan: 0,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: crate::user_press::SELF_INJECTED_INPUT_TAG,
             },
         },
     };
@@ -805,6 +795,7 @@ unsafe fn send_menu_mask(vk: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::LLKHF_INJECTED;
 
     static HOOK_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -818,18 +809,29 @@ mod tests {
         crate::user_press::set_keyboard_observer_installed(keyboard_generation, true);
         crate::user_press::set_mouse_observer_installed(mouse_generation, true);
         let mut expected = crate::user_press_count().unwrap();
-        for (message, vk, counts) in [
-            (WM_KEYUP, 0x41, false),
-            (WM_KEYDOWN, 0x41, true),
-            (WM_KEYDOWN, 0x41, false),
-            (WM_KEYUP, 0x41, false),
-            (WM_SYSKEYDOWN, 0x41, true),
-            (WM_SYSKEYUP, 0x41, false),
-            (WM_KEYDOWN, VK_LSHIFT as u32, false),
-            (WM_KEYUP, VK_LSHIFT as u32, false),
+        for (message, vk, flags, extra_info, counts) in [
+            (WM_KEYUP, 0x41, Default::default(), 0, false),
+            (WM_KEYDOWN, 0x41, Default::default(), 0, true),
+            (WM_KEYDOWN, 0x41, Default::default(), 0, false),
+            (WM_KEYUP, 0x41, Default::default(), 0, false),
+            (WM_SYSKEYDOWN, 0x41, Default::default(), 0, true),
+            (WM_SYSKEYUP, 0x41, Default::default(), 0, false),
+            (WM_KEYDOWN, VK_LSHIFT as u32, Default::default(), 0, false),
+            (WM_KEYUP, VK_LSHIFT as u32, Default::default(), 0, false),
+            (
+                WM_KEYDOWN,
+                0xE8,
+                LLKHF_INJECTED,
+                crate::user_press::SELF_INJECTED_INPUT_TAG,
+                false,
+            ),
+            (WM_KEYDOWN, 0x42, LLKHF_INJECTED, 0, true),
+            (WM_KEYDOWN, 0x43, LLKHF_INJECTED, 123, true),
         ] {
             let kb = KBDLLHOOKSTRUCT {
                 vkCode: vk,
+                flags,
+                dwExtraInfo: extra_info,
                 ..Default::default()
             };
             unsafe {
@@ -843,7 +845,7 @@ mod tests {
             assert_eq!(
                 crate::user_press_count(),
                 Some(expected),
-                "message={message}, vk={vk}"
+                "message={message}, vk={vk}, flags={flags:?}, extra_info={extra_info}"
             );
         }
         reset_held_keys().unwrap();
@@ -864,6 +866,20 @@ mod tests {
         Modifiers {
             ctrl: true,
             win: true,
+            ..Default::default()
+        }
+    }
+
+    fn win() -> Modifiers {
+        Modifiers {
+            win: true,
+            ..Default::default()
+        }
+    }
+
+    fn alt() -> Modifiers {
+        Modifiers {
+            alt: true,
             ..Default::default()
         }
     }
@@ -1021,7 +1037,7 @@ mod tests {
     #[test]
     fn overview_hotkey_press_owns_repeats_until_release() {
         let modifiers = win_ctrl();
-        let binds = [bind(modifiers, 0x25), bind(Modifiers::alt(), 0x25)];
+        let binds = [bind(modifiers, 0x25), bind(alt(), 0x25)];
         let mut owned = Vec::new();
         let first = decide(
             KeyMsg::Down,
@@ -1040,7 +1056,7 @@ mod tests {
             retain_overview_press(KeyMsg::Down, 0x25, first, true, &mut owned),
             Action::SwallowHotkey { emit: true, .. }
         ));
-        for held in [modifiers, Modifiers::default(), Modifiers::alt()] {
+        for held in [modifiers, Modifiers::default(), alt()] {
             let repeat = decide(
                 KeyMsg::Down,
                 0x25,
@@ -1168,7 +1184,6 @@ mod tests {
         let binds = vec![bind(f13, 0x48)]; // F13+H
                                            // Exact F-modifier held -> fires.
         assert!(find_bind(&binds, f13, 0x48).is_some());
-        // No modifier held (bare H) -> no match.
         assert!(find_bind(&binds, Modifiers::default(), 0x48).is_none());
         // A superset F-modifier (F13+F14) does not fire an F13-only bind.
         let f13_f14 = Modifiers {
@@ -1311,10 +1326,7 @@ mod tests {
 
     #[test]
     fn recording_chords_mask_start_and_alt_menus() {
-        for (held, vk, mask) in [
-            (Modifiers::win(), 0x24, Some(VK_CONTROL as u16)),
-            (Modifiers::alt(), 0x4A, Some(VK_MENU_MASK)),
-        ] {
+        for (held, vk, mask) in [(win(), 0x24, Some(0x11)), (alt(), 0x4A, Some(0xE8))] {
             assert_eq!(
                 decide(KeyMsg::Down, vk, held, true, &[], 0, 0, 0, true, true, None,),
                 Action::SwallowRecorded {
@@ -1329,36 +1341,30 @@ mod tests {
     #[test]
     fn hotkeys_mask_menus_only_on_new_presses_without_ctrl() {
         for (modifiers, mask) in [
-            (Modifiers::alt(), Some(VK_MENU_MASK)),
+            (alt(), Some(0xE8)),
             (
                 Modifiers {
                     shift: true,
-                    ..Modifiers::alt()
+                    ..alt()
                 },
-                Some(VK_MENU_MASK),
+                Some(0xE8),
             ),
-            (
-                Modifiers {
-                    win: true,
-                    ..Modifiers::alt()
-                },
-                Some(VK_MENU_MASK),
-            ),
+            (Modifiers { win: true, ..alt() }, Some(0xE8)),
             (
                 Modifiers {
                     fn_mods: fn_mod_bit(0x7C).unwrap(),
-                    ..Modifiers::alt()
+                    ..alt()
                 },
-                Some(VK_MENU_MASK),
+                Some(0xE8),
             ),
             (
                 Modifiers {
                     ctrl: true,
-                    ..Modifiers::alt()
+                    ..alt()
                 },
                 None,
             ),
-            (Modifiers::win(), Some(VK_CONTROL as u16)),
+            (win(), Some(0x11)),
             (win_ctrl(), None),
             (
                 Modifiers {
@@ -1446,7 +1452,7 @@ mod tests {
 
     #[test]
     fn recorded_key_repeat_stays_swallowed_until_key_up() {
-        let held = Modifiers::win();
+        let held = win();
         assert_eq!(
             decide(
                 KeyMsg::Down,

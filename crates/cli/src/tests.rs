@@ -1,5 +1,3 @@
-//! Unit tests for the CLI modules.
-
 use crate::args::*;
 use crate::command_map::*;
 use crate::config_cmds::*;
@@ -15,10 +13,6 @@ use leopardwm_ipc::{
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
-
-// =========================================================================
-// to_ipc_command tests
-// =========================================================================
 
 #[test]
 fn test_wrap_cycle_verbs_map_to_ipc() {
@@ -711,10 +705,6 @@ fn test_cli_export_shortcut_guide_rejects_output_with_install() {
     assert!(result.is_err());
 }
 
-// =========================================================================
-// generate_default_config tests
-// =========================================================================
-
 #[test]
 fn test_generate_default_config_contains_layout_section() {
     let config = generate_default_config();
@@ -745,39 +735,21 @@ fn test_generate_default_config_contains_centering_mode() {
     assert!(config.contains("center") || config.contains("just_in_view"));
 }
 
-// =========================================================================
-// default_config_path tests
-// =========================================================================
-
 #[test]
 fn test_default_config_path_returns_some() {
-    // This may return None in certain CI environments without home dirs
-    // but on most systems it should return Some
-    let path = default_config_path();
-    if let Some(p) = path {
-        assert!(p.ends_with("config.toml"));
-    }
+    let path = default_config_path().expect("default config path must be available");
+    assert!(path.ends_with("config.toml"));
+    assert!(
+        path.components().any(|component| component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("leopardwm")),
+        "Path should contain a 'leopardwm' component: {path:?}"
+    );
 }
-
-#[test]
-fn test_default_config_path_contains_leopardwm() {
-    if let Some(path) = default_config_path() {
-        let path_str = path.to_string_lossy();
-        assert!(
-            path_str.contains("leopardwm"),
-            "Path should contain 'leopardwm': {}",
-            path_str
-        );
-    }
-}
-
-// =========================================================================
-// IPC timeout and framing tests
-// =========================================================================
 
 #[test]
 fn test_ipc_connect_timeout_is_reasonable() {
-    // Timeout should be between 1 and 30 seconds
     assert!(IPC_CONNECT_TIMEOUT >= Duration::from_secs(1));
     assert!(IPC_CONNECT_TIMEOUT <= Duration::from_secs(30));
 }
@@ -862,7 +834,6 @@ fn test_command_response_timeout_for_regular_command_uses_default() {
 
 #[test]
 fn test_empty_response_parse_fails() {
-    // Verify that an empty string cannot be parsed as a valid IPC response
     let result: Result<IpcResponse, _> = serde_json::from_str("");
     assert!(
         result.is_err(),
@@ -1314,10 +1285,6 @@ fn test_generate_default_config_contains_snap_hints() {
     assert!(config.contains("[snap_hints]"));
 }
 
-// =========================================================================
-// Doctor helper tests
-// =========================================================================
-
 #[test]
 fn test_doctor_config_path_returns_primary() {
     let (_found, display) = doctor_config_path();
@@ -1350,16 +1317,6 @@ fn test_validate_toml_invalid() {
     fs::write(&path, "[layout\ngap = !!!").unwrap();
     assert!(validate_toml_file(&path).is_err());
     let _ = fs::remove_file(&path);
-}
-
-#[test]
-fn test_check_result_variants() {
-    let pass = CheckResult::Pass("test pass".to_string());
-    let warn = CheckResult::Warn("test warn".to_string());
-    let fail = CheckResult::Fail("test fail".to_string());
-    pass.print();
-    warn.print();
-    fail.print();
 }
 
 #[test]
@@ -1504,10 +1461,6 @@ fn test_get_windows_version_does_not_panic() {
     assert!(!version.is_empty());
 }
 
-// =========================================================================
-// CLI completeness tests
-// =========================================================================
-
 #[test]
 fn test_config_backup_path() {
     let config = PathBuf::from("/some/path/config.toml");
@@ -1556,16 +1509,10 @@ fn native_swipes_check_warns_with_reason_and_passes_when_off() {
     );
 }
 
-#[tokio::test]
-async fn test_handle_collect_logs_does_not_panic() {
-    let result = handle_collect_logs().await;
-    assert!(result.is_ok());
-}
-
 #[test]
-fn collect_logs_includes_full_gesture_capture_not_last_100() {
+fn collect_logs_report_includes_full_gesture_capture_not_last_100() {
     let dir = std::env::temp_dir().join(format!(
-        "lwm-collect-logs-{}-{}",
+        "leopardwm-collect-logs-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1580,52 +1527,63 @@ fn collect_logs_includes_full_gesture_capture_not_last_100() {
     fs::write(&daemon, &daemon_body).unwrap();
     fs::write(&capture, &capture_body).unwrap();
 
-    let daemon_section = format_file_section("Daemon Log", &daemon, Some(100));
-    let capture_section = format_file_section("Gesture Capture", &capture, None);
+    let config_path = dir.join("config.toml");
+    let config_body = "[behavior]\nlog_level = \"debug\"\n";
+    fs::write(&config_path, config_body).unwrap();
+    let mut output = Vec::new();
+    let result = write_collect_logs_report(
+        &mut output,
+        (Some(config_path.clone()), config_path),
+        &dir,
+        CollectLogsDaemon::NotRunning,
+        None,
+    );
+    fs::remove_dir_all(&dir).unwrap();
+    result.unwrap();
+    let report = String::from_utf8(output).unwrap();
+    assert!(
+        report.contains(config_body),
+        "temporary config missing from report"
+    );
+    assert!(report.contains("status unavailable because the daemon is not running"));
+    let daemon_section = report
+        .split_once("## Daemon Log (")
+        .unwrap()
+        .1
+        .split_once("## Daemon Error Log (")
+        .unwrap()
+        .0;
+    let capture_section = report
+        .split_once("## Gesture Capture (")
+        .unwrap()
+        .1
+        .split_once("## Daemon Binary:")
+        .unwrap()
+        .0;
 
-    assert!(
-        daemon_section.contains("daemon-line-149"),
-        "{daemon_section}"
+    assert!(daemon_section.contains("daemon-line-149\n"));
+    assert!(daemon_section.contains("daemon-line-50\n"));
+    assert!(!daemon_section.contains("daemon-line-49\n"));
+    assert!(!daemon_section.contains("daemon-line-0\n"));
+    assert_eq!(
+        daemon_section
+            .lines()
+            .filter(|line| line.starts_with("daemon-line-"))
+            .count(),
+        100,
     );
+    assert!(daemon_section.contains("50 earlier lines omitted"));
     assert!(
-        !daemon_section.contains("daemon-line-0"),
-        "{daemon_section}"
+        capture_section.contains("capture-line-0\n"),
+        "report dropped the first gesture capture line"
     );
+    assert!(capture_section.contains("capture-line-149\n"));
     assert!(
-        daemon_section.contains("earlier lines omitted"),
-        "{daemon_section}"
+        capture_section.contains(&capture_body),
+        "report must preserve the entire gesture capture"
     );
-    assert!(
-        capture_section.contains("capture-line-0"),
-        "{capture_section}"
-    );
-    assert!(
-        capture_section.contains("capture-line-149"),
-        "{capture_section}"
-    );
-    assert!(
-        !capture_section.contains("earlier lines omitted"),
-        "{capture_section}"
-    );
-
-    let _ = fs::remove_dir_all(&dir);
+    assert!(!capture_section.contains("earlier lines omitted"));
 }
-
-#[test]
-fn test_config_action_variants_parse() {
-    let _init = ConfigAction::Init {
-        output: None,
-        force: false,
-        profile: None,
-    };
-    let _reset = ConfigAction::Reset;
-    let _backup = ConfigAction::Backup;
-    let _restore = ConfigAction::Restore;
-}
-
-// =========================================================================
-// Profile config tests
-// =========================================================================
 
 #[test]
 fn test_generate_profile_config_laptop() {

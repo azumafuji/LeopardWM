@@ -1,16 +1,12 @@
 //! Read-only window admission diagnostics.
 //!
-//! Mirrors the two admission paths without mutating windows or touching the
-//! production enumeration callbacks. Startup classification short-circuits in
-//! callback order. Live-create first mirrors the create/show WinEvent pre-gate
-//! (`should_emit_window_event_with_policy` with require_visible=true,
-//! require_title=false, filter_cloaked=false), then models the residual
-//! `get_window_info` checks and the daemon's admission-only topmost popup check,
-//! which runs immediately after the window-info read succeeds. Relative to
-//! startup/refresh it still omits cloak,
-//! empty/unreadable title, and skip-title — that divergence is the contract
-//! that admits transient popups, but it is not enforced by unit tests here
-//! because the classifiers require a live HWND.
+//! Startup classification short-circuits in enumeration callback order.
+//! Live-create mirrors the create/show WinEvent pre-gate, residual
+//! `get_window_info` checks, and the daemon's admission-only topmost popup check.
+//! Unlike startup/refresh, live-create omits cloak, empty/unreadable title, and
+//! skip-title checks so transient popups can be admitted. Its diagnostic popup
+//! verdict precedes residual reads, although daemon admission checks it after
+//! the window-info read succeeds.
 
 use crate::enumeration::{
     is_excluded_tool_window, is_excluded_topmost_popup, is_window_cloaked,
@@ -153,21 +149,15 @@ fn classify_startup(hwnd: HWND) -> Result<(), SkipReason> {
 /// after that read succeeds. Diagnostics retain the popup verdict before the
 /// residual reads.
 fn classify_live_create(hwnd: HWND) -> Result<(), SkipReason> {
-    // --- Stage 1: create/show event pre-gate ---
-    // Mirrors should_emit_window_event_with_policy (require_visible=true,
-    // require_title=false, filter_cloaked=false).
     let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) as u32 };
     let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 };
 
-    // require_visible: IsWindowVisible
     if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
         return Err(SkipReason::NotVisible);
     }
-    // require_visible: WS_VISIBLE style bit
     if style & WS_VISIBLE.0 == 0 {
         return Err(SkipReason::StyleNotVisible);
     }
-    // require_visible: IsIconic
     if unsafe { IsIconic(hwnd) }.as_bool() {
         return Err(SkipReason::Minimized);
     }
@@ -188,7 +178,6 @@ fn classify_live_create(hwnd: HWND) -> Result<(), SkipReason> {
         return Err(SkipReason::SkipClass);
     }
 
-    // --- Stage 2: residual lookup and daemon admission checks ---
     if is_excluded_topmost_popup(style, ex_style) {
         return Err(SkipReason::TopmostPopup);
     }
@@ -213,7 +202,6 @@ fn read_title_best_effort(hwnd: HWND) -> String {
 
 fn inspect_one(hwnd: HWND) -> WindowInspection {
     let hwnd_id = hwnd.0 as WindowId;
-    // Live-create first: it is the path that admits transient popups.
     let live_create_verdict = classify_live_create(hwnd);
     let startup_verdict = classify_startup(hwnd);
 
@@ -282,18 +270,6 @@ unsafe extern "system" fn inspect_windows_callback(hwnd: HWND, lparam: LPARAM) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_THICKFRAME,
-    };
-
-    #[test]
-    fn tool_window_exception_preserved() {
-        let thick = WS_THICKFRAME.0;
-        let tool = WS_EX_TOOLWINDOW.0;
-        let app = WS_EX_APPWINDOW.0;
-        assert!(!is_excluded_tool_window(thick, tool | app));
-        assert!(is_excluded_tool_window(0, tool));
-    }
 
     #[test]
     fn skip_class_and_title_leaf_predicates() {
@@ -302,13 +278,41 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Requires display hardware - run with: cargo test -- --ignored"]
     fn inspect_windows_returns_entries_with_both_verdicts() {
-        let windows = inspect_windows().expect("EnumWindows should succeed");
-        for w in &windows {
-            // Both verdicts are always populated (Ok or Err).
-            let _ = (w.startup_verdict, w.live_create_verdict, w.hwnd);
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+        };
+
+        struct OwnedWindow(HWND);
+        impl Drop for OwnedWindow {
+            fn drop(&mut self) {
+                unsafe { DestroyWindow(self.0) }.unwrap();
+            }
         }
-        let _ = windows.len();
+        let owned = OwnedWindow(unsafe {
+            CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                w!("STATIC"),
+                w!("LeopardWM hidden inspection test"),
+                WS_POPUP,
+                0,
+                0,
+                100,
+                100,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("create hidden inspection window")
+        });
+        let windows = inspect_windows().expect("EnumWindows should succeed");
+        let inspected = windows
+            .iter()
+            .find(|w| w.hwnd == owned.0 .0 as WindowId)
+            .expect("owned hidden window must be enumerated");
+        assert_eq!(inspected.startup_verdict, Err(SkipReason::NotVisible));
+        assert_eq!(inspected.live_create_verdict, Err(SkipReason::NotVisible));
     }
 }

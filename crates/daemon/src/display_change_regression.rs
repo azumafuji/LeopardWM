@@ -139,11 +139,38 @@ unsafe extern "system" fn placement_owner_proc(
         }
     }
     let result = DefWindowProcW(hwnd, message, wparam, lparam);
+    if message == windows::Win32::UI::WindowsAndMessaging::WM_STYLECHANGED {
+        let control = GetPropW(hwnd, w!("LeopardWMFixtureMoveControl")).0;
+        if !control.is_null() {
+            let control = &*(control as *const MoveControl);
+            if control
+                .block_after_style_change
+                .swap(false, Ordering::SeqCst)
+            {
+                control.style_change_seen.store(true, Ordering::SeqCst);
+                // Let SetWindowLongW return while this owner can no longer answer probes.
+                let _ = windows::Win32::UI::WindowsAndMessaging::ReplyMessage(result);
+                let released = control.released.lock().unwrap();
+                control.entered.store(true, Ordering::SeqCst);
+                let (_released, _timeout) = control
+                    .wake
+                    .wait_timeout_while(released, Duration::from_secs(5), |released| !*released)
+                    .unwrap();
+            }
+        }
+    }
     if message == windows::Win32::UI::WindowsAndMessaging::WM_WINDOWPOSCHANGED {
         let control = GetPropW(hwnd, w!("LeopardWMFixtureMoveControl")).0;
         if !control.is_null() {
             let control = &*(control as *const MoveControl);
             let position = &*(lparam.0 as *const WINDOWPOS);
+            if position
+                .flags
+                .contains(windows::Win32::UI::WindowsAndMessaging::SWP_FRAMECHANGED)
+                && control.style_change_seen.load(Ordering::SeqCst)
+            {
+                control.frame_change_seen.store(true, Ordering::SeqCst);
+            }
             control.moves.lock().unwrap().push((position.x, position.y));
             if control.pause_after_move.swap(false, Ordering::SeqCst) {
                 control.pause_pump.store(true, Ordering::SeqCst);
@@ -161,6 +188,9 @@ struct MoveControl {
     entered: AtomicBool,
     pause_pump: AtomicBool,
     pause_after_move: AtomicBool,
+    block_after_style_change: AtomicBool,
+    style_change_seen: AtomicBool,
+    frame_change_seen: AtomicBool,
     pump_paused: AtomicBool,
     sent_messages_only: AtomicBool,
     moves: Mutex<Vec<(i32, i32)>>,
@@ -500,12 +530,10 @@ fn test_completed_mover_minimum_width_reports_direct_landing_feedback() {
     )
     .unwrap();
     assert_eq!(measured.width_violations.len(), 1);
-    assert_eq!(
-        measured.width_violations[0].min_width,
-        direct_result.width_violations[0].min_width
-    );
+    assert_eq!(measured.width_violations[0].min_width, 600);
     assert_eq!(measured.width_violations[0].window_id, marked.window_id);
     assert_eq!(direct_result.width_violations.len(), 1);
+    assert_eq!(direct_result.width_violations[0].min_width, 600);
 }
 
 fn inactive_workspace_move_state(owner: &PlacementOwner) -> AppState {
@@ -700,6 +728,7 @@ fn parked_owner_release_reaches_target(cascade: bool) {
     let owner =
         PlacementOwner::spawn_with_message_mode(Rect::new(48, 48, 160, 120), 0, false, true);
     classify_non_draining_owner(&owner);
+    let before_park = leopardwm_platform_win32::get_window_chrome_rect(owner.window_id).unwrap();
     leopardwm_platform_win32::move_window_offscreen(owner.window_id).unwrap();
     assert!(wait_for_fixture(
         || !leopardwm_platform_win32::pending_async_position(owner.window_id),
@@ -721,11 +750,20 @@ fn parked_owner_release_reaches_target(cascade: bool) {
             height,
         )
     } else {
+        let work_area = leopardwm_platform_win32::get_primary_monitor()
+            .unwrap()
+            .work_area;
+        let target = Rect::new(
+            work_area.x,
+            work_area.y,
+            before_park.width,
+            before_park.height,
+        );
         assert_eq!(
             leopardwm_platform_win32::restore_windows_moved_offscreen(&[owner.window_id]).unwrap(),
             1
         );
-        leopardwm_platform_win32::get_window_chrome_rect(owner.window_id).unwrap()
+        target
     };
     assert!(wait_for_fixture(
         || !leopardwm_platform_win32::pending_async_position(owner.window_id),
@@ -941,6 +979,207 @@ fn test_emergency_recovery_skips_hung_marked_owner_after_unmarked_work() {
         "responsive marked owner was not restored"
     );
     assert!(hung_skipped, "hung marked owner was not skipped");
+}
+
+#[test]
+fn test_emergency_recovery_continues_after_marked_move_blocks() {
+    if run_in_placement_test_process("tests::display_change_regression::test_emergency_recovery_continues_after_marked_move_blocks") { return; }
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_MAXIMIZEBOX,
+    };
+    let _desktop = FixtureDesktop::enter();
+    let first =
+        PlacementOwner::spawn_with_message_mode(Rect::new(48, 48, 160, 120), 0, false, true);
+    let second =
+        PlacementOwner::spawn_with_message_mode(Rect::new(48, 48, 160, 120), 0, false, true);
+    for owner in [&first, &second] {
+        classify_non_draining_owner(owner);
+        leopardwm_platform_win32::move_window_offscreen(owner.window_id).unwrap();
+        assert!(wait_for_fixture(
+            || !leopardwm_platform_win32::pending_async_position(owner.window_id),
+            Duration::from_secs(3)
+        ));
+        assert!(
+            leopardwm_platform_win32::get_window_chrome_rect(owner.window_id).is_some_and(|rect| {
+                leopardwm_platform_win32::is_move_offscreen_sentinel_rect(&rect)
+            })
+        );
+    }
+    let second_hwnd = HWND(second.window_id as usize as *mut _);
+    unsafe {
+        let style = GetWindowLongW(second_hwnd, GWL_STYLE);
+        SetWindowLongW(second_hwnd, GWL_STYLE, style | WS_MAXIMIZEBOX.0 as i32);
+    }
+    assert!(leopardwm_platform_win32::remove_maximizebox(second.window_id).unwrap());
+    assert!(leopardwm_platform_win32::wait_for_window_style_requests(
+        Duration::from_secs(3)
+    ));
+    assert_eq!(
+        unsafe { GetWindowLongW(second_hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX.0 as i32,
+        0
+    );
+    first.control.block_next.store(true, Ordering::SeqCst);
+    second.control.move_delay_ms.store(300, Ordering::SeqCst);
+    let ids = [first.window_id, second.window_id];
+    let desktop = unsafe { GetThreadDesktop(GetCurrentThreadId()) } as usize;
+    let (done_tx, done_rx) = mpsc::channel();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let recovery = thread::spawn(move || {
+        assert_ne!(unsafe { SetThreadDesktop(desktop as *mut _) }, 0);
+        leopardwm_platform_win32::emergency_restore_windows(&ids, deadline);
+        let finished = Instant::now();
+        let second_landed = leopardwm_platform_win32::get_window_chrome_rect(ids[1])
+            .is_some_and(|rect| !leopardwm_platform_win32::is_move_offscreen_sentinel_rect(&rect));
+        let maximize_restored =
+            unsafe { GetWindowLongW(HWND(ids[1] as usize as *mut _), GWL_STYLE) }
+                & WS_MAXIMIZEBOX.0 as i32
+                != 0;
+        let _ = done_tx.send((finished, second_landed, maximize_restored));
+    });
+    let blocked = wait_for_fixture(
+        || first.control.entered.load(Ordering::SeqCst),
+        deadline.saturating_duration_since(Instant::now()),
+    );
+    let second_restored = wait_for_fixture(
+        || {
+            leopardwm_platform_win32::get_window_chrome_rect(second.window_id).is_some_and(|rect| {
+                !leopardwm_platform_win32::is_move_offscreen_sentinel_rect(&rect)
+            })
+        },
+        deadline.saturating_duration_since(Instant::now()),
+    );
+    let return_limit = deadline + Duration::from_millis(200);
+    let completion = done_rx
+        .recv_timeout(return_limit.saturating_duration_since(Instant::now()))
+        .ok();
+    let returned = completion.is_some_and(|(finished, _, _)| finished < return_limit);
+    let second_landed_at_return = completion.is_some_and(|(_, landed, _)| landed);
+    let maximize_restored_at_return = completion.is_some_and(|(_, _, restored)| restored);
+    let first_still_parked = leopardwm_platform_win32::get_window_chrome_rect(first.window_id)
+        .is_some_and(|rect| leopardwm_platform_win32::is_move_offscreen_sentinel_rect(&rect));
+    first.control.release();
+    let cleaned_up = wait_for_fixture(
+        || {
+            leopardwm_platform_win32::get_window_chrome_rect(first.window_id).is_some_and(|rect| {
+                !leopardwm_platform_win32::is_move_offscreen_sentinel_rect(&rect)
+            })
+        },
+        Duration::from_secs(2),
+    );
+    let completed = completion.is_some() || done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+    if completed {
+        recovery.join().unwrap();
+    }
+    assert!(
+        blocked,
+        "first marked owner did not block inside the native move"
+    );
+    assert!(
+        second_restored,
+        "second marked window was not restored before the deadline while the first move blocked"
+    );
+    assert!(
+        second_landed_at_return,
+        "slow marked owner was still off screen when recovery returned"
+    );
+    assert!(
+        maximize_restored_at_return,
+        "slow marked owner still lacked its maximize button when recovery returned"
+    );
+    assert!(
+        returned,
+        "emergency recovery exceeded its deadline plus scheduling margin"
+    );
+    assert!(
+        first_still_parked,
+        "blocked first owner completed before release"
+    );
+    assert!(
+        cleaned_up,
+        "first owner did not recover after releasing its move gate"
+    );
+    assert!(
+        completed,
+        "recovery did not finish after releasing the first owner"
+    );
+}
+
+#[test]
+fn test_emergency_recovery_refreshes_frame_after_marked_owner_stops_answering() {
+    if run_in_placement_test_process("tests::display_change_regression::test_emergency_recovery_refreshes_frame_after_marked_owner_stops_answering") { return; }
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_MAXIMIZEBOX,
+    };
+    let _desktop = FixtureDesktop::enter();
+    let owner =
+        PlacementOwner::spawn_with_message_mode(Rect::new(48, 48, 160, 120), 0, false, true);
+    classify_non_draining_owner(&owner);
+    owner.resume();
+    let hwnd = HWND(owner.window_id as usize as *mut _);
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(hwnd),
+            windows::Win32::UI::WindowsAndMessaging::WM_APP + 42,
+            WPARAM(0),
+            LPARAM(0),
+        )
+        .unwrap();
+    }
+    assert!(wait_for_fixture(
+        || !unsafe { GetPropW(hwnd, w!("LeopardWMFixtureQueueDrained")) }.is_invalid(),
+        Duration::from_secs(2),
+    ));
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE);
+        SetWindowLongW(hwnd, GWL_STYLE, style | WS_MAXIMIZEBOX.0 as i32);
+    }
+    assert!(leopardwm_platform_win32::remove_maximizebox(owner.window_id).unwrap());
+    assert!(leopardwm_platform_win32::wait_for_window_style_requests(
+        Duration::from_secs(3)
+    ));
+    assert_eq!(
+        unsafe { GetWindowLongW(hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX.0 as i32,
+        0
+    );
+    owner
+        .control
+        .block_after_style_change
+        .store(true, Ordering::SeqCst);
+    let window_id = owner.window_id;
+    let desktop = unsafe { GetThreadDesktop(GetCurrentThreadId()) } as usize;
+    let (done_tx, done_rx) = mpsc::channel();
+    let recovery = thread::spawn(move || {
+        assert_ne!(unsafe { SetThreadDesktop(desktop as *mut _) }, 0);
+        leopardwm_platform_win32::emergency_restore_windows(
+            &[window_id],
+            Instant::now() + Duration::from_secs(2),
+        );
+        done_tx.send(()).unwrap();
+    });
+    let blocked_after_style = wait_for_fixture(
+        || owner.control.entered.load(Ordering::SeqCst),
+        Duration::from_secs(3),
+    );
+    let returned = done_rx.recv_timeout(Duration::from_millis(800)).is_ok();
+    let style_restored = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } & WS_MAXIMIZEBOX.0 as i32 != 0;
+    owner.control.release();
+    let frame_refreshed = wait_for_fixture(
+        || owner.control.frame_change_seen.load(Ordering::SeqCst),
+        Duration::from_secs(2),
+    );
+    if returned {
+        recovery.join().unwrap();
+    }
+    assert!(
+        blocked_after_style,
+        "owner did not stop answering after the style change"
+    );
+    assert!(returned, "emergency recovery blocked on the paused owner");
+    assert!(style_restored, "maximize-box style was not restored");
+    assert!(
+        frame_refreshed,
+        "no frame refresh after the marked owner resumed"
+    );
 }
 
 #[test]

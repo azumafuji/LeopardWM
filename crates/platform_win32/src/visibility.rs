@@ -3,11 +3,15 @@
 use crate::enumeration::{collect_all_top_level_window_ids, get_primary_monitor};
 use crate::placement::apply_placements;
 use crate::types::{PlatformConfig, Win32Error};
+use crate::window_identity::{capture_window_identity, window_identity_matches, WindowIdentity};
 use crate::window_style::reset_window_border_color;
 use crate::MOVE_OFFSCREEN_SENTINEL_COORD;
 use crate::{combine_operation_failures, is_benign_side_effect_error, window_id_to_hwnd};
 use leopardwm_core_layout::{Rect, Visibility, WindowId, WindowPlacement};
+use std::collections::HashSet;
 use std::ffi::c_void;
+use std::sync::{mpsc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::HiDpi::{
     SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
@@ -16,10 +20,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, IsIconic, IsWindow, SetWindowPos, ShowWindow, HWND_TOP, SET_WINDOW_POS_FLAGS,
     SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
 };
-
-// ============================================================================
-// Offscreen sentinel helpers
-// ============================================================================
 
 /// Check whether coordinates indicate MoveOffScreen sentinel placement.
 pub fn is_move_offscreen_sentinel_position(x: i32, y: i32) -> bool {
@@ -109,16 +109,6 @@ pub fn position_window(window_id: WindowId, rect: Rect) -> Result<(), Win32Error
         })?;
     }
     Ok(())
-}
-
-#[allow(dead_code)]
-pub(crate) fn move_offscreen_rect_for(rect: &Rect) -> Rect {
-    Rect::new(
-        MOVE_OFFSCREEN_SENTINEL_COORD,
-        MOVE_OFFSCREEN_SENTINEL_COORD,
-        rect.width,
-        rect.height,
-    )
 }
 
 fn compute_restore_rect_from_offscreen(current_rect: &Rect, work_area: &Rect) -> Rect {
@@ -234,10 +224,6 @@ fn restore_window_if_offscreen_to_work_area(
     Ok(true)
 }
 
-// ============================================================================
-// Restore / uncloak
-// ============================================================================
-
 // Recovery also runs in DPI-unaware CLI/watchdog threads. Keep monitor and window
 // coordinates physical for the entire operation, then restore the caller's context.
 // Per-monitor v1 is sufficient here and also works on Windows 10 before v2 support.
@@ -260,6 +246,87 @@ impl RecoveryDpiContext {
 impl Drop for RecoveryDpiContext {
     fn drop(&mut self) {
         unsafe { SetThreadDpiAwarenessContext(self.0) };
+    }
+}
+
+// A timed-out native move stays in flight across recovery passes until its owner returns.
+static RECOVERY_MOVES: LazyLock<Mutex<HashSet<WindowId>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+struct RecoveryMove(WindowId);
+
+impl Drop for RecoveryMove {
+    fn drop(&mut self) {
+        RECOVERY_MOVES
+            .lock()
+            .unwrap_or_else(crate::recover_poisoned_mutex)
+            .remove(&self.0);
+    }
+}
+
+fn emergency_marked_move(
+    id: WindowId,
+    restored: Rect,
+    origin: Option<(i32, i32)>,
+    deadline: Instant,
+) {
+    let Some(identity) = window_id_to_hwnd(id).ok().and_then(capture_window_identity) else {
+        return;
+    };
+    emergency_marked_move_with_identity(id, restored, origin, deadline, identity);
+}
+
+fn emergency_marked_move_with_identity(
+    id: WindowId,
+    restored: Rect,
+    origin: Option<(i32, i32)>,
+    deadline: Instant,
+    identity: WindowIdentity,
+) {
+    if Instant::now() >= deadline
+        || !RECOVERY_MOVES
+            .lock()
+            .unwrap_or_else(crate::recover_poisoned_mutex)
+            .insert(id)
+    {
+        return;
+    }
+    let in_flight = RecoveryMove(id);
+    let (done_tx, done_rx) = mpsc::channel();
+    let helper = std::thread::Builder::new()
+        .name("window-recovery-move".into())
+        .spawn(move || {
+            let _in_flight = in_flight;
+            let Ok(_dpi) = RecoveryDpiContext::enter() else {
+                return;
+            };
+            let Ok(hwnd) = window_id_to_hwnd(id) else {
+                return;
+            };
+            if Instant::now() < deadline
+                && window_identity_matches(hwnd, identity)
+                && unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        None,
+                        restored.x,
+                        restored.y,
+                        restored.width,
+                        restored.height,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                }
+                .is_ok()
+                && origin.is_some()
+            {
+                crate::placement::record_queued_owner_rect(id, &restored, origin);
+            }
+            let _ = done_tx.send(());
+        });
+    if helper.is_ok() {
+        let budget =
+            Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now()));
+        let _ = done_rx.recv_timeout(budget);
     }
 }
 
@@ -298,7 +365,24 @@ fn emergency_sentinel_pass(
                 continue;
             }
             let restored = compute_restore_rect_from_offscreen(&current, work_area);
+            if crate::placement::is_marked_placement_owner(id)
+                && RECOVERY_MOVES
+                    .lock()
+                    .unwrap_or_else(crate::recover_poisoned_mutex)
+                    .contains(&id)
+            {
+                continue;
+            }
             if !crate::placement::can_recover_placement_owner(id, hwnd, Some(deadline)) {
+                continue;
+            }
+            if crate::placement::is_marked_placement_owner(id) {
+                emergency_marked_move(
+                    id,
+                    restored,
+                    owner_wait.then_some((current.x, current.y)),
+                    deadline,
+                );
                 continue;
             }
             if SetWindowPos(
@@ -308,13 +392,7 @@ fn emergency_sentinel_pass(
                 restored.y,
                 restored.width,
                 restored.height,
-                SWP_NOZORDER
-                    | SWP_NOACTIVATE
-                    | if crate::placement::is_marked_placement_owner(id) {
-                        SET_WINDOW_POS_FLAGS(0)
-                    } else {
-                        SWP_ASYNCWINDOWPOS
-                    },
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
             )
             .is_ok()
                 && owner_wait
@@ -354,7 +432,7 @@ fn emergency_primary_work_area() -> Option<Rect> {
 }
 
 /// Best-effort tray Quit recovery. The caller must independently enforce `deadline`:
-/// shell, DWM, tracing, style calls, and marked moves after a successful probe can block.
+/// shell, DWM, tracing, and style calls can block.
 pub fn emergency_restore_windows(window_ids: &[WindowId], deadline: std::time::Instant) {
     crate::placement::stop_placement_mover();
     let Ok(_dpi) = RecoveryDpiContext::enter() else {
@@ -383,6 +461,26 @@ pub fn emergency_restore_windows(window_ids: &[WindowId], deadline: std::time::I
     emergency_sentinel_pass(&marked, &work_area, work_areas.as_deref(), deadline);
     crate::window_style::emergency_restore_maximizebox(&marked, deadline);
     emergency_sentinel_pass(&marked, &work_area, work_areas.as_deref(), deadline);
+    while Instant::now() < deadline {
+        let (ready, moving) = {
+            let moves = RECOVERY_MOVES
+                .lock()
+                .unwrap_or_else(crate::recover_poisoned_mutex);
+            let ready: Vec<_> = marked
+                .iter()
+                .copied()
+                .filter(|id| !moves.contains(id))
+                .collect();
+            (ready, !moves.is_empty())
+        };
+        crate::window_style::emergency_restore_maximizebox(&ready, deadline);
+        if !moving {
+            break;
+        }
+        std::thread::sleep(
+            Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
 }
 
 pub(crate) fn recover_after_placement_mover(
@@ -441,10 +539,11 @@ pub(crate) fn recover_after_placement_mover(
     }
 }
 
-/// Restore one window from MoveOffScreen sentinel coordinates to the primary monitor.
+/// Restore a window parked at sentinel coordinates or queued off-screen to the
+/// primary monitor.
 ///
-/// Returns `Ok(true)` if the window was restored, `Ok(false)` if it was not at
-/// sentinel coordinates, and `Err` if restore operations failed.
+/// Returns `Ok(true)` for a completed or queued restore, `Ok(false)` if recovery
+/// is unnecessary or the placement owner cannot be recovered, and `Err` on failure.
 pub fn restore_window_moved_offscreen(window_id: WindowId) -> Result<bool, Win32Error> {
     let _dpi = RecoveryDpiContext::enter()?;
     let primary = get_primary_monitor()?;
@@ -558,10 +657,10 @@ fn uncloak_managed_window_state(window_ids: &[WindowId]) {
     }
 }
 
-/// Restore managed windows to their visible positions, best-effort.
+/// Uncloak managed windows, reset border colors, and recover sentinel or queued
+/// off-screen placements to the primary monitor, best-effort.
 ///
-/// Resets border colors and restores windows parked at MoveOffScreen
-/// sentinel coordinates. Logs warnings for failures but never panics.
+/// Restore errors are logged rather than returned.
 pub fn uncloak_all_managed_windows(window_ids: &[WindowId]) {
     uncloak_managed_window_state(window_ids);
     if let Err(e) = restore_windows_moved_offscreen(window_ids) {
@@ -629,10 +728,11 @@ fn restore_all_windows_moved_offscreen(include_marked: bool) -> OffscreenRecover
     }
 }
 
-/// Restore any top-level window parked at MoveOffScreen sentinel coordinates.
+/// Recover top-level windows parked at sentinel coordinates or queued off-screen,
+/// best-effort. Returns the number of completed or queued restores.
 ///
-/// This helper is panic-safe and best-effort, making it suitable for panic
-/// hooks where daemon state may be unavailable or poisoned.
+/// Does not require daemon state, so it can run from panic hooks when that state
+/// is unavailable or poisoned.
 pub fn restore_all_windows_moved_offscreen_best_effort() -> usize {
     crate::placement::stop_placement_mover();
     let recovery = restore_all_windows_moved_offscreen(true);
@@ -660,11 +760,11 @@ pub(crate) fn uncloak_unmarked_windows_for_recovery() {
     }
 }
 
-/// Restore all visible windows on the system, best-effort.
+/// Uncloak tracked windows and recover top-level sentinel or queued off-screen
+/// placements, best-effort.
 ///
-/// Restores any windows parked at MoveOffScreen sentinel coordinates.
-/// This does not require AppState and works even if state is poisoned,
-/// making it suitable for use in panic hooks.
+/// Does not require daemon state, so it can run from panic hooks when that state
+/// is unavailable or poisoned.
 pub fn uncloak_all_visible_windows() {
     crate::dwm_uncloak_all();
     let _ = restore_all_windows_moved_offscreen_best_effort();
@@ -754,7 +854,7 @@ where
     let recovery_error = recover().err();
     // Use height as the base so windows look reasonable on ultrawide monitors.
     let cascade_h = (work_area.height as f64 * 0.5) as i32;
-    let cascade_w = (cascade_h as f64 * 1.33) as i32; // 4:3 aspect ratio
+    let cascade_w = (cascade_h as f64 * 1.33) as i32; // Approximately 4:3.
     let placements: Vec<WindowPlacement> = window_ids
         .iter()
         .enumerate()
@@ -1004,6 +1104,8 @@ mod tests {
         assert!(message.contains("20"));
         assert!(message.contains("50"));
         assert!(!message.contains("destroyed during restore"));
+        assert!(!message.contains("window 30"));
+        assert!(!message.contains("window 40"));
     }
 
     #[test]
@@ -1061,14 +1163,15 @@ mod tests {
     }
 
     #[test]
-    fn cascade_empty_input_is_a_successful_no_op() {
+    fn cascade_empty_input_applies_empty_placements() {
         let mut applied = false;
         assert!(cascade_windows_with(
             &[],
             Rect::new(0, 0, 1920, 1080),
             || Ok(()),
             |_| unreachable!("no windows should be restored"),
-            |_| {
+            |placements| {
+                assert!(placements.is_empty());
                 applied = true;
                 Ok(Default::default())
             },
@@ -1265,8 +1368,7 @@ mod tests {
             );
 
             let primary = get_primary_monitor().unwrap();
-            let expected =
-                compute_restore_rect_from_offscreen(&Rect::new(0, 0, 640, 480), &primary.work_area);
+            let work = primary.work_area;
             let restore_functions: [fn(WindowId) -> Result<bool, Win32Error>; 2] =
                 [restore_window_moved_offscreen, |id| {
                     restore_windows_moved_offscreen(&[id]).map(|count| count == 1)
@@ -1286,14 +1388,116 @@ mod tests {
                 assert_eq!(
                     (restored.left, restored.top, restored.right, restored.bottom),
                     (
-                        expected.x,
-                        expected.y,
-                        expected.x + expected.width,
-                        expected.y + expected.height,
+                        work.x,
+                        work.y,
+                        work.x + 640.min(work.width.max(1)),
+                        work.y + 480.min(work.height.max(1)),
                     )
                 );
                 assert!(!IsWindowVisible(window.0).as_bool());
                 assert_dpi_context(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+            }
+        }
+    }
+
+    #[test]
+    fn emergency_marked_move_rejects_changed_lifetime_and_moves_matching_identity() {
+        let _owner_sweep = crate::placement::tests::OWNER_SWEEP
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use crate::window_identity::stamp_managed_lifetime_token;
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, MSG, PM_REMOVE,
+            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+        };
+
+        struct OwnedWindow(HWND);
+        impl Drop for OwnedWindow {
+            fn drop(&mut self) {
+                crate::placement::cancel_window_placement_moves(&[self.0 .0 as usize as WindowId]);
+                let _ = unsafe { DestroyWindow(self.0) };
+            }
+        }
+
+        let _dpi = RecoveryDpiContext::enter().unwrap();
+        for changed_lifetime in [true, false] {
+            let window = OwnedWindow(unsafe {
+                CreateWindowExW(
+                    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                    w!("STATIC"),
+                    None,
+                    WS_POPUP,
+                    100,
+                    100,
+                    640,
+                    480,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+            });
+            let id = window.0 .0 as usize as WindowId;
+            let token = stamp_managed_lifetime_token(id).unwrap();
+            let identity = capture_window_identity(window.0).unwrap();
+            let mut before = RECT::default();
+            unsafe { GetWindowRect(window.0, &mut before) }.unwrap();
+            let current = Rect::new(
+                before.left,
+                before.top,
+                before.right - before.left,
+                before.bottom - before.top,
+            );
+            let restored = Rect::new(200, 220, 320, 240);
+            assert_ne!(current, restored);
+            assert_eq!(crate::placement::owner_wait_target(id, &current), None);
+            if changed_lifetime {
+                assert_ne!(stamp_managed_lifetime_token(id).unwrap(), token);
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let caller = std::thread::spawn(move || {
+                if changed_lifetime {
+                    emergency_marked_move_with_identity(
+                        id,
+                        restored,
+                        Some((current.x, current.y)),
+                        deadline,
+                        identity,
+                    );
+                } else {
+                    emergency_marked_move(id, restored, Some((current.x, current.y)), deadline);
+                }
+            });
+            while !caller.is_finished() || RECOVERY_MOVES.lock().unwrap().contains(&id) {
+                assert!(Instant::now() < deadline, "recovery helper did not finish");
+                unsafe {
+                    let mut message = MSG::default();
+                    while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                        DispatchMessageW(&message);
+                    }
+                }
+                std::thread::yield_now();
+            }
+            caller.join().unwrap();
+            let mut after = RECT::default();
+            unsafe { GetWindowRect(window.0, &mut after) }.unwrap();
+            let actual = Rect::new(
+                after.left,
+                after.top,
+                after.right - after.left,
+                after.bottom - after.top,
+            );
+            if changed_lifetime {
+                assert_eq!(actual, current, "stale identity must not move the window");
+                assert_eq!(crate::placement::owner_wait_target(id, &actual), None);
+            } else {
+                assert_eq!(actual, restored, "matching identity must move the window");
+                assert_eq!(
+                    crate::placement::owner_wait_target(id, &actual),
+                    Some(restored)
+                );
             }
         }
     }
@@ -1321,33 +1525,5 @@ mod tests {
     fn test_restore_windows_moved_offscreen_empty_list() {
         let result = restore_windows_moved_offscreen(&[]);
         assert_eq!(result.unwrap(), 0);
-    }
-
-    #[test]
-    fn test_uncloak_all_managed_empty_list() {
-        let _serialize = crate::placement::lock_cloak_set_tests();
-        // Should not panic with an empty list
-        uncloak_all_managed_windows(&[]);
-    }
-
-    #[test]
-    #[ignore = "Calls real Win32 APIs against literal HWND values (999_999, 1_234_567) \
-                that may collide with a live window on a running daemon and move it if \
-                parked at MoveOffScreen sentinel coords. Run with: cargo test -- --ignored"]
-    fn test_uncloak_all_managed_with_invalid_ids() {
-        let _serialize = crate::placement::lock_cloak_set_tests();
-        // Should not panic even with invalid window IDs (best-effort)
-        uncloak_all_managed_windows(&[0, 999_999, 1_234_567]);
-    }
-
-    #[test]
-    #[ignore = "Enumerates all system windows and moves any parked at MoveOffScreen sentinel \
-                coords back to the primary monitor work area. Safe to run in isolation but \
-                disrupts a concurrently-running daemon (mass retile + Chromium swap-chain \
-                desync). Run with: cargo test -- --ignored"]
-    fn test_uncloak_all_visible_windows_no_panic() {
-        let _serialize = crate::placement::lock_cloak_set_tests();
-        // EnumWindows should succeed; uncloaking random windows is best-effort
-        uncloak_all_visible_windows();
     }
 }

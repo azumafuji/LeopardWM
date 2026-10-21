@@ -34,24 +34,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-/// Custom message to quit the overlay thread.
 const WM_QUIT_OVERLAY: u32 = WM_USER + 102;
 
-/// RGBA color for overlay (semi-transparent blue).
-const OVERLAY_COLOR: u32 = 0x00FF8040; // RGB: 0x4080FF (reversed for Windows)
+/// Default blue in Windows COLORREF format (0x00BBGGRR); opacity is set separately.
+const OVERLAY_COLOR: u32 = 0x00FF8040;
 
-/// Global state for the overlay window.
 static OVERLAY_STATE: std::sync::Mutex<OverlayState> = std::sync::Mutex::new(OverlayState {
     rect: None,
     color: OVERLAY_COLOR,
 });
 static OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Current overlay display state.
 struct OverlayState {
     /// Rectangle to display (None = hidden).
     rect: Option<Rect>,
-    /// Color for the overlay.
     color: u32,
 }
 
@@ -107,7 +103,7 @@ impl OverlayWindow {
     /// # Errors
     ///
     /// Returns [`Win32Error::HookInstallFailed`](crate::Win32Error::HookInstallFailed)
-    /// if the overlay window or thread cannot be created.
+    /// if an overlay is already active, window creation fails, or initialization disconnects.
     pub fn new() -> Result<Self, Win32Error> {
         #[cfg(test)]
         panic!("OverlayWindow::new spawns a layered DWM window; gate the call behind cfg(test)");
@@ -130,11 +126,8 @@ impl OverlayWindow {
                 };
                 RegisterClassW(&wc);
 
-                // WS_EX_LAYERED: Allows transparency
-                // WS_EX_TRANSPARENT: Click-through
-                // WS_EX_TOPMOST: Always on top
-                // WS_EX_TOOLWINDOW: Not in taskbar
-                // WS_EX_NOACTIVATE: Don't steal focus
+                // Layered + transparent makes this window click-through; NOACTIVATE
+                // keeps visual feedback from stealing focus.
                 let ex_style = WS_EX_LAYERED
                     | WS_EX_TRANSPARENT
                     | WS_EX_TOPMOST
@@ -165,7 +158,6 @@ impl OverlayWindow {
 
                 let hwnd = hwnd.unwrap();
 
-                // Set transparency (alpha = 128, about 50% opacity)
                 use windows::Win32::UI::WindowsAndMessaging::{
                     SetLayeredWindowAttributes, LWA_ALPHA,
                 };
@@ -238,8 +230,8 @@ impl OverlayWindow {
     ///
     /// # Thread Safety
     ///
-    /// This method is safe to call from any thread. It updates the global
-    /// overlay state and sends a message to the overlay thread to repaint.
+    /// This method is safe to call from any thread. It updates shared state,
+    /// positions the window directly, and invalidates it for painting.
     pub fn show_snap_target(&self, rect: Rect) {
         if let Ok(mut state) = OVERLAY_STATE.lock() {
             state.rect = Some(rect);
@@ -256,7 +248,6 @@ impl OverlayWindow {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
 
-            // SW_SHOWNA shows the window without activating it.
             let _ = ShowWindow(self.hwnd, SW_SHOWNA);
 
             let _ = InvalidateRect(Some(self.hwnd), None, true);
@@ -390,7 +381,6 @@ unsafe extern "system" fn overlay_window_proc(
     }
 }
 
-/// Inner implementation of overlay window procedure.
 fn overlay_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let _ = wparam;
     let _ = lparam;
@@ -428,7 +418,6 @@ fn overlay_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
 pub fn reposition_overlay(hwnd_raw: isize, rect: Rect) {
     let hwnd = HWND(hwnd_raw as *mut c_void);
 
-    // Update global state so WM_PAINT draws correctly.
     if let Ok(mut state) = OVERLAY_STATE.lock() {
         state.rect = Some(rect);
     }
@@ -469,69 +458,4 @@ pub enum SnapHintType {
     /// Displayed briefly when focus changes to help the user
     /// track which window/column has keyboard focus.
     FocusTarget,
-}
-
-/// Configuration for snap hint visual feedback.
-///
-/// Controls the appearance and behavior of the overlay hints shown
-/// during resize, move, and focus operations.
-///
-/// # Color Format
-///
-/// Colors are specified in Windows BGR format: `0x00BBGGRR`.
-/// For example:
-/// - `0x00FF0000` = Blue
-/// - `0x0000FF00` = Green
-/// - `0x000000FF` = Red
-/// - `0x00FF8040` = Blue-ish (default)
-#[derive(Debug, Clone)]
-pub struct SnapHintConfig {
-    /// Whether visual hints are enabled.
-    ///
-    /// When `false`, no overlay will be shown regardless of other settings.
-    pub enabled: bool,
-    /// Color for column resize hints (BGR format, e.g., 0x00FF8040).
-    pub resize_color: u32,
-    /// Color for move target hints (BGR format).
-    pub move_color: u32,
-    /// Color for focus target hints (BGR format).
-    pub focus_color: u32,
-    /// How long hints are displayed in milliseconds.
-    ///
-    /// After this duration, the hint automatically hides.
-    /// Typical values are 150-300ms for subtle feedback.
-    pub duration_ms: u32,
-}
-
-impl Default for SnapHintConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            resize_color: 0x00FF8040, // Semi-transparent blue
-            move_color: 0x0040FF40,   // Semi-transparent green
-            focus_color: 0x004080FF,  // Semi-transparent orange
-            duration_ms: 200,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_snap_hint_config_default() {
-        let config = SnapHintConfig::default();
-        assert!(config.enabled);
-        assert!(config.duration_ms > 0);
-    }
-
-    #[test]
-    fn test_overlay_state_default() {
-        // Just verify the static initializes correctly
-        if let Ok(state) = OVERLAY_STATE.lock() {
-            assert!(state.rect.is_none());
-            assert_eq!(state.color, OVERLAY_COLOR);
-        }
-    }
 }

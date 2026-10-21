@@ -288,6 +288,11 @@ fn ignored_window_stays_out_through_lifecycle_and_release() {
     let mut state = managed_state();
     let paused = state.paused;
     ignore_foreground(&mut state, 10);
+    assert_eq!(
+        state.injected_native_uncloak_count.load(Ordering::Relaxed),
+        1,
+        "temporary ignore must request native uncloaking in production"
+    );
     assert_eq!(state.paused, paused);
     assert_eq!(
         state
@@ -897,6 +902,7 @@ fn unmanage_clears_owned_tab_title_and_survives_hwnd_reuse() {
 #[test]
 fn identity_mismatch_reflows_peers_without_restoring_native() {
     let mut state = managed_state();
+    record_peer_placements(&mut state);
     state.injected_native_restore_error = Some("must not restore onto replacement".into());
     state.injected_identity_read_override = Some(Ok(Some(u64::MAX)));
     set_foreground(&mut state, 10);
@@ -910,6 +916,16 @@ fn identity_mismatch_reflows_peers_without_restoring_native() {
     assert!(!state.temporary_ignores.contains_key(&10));
     assert!(state.find_window_workspace(20).is_some());
     assert!(state.find_window_workspace(30).is_some());
+    let batches = state.injected_apply_placements_batches.lock().unwrap();
+    assert_eq!(batches.len(), 1, "peers reflow in one placement batch");
+    assert!(
+        batches[0].contains(&20),
+        "peer 20 must be placed: {batches:?}"
+    );
+    assert!(
+        !batches[0].contains(&10),
+        "the replaced window must not be placed: {batches:?}"
+    );
 }
 
 #[test]
@@ -1330,18 +1346,6 @@ fn pending_recovery_respects_paused_and_cancelled_guards_before_barrier() {
         0
     );
     cancelled_unblock.send(()).unwrap();
-}
-
-#[test]
-fn temporary_ignore_test_seam_records_native_uncloak_intent() {
-    let mut state = managed_state();
-    ignore_foreground(&mut state, 10);
-
-    assert_eq!(
-        state.injected_native_uncloak_count.load(Ordering::Relaxed),
-        1,
-        "temporary ignore must request native uncloaking in production"
-    );
 }
 
 fn ignored_token(state: &AppState, hwnd: u64) -> u64 {

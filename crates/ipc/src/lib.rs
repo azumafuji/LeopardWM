@@ -16,7 +16,6 @@ fn default_active_workspace() -> u8 {
 
 /// Named pipe path for IPC communication.
 pub const PIPE_NAME: &str = r"\\.\pipe\leopardwm";
-/// Maximum length of sanitized user scope appended to the pipe path.
 const MAX_PIPE_SCOPE_SEGMENT_LEN: usize = 64;
 
 /// IPC protocol version for lightweight compatibility checks.
@@ -53,10 +52,8 @@ fn sanitize_pipe_scope_segment(scope: &str) -> String {
     sanitized.trim_matches('_').to_string()
 }
 
-/// Directory for LeopardWM logs: `%LOCALAPPDATA%\leopardwm\logs` (falls back to
-/// a `leopardwm\logs` subdir of the temp dir if the local data dir is
-/// unavailable). Shared by the daemon (which writes its log there), the CLI
-/// (`collect-logs`, daemon-launch redirects), and the tray's "View Logs".
+/// Log directory: `%LOCALAPPDATA%\leopardwm\logs`, falling back to `leopardwm\logs`
+/// under the temp directory.
 pub fn log_dir() -> std::path::PathBuf {
     directories::BaseDirs::new()
         .map(|d| d.data_local_dir().join("leopardwm").join("logs"))
@@ -110,11 +107,6 @@ pub fn pipe_name_candidates() -> Vec<String> {
     } else {
         vec![preferred, PIPE_NAME.to_string()]
     }
-}
-
-/// Return the protocol identifier for this crate version.
-pub fn protocol_id() -> u32 {
-    IPC_PROTOCOL_VERSION
 }
 
 /// Whether a remote protocol version is supported by this crate.
@@ -199,9 +191,7 @@ pub struct HotkeyIssue {
     pub message: String,
 }
 
-/// Kinds of events a subscriber can receive. Used as the `Subscribe`
-/// command's filter set and to dedup which event variants flow to which
-/// client.
+/// Event kinds accepted by the `Subscribe` filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
@@ -252,7 +242,7 @@ impl EventKind {
 ///
 /// Wire: tagged `{"type": "vertical"}` or `{"type": "tabbed", "active_idx": N}`.
 /// `#[serde(default)]` on the parent `ColumnSummary.mode` field means v1
-/// payloads (no `mode` key) deserialize as `Vertical` for forward compat.
+/// payloads (no `mode` key) deserialize as `Vertical`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ColumnSummaryMode {
@@ -270,25 +260,17 @@ pub struct ColumnSummary {
     pub window_ids: Vec<u64>,
     /// Column width in pixels (intrinsic strip width, monitor-independent).
     pub width_px: i32,
-    /// Per-window height weights (parallel to `window_ids`, sums to ~1.0).
-    /// Empty means equal distribution. Populated so bars rendering
-    /// stacked windows can show vertical-split changes (cycle-height,
-    /// equalize-heights) without a follow-up query. Ignored in Tabbed mode
-    /// since only one window is visible at a time.
+    /// Per-window height weights parallel to `window_ids`, summing to ~1.0;
+    /// empty means equal distribution, and Tabbed mode ignores them.
     #[serde(default)]
     pub height_weights: Vec<f64>,
-    /// Display mode for this column. Added in protocol v2; defaults to
-    /// `Vertical` so v1 payloads deserialize cleanly.
+    /// Column display mode; defaults to `Vertical` when absent from v1 payloads.
     #[serde(default)]
     pub mode: ColumnSummaryMode,
 }
 
-/// Events streamed to subscribers after a `Subscribe` command. Each frame
-/// is one JSON object on the wire (newline-terminated, same framing as
-/// `IpcResponse`). After a client receives `IpcResponse::Subscribed`, all
-/// subsequent frames on that pipe deserialize as `IpcEvent`, NOT
-/// `IpcResponse` — the two types share the wire format but have
-/// incompatible serde tags (`type` vs `status`).
+/// Newline-delimited JSON events after `IpcResponse::Subscribed`; subsequent frames
+/// use `IpcEvent`'s `type` tag rather than `IpcResponse`'s `status` tag.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IpcEvent {
@@ -301,7 +283,6 @@ pub enum IpcEvent {
         /// New workspace index (0-based).
         new_index: u8,
         /// Display name of the new workspace, or `None` if unnamed.
-        /// Lets bars render a label instead of a bare number.
         #[serde(default)]
         name: Option<String>,
     },
@@ -317,12 +298,11 @@ pub enum IpcEvent {
         title: Option<String>,
         /// Window class name, if obtainable.
         class_name: Option<String>,
-        /// Process executable path, if obtainable.
+        /// Executable file name such as `notepad.exe`; empty when it cannot be read.
         executable: Option<String>,
     },
-    /// The structurally-distinct layout for the focused workspace
-    /// settled. Carries column structure inline so subscribers can render
-    /// without a follow-up `QueryWorkspace`.
+    /// Structurally distinct settled layout for the focused workspace,
+    /// including columns so clients need no follow-up query.
     LayoutChanged {
         /// Monitor ID whose layout settled.
         monitor: i64,
@@ -366,7 +346,7 @@ pub enum IpcEvent {
     /// Periodic liveness signal. Sent after ~30s of silence on a stream
     /// so clients can detect dead daemon pipes via missing heartbeats.
     Heartbeat {
-        /// Daemon uptime in seconds at the time of the heartbeat.
+        /// Seconds since this subscription stream started.
         uptime_seconds: u64,
     },
     /// The daemon's broadcast buffer overflowed for this subscriber and
@@ -379,8 +359,7 @@ pub enum IpcEvent {
 }
 
 impl IpcEvent {
-    /// The `EventKind` this variant belongs to. Used by the IPC server to
-    /// filter events against a subscriber's chosen set.
+    /// Event kind used to filter this event against a subscriber's chosen set.
     pub fn kind(&self) -> EventKind {
         match self {
             IpcEvent::WorkspaceChanged { .. } => EventKind::Workspace,
@@ -392,9 +371,8 @@ impl IpcEvent {
             | IpcEvent::WorkspaceSnapshotError { .. } => EventKind::WorkspaceState,
             IpcEvent::ConfigReloaded => EventKind::Config,
             IpcEvent::Heartbeat { .. } => EventKind::Heartbeat,
-            // Lagged is an internal control event, not subscribable; emit
-            // unconditionally to any subscriber that hits the lagged
-            // branch on the broadcast receiver, regardless of filter.
+            // Lagged bypasses subscription filters; this classification does not control
+            // its delivery.
             IpcEvent::Lagged { .. } => EventKind::Heartbeat,
         }
     }
@@ -610,13 +588,8 @@ pub enum IpcCommand {
     /// Added in protocol v2.
     ToggleTabbed,
 
-    /// Set the active tab on a Tabbed column. Used internally by the tab
-    /// strip overlay's click handler to translate `WM_LBUTTONDOWN` into a
-    /// real focus change. Sets the column's `active_idx` AND, when the
-    /// target column is the focused column, also moves
-    /// `focused_window_in_column` so the dependent invariants (border
-    /// placement, `QueryFocused`, `sync_foreground_window`) flow through.
-    /// Added in protocol v2.
+    /// Set a Tabbed column's active_idx; also update focused_window_in_column when that column
+    /// is focused to preserve focus invariants (protocol v2).
     SetActiveTab {
         /// Column index (0-based).
         column: usize,
@@ -851,7 +824,6 @@ pub enum IpcResponse {
 }
 
 impl IpcResponse {
-    /// Create an error response.
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: message.into(),
@@ -1005,7 +977,6 @@ mod tests {
 
     #[test]
     fn test_all_command_types_roundtrip() {
-        // Verify all command variants serialize and deserialize correctly
         let commands = vec![
             IpcCommand::FocusLeft,
             IpcCommand::FocusRight,
@@ -1077,7 +1048,6 @@ mod tests {
 
     #[test]
     fn test_all_response_types_roundtrip() {
-        // Verify all response variants serialize and deserialize correctly
         let responses = vec![
             IpcResponse::Ok,
             IpcResponse::Error {
@@ -1170,27 +1140,6 @@ mod tests {
     }
 
     #[test]
-    fn test_window_info_serialization() {
-        let info = WindowInfo {
-            window_id: 12345,
-            title: "Test Window".to_string(),
-            class_name: "TestClass".to_string(),
-            process_id: 1234,
-            executable: "test.exe".to_string(),
-            rect: IpcRect::new(100, 100, 800, 600),
-            column_index: Some(0),
-            window_index: Some(0),
-            monitor_id: 1,
-            is_floating: false,
-            is_focused: true,
-        };
-
-        let json = serde_json::to_string(&info).unwrap();
-        let roundtrip: WindowInfo = serde_json::from_str(&json).unwrap();
-        assert_eq!(info, roundtrip);
-    }
-
-    #[test]
     fn test_query_all_windows_command() {
         let cmd = IpcCommand::QueryAllWindows;
         let json = serde_json::to_string(&cmd).unwrap();
@@ -1226,34 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn test_line_delimited_protocol() {
-        // Simulate the actual IPC protocol: JSON + newline
-        let cmd = IpcCommand::QueryWorkspace;
-        let wire_format = serde_json::to_string(&cmd).unwrap() + "\n";
-
-        // Parse as if reading from pipe (trim newline)
-        let parsed: IpcCommand = serde_json::from_str(wire_format.trim()).unwrap();
-        assert_eq!(cmd, parsed);
-
-        // Same for response
-        let resp = IpcResponse::WorkspaceState {
-            columns: 2,
-            windows: 3,
-            focused_column: 0,
-            focused_window: 0,
-            scroll_offset: 0.0,
-            total_width: 1600,
-            active_workspace: 1,
-            active_workspace_name: None,
-        };
-        let wire_format = serde_json::to_string(&resp).unwrap() + "\n";
-        let parsed: IpcResponse = serde_json::from_str(wire_format.trim()).unwrap();
-        assert_eq!(resp, parsed);
-    }
-
-    #[test]
     fn test_invalid_json_handling() {
-        // Verify that invalid JSON produces clear errors
         let result: Result<IpcCommand, _> = serde_json::from_str("not valid json");
         assert!(result.is_err());
 
@@ -1266,7 +1188,6 @@ mod tests {
 
     #[test]
     fn test_pipe_name_format() {
-        // Verify pipe name follows Windows named pipe convention
         assert!(PIPE_NAME.starts_with(r"\\.\pipe\"));
         assert_eq!(PIPE_NAME, r"\\.\pipe\leopardwm");
     }
@@ -1298,22 +1219,14 @@ mod tests {
 
     #[test]
     fn test_protocol_version_helpers() {
-        assert_eq!(protocol_id(), IPC_PROTOCOL_VERSION);
         assert!(is_protocol_version_supported(IPC_PROTOCOL_VERSION));
         assert!(!is_protocol_version_supported(0));
         assert!(!is_protocol_version_supported(IPC_PROTOCOL_VERSION + 1));
     }
 
     #[test]
-    fn test_max_message_size_defined() {
-        const { assert!(MAX_IPC_MESSAGE_SIZE > 0) };
-    }
-
-    #[test]
-    fn test_max_message_size_reasonable() {
-        // Between 1 KiB and 1 MiB
-        const { assert!(MAX_IPC_MESSAGE_SIZE >= 1024) };
-        const { assert!(MAX_IPC_MESSAGE_SIZE <= 1024 * 1024) };
+    fn test_max_message_size_is_64_kib() {
+        assert_eq!(MAX_IPC_MESSAGE_SIZE, 64 * 1024);
     }
 
     #[test]
@@ -1421,7 +1334,6 @@ mod tests {
             }],
         };
         let json = serde_json::to_string(&ev).unwrap();
-        // Tag-based representation; subscribers branch on `mode.type`.
         assert!(json.contains("\"mode\":{\"type\":\"tabbed\""));
         assert!(json.contains("\"active_idx\":1"));
         let ev2: IpcEvent = serde_json::from_str(&json).unwrap();
@@ -1430,9 +1342,7 @@ mod tests {
 
     #[test]
     fn test_layout_changed_v1_payload_backward_compat() {
-        // A v1-shape `LayoutChanged` (no `mode` field on columns) must
-        // deserialize into the new struct with `mode = Vertical` so old
-        // daemons / cached payloads stay compatible.
+        // Missing column mode in v1 payloads must deserialize as Vertical.
         let v1 = r#"{
             "type": "layout_changed",
             "monitor": 1,
@@ -1588,20 +1498,28 @@ mod tests {
     #[test]
     fn workspace_state_wire_commands_and_filter_deserialize() {
         let query = serde_json::from_str::<IpcCommand>(r#"{"type":"query_workspace_state"}"#);
-        assert!(query.is_ok(), "query_workspace_state must deserialize");
+        assert_eq!(query.unwrap(), IpcCommand::QueryWorkspaceState);
 
         let targeted = serde_json::from_str::<IpcCommand>(
             r#"{"type":"switch_workspace_on_monitor","monitor_device_name":"\\\\.\\DISPLAY2","index":2}"#,
         );
-        assert!(
-            targeted.is_ok(),
-            "targeted workspace switch must deserialize"
+        assert_eq!(
+            targeted.unwrap(),
+            IpcCommand::SwitchWorkspaceOnMonitor {
+                monitor_device_name: r"\\.\DISPLAY2".to_string(),
+                index: 2,
+            }
         );
 
         let subscribe = serde_json::from_str::<IpcCommand>(
             r#"{"type":"subscribe","events":["workspace_state"]}"#,
         );
-        assert!(subscribe.is_ok(), "workspace_state filter must deserialize");
+        assert_eq!(
+            subscribe.unwrap(),
+            IpcCommand::Subscribe {
+                events: [EventKind::WorkspaceState].into_iter().collect(),
+            }
+        );
     }
 
     #[test]

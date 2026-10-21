@@ -1,14 +1,5 @@
-//! Persistent animation worker thread using DwmFlush for vsync-aligned frame pacing.
-//!
-//! Instead of spawning a new OS thread per animation frame (the old `AnimationTick` approach),
-//! this module maintains a single worker thread that:
-//! 1. Blocks on a channel when idle (zero CPU)
-//! 2. Applies window placements via DeferWindowPos
-//! 3. Calls DwmFlush() to block until the next compositor vsync
-//! 4. Briefly waits for the submitted visible moves to drain
-//! 5. Sends the result back to the main event loop
-//!
-//! This eliminates per-frame thread spawn overhead and naturally adapts to any refresh rate.
+//! DwmFlush aligns worker frames with compositor vsync; the worker blocks on
+//! its command channel while idle.
 
 use leopardwm_core_layout::{Rect, WindowPlacement};
 use leopardwm_platform_win32::{PlacementCache, PlatformConfig};
@@ -18,7 +9,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::debug;
 
-/// Data sent to the worker for each animation frame.
 pub struct FrameRequest {
     /// Placements driven via per-frame `SetWindowPos` on the live HWND.
     /// Excludes any windows being driven via DWM thumbnail (those are in
@@ -46,9 +36,7 @@ pub struct GhostFrame {
     pub visible: bool,
 }
 
-/// Result sent back from the worker after applying a frame.
 pub struct FrameResult {
-    /// Whether the placements were applied successfully.
     pub apply_result: Result<(), String>,
     /// How long the frame took (apply + vsync + bounded move-drain wait).
     #[allow(dead_code)]
@@ -82,15 +70,11 @@ impl FrameResult {
     }
 }
 
-/// Commands the main thread can send to the worker.
 enum WorkerCommand {
     /// Apply a frame of animation.
     Frame(FrameRequest),
-    /// Run an 8-frame crossfade on owned thumbnail handles, then drop them.
-    /// Worker takes ownership of `entries`; each `CrossfadeEntry::Drop`
-    /// calls `thumbnail::unregister_raw`, so panic-unwind and normal exit
-    /// both unregister cleanly. After the fade (or abort), worker sends
-    /// `DaemonEvent::CrossfadeComplete { epoch }`.
+    /// Worker owns the thumbnails until the fade completes or is preempted.
+    /// Drop unregisters them before `CrossfadeComplete` releases the daemon barrier.
     Crossfade {
         epoch: u64,
         entries: Vec<CrossfadeEntry>,
@@ -142,7 +126,6 @@ impl Drop for CrossfadeEntry {
     }
 }
 
-/// Handle to the persistent animation worker thread.
 pub struct AnimationWorkerHandle {
     command_tx: std_mpsc::Sender<WorkerCommand>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -309,7 +292,6 @@ impl AnimationWorkerHandle {
 
 impl Drop for AnimationWorkerHandle {
     fn drop(&mut self) {
-        // Send shutdown command (ignore error if worker already exited)
         let _ = self.command_tx.send(WorkerCommand::Shutdown);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -317,10 +299,6 @@ impl Drop for AnimationWorkerHandle {
     }
 }
 
-/// The worker thread's main loop.
-///
-/// Blocks on `command_rx.recv()` when no animation is active (zero CPU).
-/// For each frame: apply placements, DwmFlush, bounded move-drain wait, then report.
 fn worker_loop(
     command_rx: std_mpsc::Receiver<WorkerCommand>,
     event_tx: tokio::sync::mpsc::Sender<super::DaemonEvent>,
@@ -333,9 +311,6 @@ fn worker_loop(
     let mut pending: Option<WorkerCommand> = None;
 
     loop {
-        // Block until we receive a command (zero CPU when idle), unless a
-        // pending command was buffered by a preempted crossfade — then we
-        // process it before touching the channel.
         let command = match pending.take() {
             Some(cmd) => cmd,
             None => match command_rx.recv() {
@@ -435,10 +410,8 @@ fn worker_loop(
                     continue;
                 }
 
-                // Apply window placements, skipping unchanged windows via cache.
-                // Animation frames are SWP_ASYNCWINDOWPOS so the sticky-compositor
-                // nudge inside `apply_placements` is a no-op; pass `false` to keep
-                // the call signature explicit.
+                // Animation frames use SWP_ASYNCWINDOWPOS, so the sticky-compositor
+                // nudge in `apply_placements` is a no-op; keep it disabled here.
                 let apply_result = leopardwm_platform_win32::apply_placements(
                     &request.placements,
                     &request.platform_config,
@@ -460,7 +433,6 @@ fn worker_loop(
                     }
                 }
 
-                // Wait for next vsync via DwmFlush
                 dwm_flush_or_fallback();
 
                 // Hold the acknowledgement, not the next frame's application:
@@ -488,7 +460,6 @@ fn worker_loop(
                 result.physical_request_id = request.physical_request_id;
                 result.physical_invalidation_id = request.physical_invalidation_id;
 
-                // Send result back to main event loop
                 if event_tx
                     .blocking_send(super::DaemonEvent::AnimationFrameApplied(result))
                     .is_err()
@@ -509,19 +480,12 @@ fn drop_crossfade_target(entries: &mut Vec<CrossfadeEntry>, window_id: u64) -> b
     entries.len() != count_before
 }
 
-/// Run a cooperative crossfade on owned thumbnail entries. Between each
-/// of the 8 (typical) ease-in-cubic fade iterations, try_recv the
-/// command channel:
-/// - Matching `AbortCrossfade { epoch }` → break early.
-/// - Mismatching abort → discard.
-/// - Any other command → buffer in `pending` for the outer loop to
-///   process next, break early.
+/// Check preemption between fade iterations, not during DwmFlush. Matching
+/// target drops leave the other entries running; stale epoch commands are ignored.
+/// Other commands preempt the fade and run next in the outer loop.
 ///
-/// In all exit paths, `entries` drops here — each `CrossfadeEntry::Drop`
-/// calls `thumbnail::unregister_raw`, so panic-unwind and normal exit
-/// both unregister cleanly. After cleanup, emits `CrossfadeComplete { epoch }`
-/// so the daemon can clear `active_crossfade` and release the
-/// same-source-re-registration barrier.
+/// Unregister entries before `CrossfadeComplete` releases the daemon
+/// same-source re-registration barrier. Unwinding also unregisters via Drop.
 fn run_crossfade(
     command_rx: &std_mpsc::Receiver<WorkerCommand>,
     event_tx: &tokio::sync::mpsc::Sender<super::DaemonEvent>,
@@ -543,7 +507,6 @@ fn run_crossfade(
             aborted = true;
             break;
         }
-        // Cooperative preempt/abort check.
         match command_rx.try_recv() {
             Ok(WorkerCommand::DropCrossfadeTarget {
                 epoch: e,
@@ -581,10 +544,8 @@ fn run_crossfade(
                 // Mismatched epoch — discard (stale).
             }
             Ok(other) => {
-                // Preempt by another Frame / Crossfade / ClearCache /
-                // Shutdown. Buffer it and exit so outer loop processes
-                // it next, after entries drop and CrossfadeComplete
-                // is sent.
+                // Preserve channel order: run this after entries drop and
+                // CrossfadeComplete releases the re-registration barrier.
                 *pending = Some(other);
                 break;
             }
@@ -595,8 +556,6 @@ fn run_crossfade(
             }
         }
 
-        // Ease-in-cubic: opacity starts at 255 and decays.
-        // t in (0, 1]; opacity = (1 - t³) * 255.
         let t = (i + 1) as f64 / frames as f64;
         let opacity = ((1.0 - t.powi(3)) * 255.0).round().clamp(0.0, 255.0) as u8;
         for entry in &entries {
@@ -708,53 +667,166 @@ mod tests {
         );
     }
 
+    struct PumpingWindow {
+        window_id: u64,
+        settle: Option<std_mpsc::Sender<std_mpsc::Sender<()>>>,
+        join: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl PumpingWindow {
+        fn new() -> Self {
+            use windows::core::w;
+            use windows::Win32::Foundation::RECT;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, DispatchMessageW, GetQueueStatus, GetWindowRect,
+                PeekMessageW, MSG, PM_REMOVE, QS_ALLINPUT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                WS_POPUP,
+            };
+
+            let (ready_tx, ready_rx) = std_mpsc::channel();
+            let (settle_tx, settle_rx) = std_mpsc::channel::<std_mpsc::Sender<()>>();
+            let join = std::thread::spawn(move || unsafe {
+                let hwnd = CreateWindowExW(
+                    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                    w!("STATIC"),
+                    w!(""),
+                    WS_POPUP,
+                    100,
+                    100,
+                    300,
+                    200,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let mut message = MSG::default();
+                let pump = |message: &mut MSG| {
+                    while PeekMessageW(message, None, 0, 0, PM_REMOVE).as_bool() {
+                        DispatchMessageW(message);
+                    }
+                };
+                pump(&mut message);
+                ready_tx.send(hwnd.0 as usize as u64).unwrap();
+                loop {
+                    pump(&mut message);
+                    match settle_rx.recv_timeout(Duration::from_millis(1)) {
+                        Ok(ack) => {
+                            // Queued async moves land in the owner's own pump, so wait
+                            // until the queue is empty and the rect stops changing.
+                            let mut last = RECT::default();
+                            let mut stable_since = Instant::now();
+                            let deadline = Instant::now() + Duration::from_secs(5);
+                            while stable_since.elapsed() < Duration::from_millis(50)
+                                && Instant::now() < deadline
+                            {
+                                pump(&mut message);
+                                let mut current = RECT::default();
+                                GetWindowRect(hwnd, &mut current).unwrap();
+                                if current != last || GetQueueStatus(QS_ALLINPUT) >> 16 != 0 {
+                                    last = current;
+                                    stable_since = Instant::now();
+                                }
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            let _ = ack.send(());
+                        }
+                        Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                DestroyWindow(hwnd).unwrap();
+            });
+            Self {
+                window_id: ready_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                settle: Some(settle_tx),
+                join: Some(join),
+            }
+        }
+
+        fn settled_position(&self) -> (i32, i32) {
+            let (ack_tx, ack_rx) = std_mpsc::channel();
+            self.settle.as_ref().unwrap().send(ack_tx).unwrap();
+            ack_rx.recv_timeout(Duration::from_secs(6)).unwrap();
+            let rect = leopardwm_platform_win32::get_window_chrome_rect(self.window_id).unwrap();
+            (rect.x, rect.y)
+        }
+    }
+
+    impl Drop for PumpingWindow {
+        fn drop(&mut self) {
+            leopardwm_platform_win32::clear_suspected_oversize(self.window_id);
+            self.settle.take();
+            if let Some(join) = self.join.take() {
+                join.join().unwrap();
+            }
+        }
+    }
+
     #[test]
     fn stale_physical_frame_skips_native_dispatch() {
+        let window = PumpingWindow::new();
+        let home = window.settled_position();
+        let target = Rect::new(home.0 + 400, home.1, 300, 200);
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         let worker = AnimationWorkerHandle::spawn(event_tx, Arc::new(AtomicBool::new(false)))
             .expect("spawn animation worker");
-        let current_request = Arc::new(AtomicU64::new(1));
-        let current_invalidation = Arc::new(AtomicU64::new(5));
-        worker
-            .send_frame(FrameRequest {
-                placements: vec![WindowPlacement {
-                    window_id: 100,
-                    rect: Rect::new(0, 0, 100, 100),
-                    visibility: leopardwm_core_layout::Visibility::Visible,
-                    column_index: 0,
-                }],
-                ghost_updates: Vec::new(),
-                platform_config: PlatformConfig::default(),
-                physical_request_id: 1,
-                physical_invalidation_id: 4,
-                physical_dispatch_request_id: current_request,
-                physical_invalidation: current_invalidation,
-            })
-            .expect("queue stale frame");
-
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
             .unwrap();
-        let result = runtime.block_on(async {
-            tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await
-        });
-        assert!(matches!(
-            result,
-            Ok(Some(super::super::DaemonEvent::AnimationFrameApplied(FrameResult {
-                apply_result: Ok(()),
-                width_violations,
-                height_violations,
-                maximized_skipped_window_ids,
-                landings,
-                physical_request_id: 1,
-                physical_invalidation_id: 4,
-                ..
-            }))) if width_violations.is_empty()
-                && height_violations.is_empty()
-                && maximized_skipped_window_ids.is_empty()
-                && landings.is_empty()
-        ));
+        let mut run_frame = |dispatch_request: u64, invalidation: u64| {
+            worker
+                .send_frame(FrameRequest {
+                    placements: vec![WindowPlacement {
+                        window_id: window.window_id,
+                        rect: target,
+                        visibility: leopardwm_core_layout::Visibility::Visible,
+                        column_index: 0,
+                    }],
+                    ghost_updates: Vec::new(),
+                    platform_config: PlatformConfig::default(),
+                    physical_request_id: 1,
+                    physical_invalidation_id: 4,
+                    physical_dispatch_request_id: Arc::new(AtomicU64::new(dispatch_request)),
+                    physical_invalidation: Arc::new(AtomicU64::new(invalidation)),
+                })
+                .expect("queue frame");
+            let event = runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(2), event_rx.recv()).await
+            });
+            let Ok(Some(super::super::DaemonEvent::AnimationFrameApplied(result))) = event else {
+                panic!("the worker must report every queued frame");
+            };
+            assert!(result.apply_result.is_ok());
+            assert_eq!(result.physical_request_id, 1);
+            assert_eq!(result.physical_invalidation_id, 4);
+            result
+        };
+
+        for (name, dispatch_request, invalidation) in [
+            ("superseded dispatch request", 2, 4),
+            ("stale invalidation", 1, 5),
+        ] {
+            let result = run_frame(dispatch_request, invalidation);
+            assert!(result.width_violations.is_empty(), "{name}");
+            assert!(result.height_violations.is_empty(), "{name}");
+            assert!(result.maximized_skipped_window_ids.is_empty(), "{name}");
+            assert!(result.landings.is_empty(), "{name}");
+            assert_eq!(
+                window.settled_position(),
+                home,
+                "{name} must not reach the native window"
+            );
+        }
+
+        run_frame(1, 4);
+        assert_eq!(
+            window.settled_position(),
+            (target.x, target.y),
+            "a current frame must move the same window"
+        );
     }
 
     #[test]

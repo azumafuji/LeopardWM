@@ -1,9 +1,5 @@
-//! Configuration management for LeopardWM daemon.
-//!
-//! Configuration is loaded from TOML files in the following locations (in order):
-//! 1. `%APPDATA%/leopardwm/config.toml` (Windows standard)
-//! 2. `~/.config/leopardwm/config.toml` (Unix-style, for WSL compatibility)
-//! 3. `./config.toml` (current directory, for development)
+//! Config lookup uses the first existing path from [`config_paths`], or defaults
+//! when none exists. Loading also migrates legacy fields and merges hotkeys.
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -23,7 +19,6 @@ const BUILTIN_IGNORE_EXECUTABLES: &[&str] = &[
     "SnippingTool.exe",       // Screen capture overlay — breaks when repositioned
 ];
 
-/// Main configuration structure for LeopardWM.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -55,7 +50,6 @@ pub struct Config {
     pub overview: OverviewConfig,
 }
 
-/// Overview-mode configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OverviewConfig {
@@ -106,7 +100,6 @@ impl WorkspacesConfig {
     }
 }
 
-/// Layout-related configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LayoutConfig {
@@ -208,8 +201,7 @@ impl Default for LayoutConfig {
 }
 
 impl LayoutConfig {
-    /// The width fraction new columns open at: the `default_width_preset`-th
-    /// preset (1-based), falling back to the first preset if out of range.
+    /// Select the 1-based default preset; fall back to the first, or 0.5 if empty.
     pub fn default_width_fraction(&self) -> f64 {
         let idx = self.default_width_preset.saturating_sub(1);
         self.width_presets
@@ -219,10 +211,9 @@ impl LayoutConfig {
             .unwrap_or(0.5)
     }
 
-    /// Compute the default column width in pixels for a given viewport width,
-    /// using the configured default width preset as a fraction.
-    /// Formula: `width = fraction * (viewport - OL - OR + gap) - gap`
-    /// This is independent of column count — same result whether 1 or 10 columns.
+    /// Convert the selected fraction using usable viewport width plus one gap,
+    /// then subtract the gap, round down, and enforce a 100 px minimum.
+    /// The result is independent of column count.
     pub fn default_column_width_px(&self, viewport_width: i32) -> i32 {
         let base = viewport_width
             .saturating_sub(self.outer_gap_left.max(0))
@@ -238,8 +229,7 @@ impl LayoutConfig {
     pub fn migrate_outer_gap(&mut self) {
         if let Some(og) = self.outer_gap.take() {
             let og = og.max(0);
-            // Only migrate if the new fields are still at defaults, meaning
-            // the user's config only had the old `outer_gap` key.
+            // Preserve per-side customization; migrate only when all sides equal defaults.
             let d = default_outer_gap();
             if self.outer_gap_left == d
                 && self.outer_gap_right == d
@@ -255,7 +245,6 @@ impl LayoutConfig {
     }
 }
 
-/// Centering mode configuration (wrapper for serialization).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CenteringModeConfig {
@@ -279,12 +268,11 @@ impl From<CenteringModeConfig> for CenteringMode {
     }
 }
 
-/// Appearance-related configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceConfig {
     pub language: String,
-    /// Whether to highlight the active window border (Windows 11+).
+    /// Whether to highlight the active window with a border overlay.
     #[serde(default = "default_true")]
     pub active_border: bool,
 
@@ -382,7 +370,6 @@ pub enum TaskbarButtons {
     ShowAll,
 }
 
-/// Behavior-related configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, remote = "Self")]
 pub struct BehaviorConfig {
@@ -456,8 +443,7 @@ pub struct BehaviorConfig {
 
     /// Warp the mouse cursor onto the focused window after a focus-navigation
     /// command (focus left/right/up/down/next/prev/start/end and the monitor
-    /// focus/move commands). The inverse of `focus_follows_mouse`. Off by
-    /// default.
+    /// focus/move commands). Off by default.
     #[serde(default = "default_false")]
     pub mouse_follows_focus: bool,
 
@@ -480,7 +466,6 @@ pub enum NewWindowMonitor {
     Focused,
 }
 
-/// Placement for newly opened tiled windows.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NewWindowPlacement {
@@ -549,7 +534,6 @@ impl<'de> Deserialize<'de> for BehaviorConfig {
     }
 }
 
-// Default value functions for serde
 fn default_gap() -> i32 {
     10
 }
@@ -581,10 +565,6 @@ fn default_active_border_width() -> u32 {
 fn default_active_border_position() -> String {
     "outside".to_string()
 }
-
-// ============================================================================
-// Window Rules
-// ============================================================================
 
 /// A rule for per-window behavior.
 ///
@@ -696,74 +676,12 @@ pub enum CornerStyle {
 }
 
 impl CornerStyle {
-    /// Convert to a pixel radius.
     pub fn radius_px(self) -> f32 {
         match self {
             CornerStyle::Square => 0.0,
             CornerStyle::Rounded => 8.0,
             CornerStyle::SmallRounded => 4.0,
         }
-    }
-}
-
-impl WindowRule {
-    /// Check if this rule matches a window with the given properties.
-    ///
-    /// All specified match criteria must match for the rule to apply.
-    /// If no match criteria are specified, the rule matches nothing.
-    ///
-    /// Note: Runtime code uses `CompiledWindowRule::matches()` for efficiency.
-    /// This method is retained for tests and direct use.
-    #[allow(dead_code)]
-    pub fn matches(
-        &self,
-        class_name: &str,
-        title: &str,
-        executable: &str,
-        size: Option<(i32, i32)>,
-    ) -> bool {
-        let has_any_criteria = self.match_class.is_some()
-            || self.match_title.is_some()
-            || self.match_executable.is_some();
-
-        if !has_any_criteria
-            || !matches_window_size(self.match_max_width, self.match_max_height, size)
-        {
-            return false;
-        }
-
-        // Check class name if specified
-        if let Some(ref pattern) = self.match_class {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if !re.is_match(class_name) {
-                    return false;
-                }
-            } else {
-                tracing::warn!("Invalid regex in window rule match_class: {}", pattern);
-                return false;
-            }
-        }
-
-        // Check title if specified
-        if let Some(ref pattern) = self.match_title {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if !re.is_match(title) {
-                    return false;
-                }
-            } else {
-                tracing::warn!("Invalid regex in window rule match_title: {}", pattern);
-                return false;
-            }
-        }
-
-        // Check executable if specified (case-insensitive)
-        if let Some(ref exe) = self.match_executable {
-            if !executable.eq_ignore_ascii_case(exe) {
-                return false;
-            }
-        }
-
-        true
     }
 }
 
@@ -797,15 +715,11 @@ impl Default for HotkeyConfig {
         Self {
             scroll_modifier: default_scroll_modifier(),
             disabled: Vec::new(),
-            // Defaults come from the single hotkey catalog in `ipc::hotkeys`.
             bindings: leopardwm_ipc::hotkeys::default_bindings_map(),
         }
     }
 }
 
-/// Gesture bindings for touchpad support.
-///
-/// Maps touchpad gestures to commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GestureConfig {
@@ -1029,7 +943,6 @@ impl Default for AnimationConfig {
     }
 }
 
-/// A warning generated during config validation.
 #[derive(Debug, Clone)]
 pub struct ConfigWarning {
     pub field: String,
@@ -1087,7 +1000,6 @@ impl CompiledWindowRule {
         self.match_max_width.is_some() || self.match_max_height.is_some()
     }
 
-    /// Check if this compiled rule matches a window.
     pub fn matches(
         &self,
         class_name: &str,
@@ -1146,19 +1058,15 @@ pub(crate) fn canonical_action_id(action: &str) -> String {
         .unwrap_or(normalized)
 }
 
-/// Deprecated hotkey command names that should be removed during migration.
 const DEPRECATED_HOTKEY_COMMANDS: &[&str] = &["width_third", "width_half", "width_two_thirds"];
 
-/// Hotkey command renames: (old_name, new_name).
 const HOTKEY_COMMAND_RENAMES: &[(&str, &str)] = &[
     ("resize_grow", "cycle_width_up"),
     ("resize_shrink", "cycle_width_down"),
 ];
 
 impl Config {
-    /// Migrate deprecated hotkey bindings: rename old commands and remove obsolete ones.
     fn migrate_hotkey_bindings(bindings: &mut HashMap<String, String>) {
-        // Rename old command names to new ones
         for (old, new) in HOTKEY_COMMAND_RENAMES {
             for value in bindings.values_mut() {
                 if value == old {
@@ -1166,18 +1074,10 @@ impl Config {
                 }
             }
         }
-        // Remove bindings for deprecated commands
         bindings.retain(|_, cmd| !DEPRECATED_HOTKEY_COMMANDS.contains(&cmd.as_str()));
     }
 
-    /// Load configuration from standard locations.
-    ///
-    /// Tries the following locations in order:
-    /// 1. `%APPDATA%/leopardwm/config.toml`
-    /// 2. `~/.config/leopardwm/config.toml`
-    /// 3. `./config.toml`
-    ///
-    /// Returns default config if no file is found.
+    /// Load the first existing path from [`config_paths`], or defaults if none exists.
     pub fn load() -> Result<Self> {
         let paths = config_paths();
 
@@ -1246,7 +1146,6 @@ impl Config {
             }
         }
 
-        // gap must be >= 0
         if self.layout.gap < 0 {
             warnings.push(ConfigWarning {
                 field: "layout.gap".to_string(),
@@ -1255,7 +1154,6 @@ impl Config {
             self.layout.gap = 0;
         }
 
-        // outer gaps must be >= 0
         for (field, val) in [
             ("layout.outer_gap_left", &mut self.layout.outer_gap_left),
             ("layout.outer_gap_right", &mut self.layout.outer_gap_right),
@@ -1271,7 +1169,6 @@ impl Config {
             }
         }
 
-        // width_presets must not be empty
         if self.layout.width_presets.is_empty() {
             warnings.push(ConfigWarning {
                 field: "layout.width_presets".to_string(),
@@ -1280,7 +1177,6 @@ impl Config {
             self.layout.width_presets = default_width_presets();
         }
 
-        // default_width_preset must be a valid 1-based index into width_presets
         let preset_count = self.layout.width_presets.len();
         if self.layout.default_width_preset == 0 || self.layout.default_width_preset > preset_count
         {
@@ -1294,7 +1190,6 @@ impl Config {
             self.layout.default_width_preset = 1;
         }
 
-        // height_presets must not be empty
         if self.layout.height_presets.is_empty() {
             warnings.push(ConfigWarning {
                 field: "layout.height_presets".to_string(),
@@ -1303,7 +1198,6 @@ impl Config {
             self.layout.height_presets = default_height_presets();
         }
 
-        // focus_follows_mouse_delay_ms must be >= 50 when enabled
         if self.behavior.focus_follows_mouse && self.behavior.focus_follows_mouse_delay_ms < 50 {
             warnings.push(ConfigWarning {
                 field: "behavior.focus_follows_mouse_delay_ms".to_string(),
@@ -1315,7 +1209,6 @@ impl Config {
             self.behavior.focus_follows_mouse_delay_ms = 50;
         }
 
-        // snap_hints.duration_ms must be >= 50 when enabled
         if self.snap_hints.enabled && self.snap_hints.duration_ms < 50 {
             warnings.push(ConfigWarning {
                 field: "snap_hints.duration_ms".to_string(),
@@ -1327,7 +1220,6 @@ impl Config {
             self.snap_hints.duration_ms = 50;
         }
 
-        // active_border_color must be exactly 6 hex characters
         {
             let color = &self.appearance.active_border_color;
             let is_valid = color.len() == 6 && color.chars().all(|c| c.is_ascii_hexdigit());
@@ -1343,9 +1235,8 @@ impl Config {
             }
         }
 
-        // Tab strip colors must each be exactly 6 hex characters; height
-        // is clamped to a sane range so a typo doesn't make the strip
-        // invisible (height=1) or eat the screen (height=10000).
+        // Invalid strip heights reset to the default so a typo cannot hide the
+        // strip or make it consume the screen. Colors require six hex digits.
         for (field, value, default_fn) in [
             (
                 "appearance.tab_strip_bg",
@@ -1404,7 +1295,6 @@ impl Config {
             self.appearance.tab_strip_height = default_tab_strip_height();
         }
 
-        // behavior.log_level must be one of trace/debug/info/warn/error
         {
             let normalized = self.behavior.log_level.to_lowercase();
             let valid = matches!(
@@ -1574,7 +1464,6 @@ impl Config {
         compiled
     }
 
-    /// Load configuration from a specific path.
     pub fn load_from_path(path: &PathBuf) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
@@ -1582,10 +1471,8 @@ impl Config {
         let mut config: Config = toml::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
-        // Migrate legacy `outer_gap` → per-side outer gap fields.
         config.layout.migrate_outer_gap();
 
-        // Migrate deprecated hotkey command names.
         Self::migrate_hotkey_bindings(&mut config.hotkeys.bindings);
 
         Self::merge_default_hotkeys(&mut config.hotkeys);
@@ -1642,13 +1529,11 @@ impl Config {
 /// Returns Ok(Some(path)) if a file was created, Ok(None) if it already exists.
 pub fn ensure_config_on_disk() -> Result<Option<PathBuf>> {
     let paths = config_paths();
-    // If any config file already exists, do nothing
     for path in &paths {
         if path.exists() {
             return Ok(None);
         }
     }
-    // Write to the primary path
     let path = paths
         .first()
         .ok_or_else(|| anyhow::anyhow!("No config path available"))?
@@ -1667,7 +1552,6 @@ pub fn ensure_config_on_disk() -> Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
-/// Generate commented default config content for hand-editing.
 fn generate_default_config_content() -> String {
     leopardwm_ipc::config_template::render_default_config()
 }
@@ -1686,13 +1570,11 @@ pub fn config_paths() -> Vec<PathBuf> {
         paths.push(home.join(".config").join("leopardwm").join("config.toml"));
     }
 
-    // 3. Current directory: ./config.toml
     paths.push(PathBuf::from("config.toml"));
 
     paths
 }
 
-/// Get the user's home directory.
 fn dirs_home() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf())
 }
@@ -1736,6 +1618,15 @@ mod tests {
         }
     }
 
+    fn compile_rule(rule: WindowRule) -> CompiledWindowRule {
+        Config {
+            window_rules: vec![rule],
+            ..Default::default()
+        }
+        .compile_window_rules()
+        .remove(0)
+    }
+
     #[test]
     fn test_default_config() {
         let config = Config::default();
@@ -1745,30 +1636,35 @@ mod tests {
         assert_eq!(config.layout.outer_gap_top, 10);
         assert_eq!(config.layout.outer_gap_bottom, 10);
         assert_eq!(config.layout.width_presets, vec![0.333, 0.5, 0.667]);
+        assert_eq!(config.layout.height_presets, vec![0.333, 0.5, 0.667]);
         assert_eq!(config.layout.centering_mode, CenteringModeConfig::Center);
         assert!(config.behavior.focus_new_windows);
     }
 
     #[test]
     fn test_config_serialization_roundtrip() {
-        let config = Config::default();
+        let mut config = Config::default();
+        config.layout.gap = 23;
+        config.layout.centering_mode = CenteringModeConfig::JustInView;
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.layout.gap, config.layout.gap);
-        assert_eq!(parsed.layout.centering_mode, config.layout.centering_mode);
+        assert_eq!(parsed.layout.gap, 23);
+        assert_eq!(
+            parsed.layout.centering_mode,
+            CenteringModeConfig::JustInView
+        );
     }
 
     #[test]
     fn test_config_partial_parse() {
-        // Config with only some fields should use defaults for the rest
         let toml_str = r#"
             [layout]
             gap = 20
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.layout.gap, 20);
-        assert_eq!(config.layout.outer_gap_left, 10); // default
-        assert_eq!(config.layout.width_presets, vec![0.333, 0.5, 0.667]); // default
+        assert_eq!(config.layout.outer_gap_left, 10);
+        assert_eq!(config.layout.width_presets, vec![0.333, 0.5, 0.667]);
     }
 
     #[test]
@@ -1787,6 +1683,9 @@ mod tests {
     fn test_config_paths_not_empty() {
         let paths = config_paths();
         assert!(!paths.is_empty());
+        for path in paths {
+            assert_eq!(path.file_name().unwrap(), "config.toml");
+        }
     }
 
     #[test]
@@ -1942,34 +1841,22 @@ mod tests {
 
     #[test]
     fn test_hotkey_merge_adds_missing_defaults() {
-        // Simulate a user config with only one hotkey — load_from_path
-        // would merge defaults for unbound commands.
-        let defaults = HotkeyConfig::default();
         let mut user = HotkeyConfig {
             scroll_modifier: default_scroll_modifier(),
             disabled: Vec::new(),
             bindings: HashMap::new(),
         };
-        // User only binds focus_left to a custom key
         user.bindings
             .insert("Ctrl+Alt+X".to_string(), "focus_left".to_string());
 
-        // Merge: commands not bound by user get default binding
-        let user_commands: HashSet<String> = user.bindings.values().cloned().collect();
-        for (key, cmd) in defaults.bindings.iter() {
-            if !user_commands.contains(cmd) {
-                user.bindings.insert(key.clone(), cmd.clone());
-            }
-        }
+        Config::merge_default_hotkeys(&mut user);
 
-        // User's custom binding preserved (default focus_left key not added)
         assert_eq!(
             user.bindings.get("Ctrl+Alt+X"),
             Some(&"focus_left".to_string())
         );
         assert!(!user.bindings.contains_key("Ctrl+Alt+H"));
 
-        // New commands from defaults are present
         assert_eq!(
             user.bindings.get("Ctrl+Alt+["),
             Some(&"move_window_left".to_string())
@@ -1982,8 +1869,6 @@ mod tests {
 
     #[test]
     fn test_merge_skips_disabled_commands() {
-        // A user who cleared (disabled) consume_from_right should NOT get its
-        // default binding re-added by the merge.
         let mut hk = HotkeyConfig {
             scroll_modifier: default_scroll_modifier(),
             disabled: vec!["consume_from_right".to_string()],
@@ -1995,7 +1880,6 @@ mod tests {
             !hk.bindings.values().any(|c| c == "consume_from_right"),
             "disabled command should stay unbound after merge"
         );
-        // Other defaults are still merged in.
         assert!(hk.bindings.values().any(|c| c == "focus_left"));
     }
 
@@ -2037,38 +1921,22 @@ mod tests {
     }
 
     #[test]
-    fn test_width_presets_defaults() {
-        let config = Config::default();
-        assert_eq!(config.layout.width_presets, vec![0.333, 0.5, 0.667]);
-        assert_eq!(config.layout.height_presets, vec![0.333, 0.5, 0.667]);
-    }
-
-    #[test]
     fn test_default_column_width_px() {
         let config = LayoutConfig::default();
-        // base = 1920 - 10 - 10 + 10 = 1910
-        // width = 0.333 * 1910 - 10 = 626
-        let width = config.default_column_width_px(1920);
-        let base = 1920 - config.outer_gap_left - config.outer_gap_right + config.gap;
-        assert_eq!(
-            width,
-            (base as f64 * 0.333 - config.gap as f64).round() as i32
-        );
+        assert_eq!(config.default_column_width_px(1920), 626);
+        assert_eq!(config.default_column_width_px(1922), 626);
     }
 
     #[test]
     fn test_default_width_preset_selects_fraction() {
         let mut config = LayoutConfig::default();
-        // Default is preset 1 (0.333).
         assert_eq!(config.default_width_fraction(), 0.333);
 
-        // Selecting the 2nd/3rd preset picks the matching fraction.
         config.default_width_preset = 2;
         assert_eq!(config.default_width_fraction(), 0.5);
         config.default_width_preset = 3;
         assert_eq!(config.default_width_fraction(), 0.667);
 
-        // Out-of-range (0 or beyond the list) falls back to the first preset.
         config.default_width_preset = 0;
         assert_eq!(config.default_width_fraction(), 0.333);
         config.default_width_preset = 99;
@@ -2078,7 +1946,7 @@ mod tests {
     #[test]
     fn test_default_width_preset_out_of_range_warns_and_clamps() {
         let mut config = Config::default();
-        config.layout.default_width_preset = 5; // only 3 presets
+        config.layout.default_width_preset = 5;
         let warnings = config.validate();
         assert!(warnings
             .iter()
@@ -2105,7 +1973,10 @@ mod tests {
             match_max_height: None,
         };
 
+        let rule = compile_rule(rule);
         assert!(rule.matches("Notepad", "Untitled - Notepad", "notepad.exe", None));
+        assert!(rule.matches("Notepad", "Any Title", "any.exe", None));
+        assert!(rule.matches("Notepad", "Different Title", "different.exe", None));
         assert!(!rule.matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe", None));
     }
 
@@ -2128,6 +1999,7 @@ mod tests {
             match_max_height: None,
         };
 
+        let rule = compile_rule(rule);
         assert!(rule.matches(
             "Chrome_WidgetWin_1",
             "DevTools - localhost:3000",
@@ -2135,84 +2007,8 @@ mod tests {
             None
         ));
         assert!(rule.matches("SomeClass", "Firefox DevTools", "firefox.exe", None));
+        assert!(rule.matches("DifferentClass", "Firefox DevTools", "different.exe", None));
         assert!(!rule.matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe", None));
-    }
-
-    #[test]
-    fn test_window_rule_matches_executable() {
-        let rule = WindowRule {
-            match_class: None,
-            match_title: None,
-            match_executable: Some("spotify.exe".to_string()),
-            action: WindowAction::Float,
-            width: None,
-            height: None,
-            corner_style: None,
-            open_on_workspace: None,
-            open_maximized: false,
-            column_width: None,
-            open_in_column: None,
-            sticky: false,
-            match_max_width: None,
-            match_max_height: None,
-        };
-
-        assert!(rule.matches("SpotifyClass", "Spotify - Song Title", "spotify.exe", None));
-        assert!(rule.matches("SpotifyClass", "Spotify - Song Title", "SPOTIFY.EXE", None)); // Case insensitive
-        assert!(!rule.matches("SpotifyClass", "Spotify - Song Title", "chrome.exe", None));
-    }
-
-    #[test]
-    fn test_window_rule_matches_combined() {
-        let rule = WindowRule {
-            match_class: Some("Chrome.*".to_string()),
-            match_title: Some(".*YouTube.*".to_string()),
-            match_executable: None,
-            action: WindowAction::Tile,
-            width: None,
-            height: None,
-            corner_style: None,
-            open_on_workspace: None,
-            open_maximized: false,
-            column_width: None,
-            open_in_column: None,
-            sticky: false,
-            match_max_width: None,
-            match_max_height: None,
-        };
-
-        // Both patterns must match
-        assert!(rule.matches(
-            "Chrome_WidgetWin_1",
-            "YouTube - Google Chrome",
-            "chrome.exe",
-            None
-        ));
-        assert!(!rule.matches("Firefox", "YouTube - Mozilla Firefox", "firefox.exe", None)); // Class doesn't match
-        assert!(!rule.matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe", None));
-        // Title doesn't match
-    }
-
-    #[test]
-    fn test_window_rule_no_criteria_matches_nothing() {
-        let rule = WindowRule {
-            match_class: None,
-            match_title: None,
-            match_executable: None,
-            action: WindowAction::Ignore,
-            width: None,
-            height: None,
-            corner_style: None,
-            open_on_workspace: None,
-            open_maximized: false,
-            column_width: None,
-            open_in_column: None,
-            sticky: false,
-            match_max_width: None,
-            match_max_height: None,
-        };
-
-        assert!(!rule.matches("AnyClass", "Any Title", "any.exe", None));
     }
 
     #[test]
@@ -2303,13 +2099,8 @@ mod tests {
         assert_eq!(config.behavior.focus_follows_mouse_delay_ms, 200);
     }
 
-    // =========================================================================
-    // Window Rule Edge Cases
-    // =========================================================================
-
     #[test]
     fn test_window_rule_multiple_matches_uses_first() {
-        // When multiple rules could match, the first one wins
         let rules = vec![
             WindowRule {
                 match_class: Some("Notepad".to_string()),
@@ -2331,7 +2122,7 @@ mod tests {
                 match_class: Some("Notepad".to_string()),
                 match_title: None,
                 match_executable: None,
-                action: WindowAction::Ignore, // Different action
+                action: WindowAction::Ignore,
                 width: None,
                 height: None,
                 corner_style: None,
@@ -2345,23 +2136,22 @@ mod tests {
             },
         ];
 
-        // First matching rule should be returned
-        let mut matched_action = WindowAction::Tile; // Default
-        for rule in &rules {
-            if rule.matches("Notepad", "Untitled", "notepad.exe", None) {
-                matched_action = rule.action;
-                break;
-            }
-        }
-        assert_eq!(matched_action, WindowAction::Float);
+        let config = Config {
+            window_rules: rules,
+            ..Default::default()
+        };
+        let state = crate::AppState::new_with_config(config, vec![]);
+        assert_eq!(
+            state.evaluate_window_rules("Notepad", "Untitled", "notepad.exe", None),
+            WindowAction::Float
+        );
     }
 
     #[test]
     fn test_window_rule_regex_special_chars() {
-        // Test regex with special characters that need escaping
         let rule = WindowRule {
             match_class: None,
-            match_title: Some(r"^\[DEBUG\].*$".to_string()), // Escaped brackets
+            match_title: Some(r"^\[DEBUG\].*$".to_string()),
             match_executable: None,
             action: WindowAction::Ignore,
             width: None,
@@ -2376,13 +2166,13 @@ mod tests {
             match_max_height: None,
         };
 
+        let rule = compile_rule(rule);
         assert!(rule.matches("AnyClass", "[DEBUG] Application started", "app.exe", None));
         assert!(!rule.matches("AnyClass", "DEBUG Application started", "app.exe", None));
     }
 
     #[test]
     fn test_window_rule_regex_case_sensitivity() {
-        // By default, regex is case-sensitive
         let rule = WindowRule {
             match_class: None,
             match_title: Some("Error".to_string()),
@@ -2400,13 +2190,13 @@ mod tests {
             match_max_height: None,
         };
 
+        let rule = compile_rule(rule);
         assert!(rule.matches("AnyClass", "Error Dialog", "app.exe", None));
-        assert!(!rule.matches("AnyClass", "error dialog", "app.exe", None)); // Case mismatch
+        assert!(!rule.matches("AnyClass", "error dialog", "app.exe", None));
     }
 
     #[test]
     fn test_window_rule_regex_case_insensitive() {
-        // Test case-insensitive regex with (?i) flag
         let rule = WindowRule {
             match_class: None,
             match_title: Some("(?i)error".to_string()),
@@ -2424,92 +2214,17 @@ mod tests {
             match_max_height: None,
         };
 
+        let rule = compile_rule(rule);
         assert!(rule.matches("AnyClass", "Error Dialog", "app.exe", None));
         assert!(rule.matches("AnyClass", "error dialog", "app.exe", None));
         assert!(rule.matches("AnyClass", "ERROR DIALOG", "app.exe", None));
     }
 
     #[test]
-    fn test_window_rule_partial_config_class_only() {
-        // Rule with only class specified
-        let rule = WindowRule {
-            match_class: Some("MyClass".to_string()),
-            match_title: None,
-            match_executable: None,
-            action: WindowAction::Tile,
-            width: None,
-            height: None,
-            corner_style: None,
-            open_on_workspace: None,
-            open_maximized: false,
-            column_width: None,
-            open_in_column: None,
-            sticky: false,
-            match_max_width: None,
-            match_max_height: None,
-        };
-
-        assert!(rule.matches("MyClass", "Any Title", "any.exe", None));
-        assert!(rule.matches("MyClass", "Different Title", "different.exe", None));
-        assert!(!rule.matches("OtherClass", "Any Title", "any.exe", None));
-    }
-
-    #[test]
-    fn test_window_rule_partial_config_title_only() {
-        // Rule with only title specified
-        let rule = WindowRule {
-            match_class: None,
-            match_title: Some(".*Settings.*".to_string()),
-            match_executable: None,
-            action: WindowAction::Float,
-            width: None,
-            height: None,
-            corner_style: None,
-            open_on_workspace: None,
-            open_maximized: false,
-            column_width: None,
-            open_in_column: None,
-            sticky: false,
-            match_max_width: None,
-            match_max_height: None,
-        };
-
-        assert!(rule.matches("AnyClass", "App Settings", "any.exe", None));
-        assert!(rule.matches("DifferentClass", "Settings Panel", "different.exe", None));
-        assert!(!rule.matches("AnyClass", "Main Window", "any.exe", None));
-    }
-
-    #[test]
-    fn test_window_rule_partial_config_executable_only() {
-        // Rule with only executable specified
-        let rule = WindowRule {
-            match_class: None,
-            match_title: None,
-            match_executable: Some("notepad.exe".to_string()),
-            action: WindowAction::Tile,
-            width: None,
-            height: None,
-            corner_style: None,
-            open_on_workspace: None,
-            open_maximized: false,
-            column_width: None,
-            open_in_column: None,
-            sticky: false,
-            match_max_width: None,
-            match_max_height: None,
-        };
-
-        assert!(rule.matches("AnyClass", "Any Title", "notepad.exe", None));
-        assert!(rule.matches("AnyClass", "Any Title", "NOTEPAD.EXE", None)); // Case insensitive
-        assert!(!rule.matches("AnyClass", "Any Title", "wordpad.exe", None));
-    }
-
-    #[test]
     fn test_window_rule_invalid_regex_returns_false() {
-        // Invalid regex should not match anything
         let rule = WindowRule {
             match_class: None,
-            match_title: Some("[invalid(regex".to_string()), // Invalid regex
+            match_title: Some("[invalid(regex".to_string()),
             match_executable: None,
             action: WindowAction::Float,
             width: None,
@@ -2524,15 +2239,24 @@ mod tests {
             match_max_height: None,
         };
 
-        // Should return false because regex is invalid
-        assert!(!rule.matches("AnyClass", "Any Title", "any.exe", None));
+        let config = Config {
+            window_rules: vec![rule],
+            ..Default::default()
+        };
+        let compiled = config.compile_window_rules();
+        assert_eq!(compiled.len(), BUILTIN_IGNORE_EXECUTABLES.len());
+        assert!(!compiled.iter().any(|rule| rule.matches(
+            "AnyClass",
+            "Any Title",
+            "any.exe",
+            None
+        )));
     }
 
     #[test]
     fn test_window_rule_empty_strings_match() {
-        // Test matching against empty strings
         let rule = WindowRule {
-            match_class: Some(".*".to_string()), // Match anything including empty
+            match_class: Some(".*".to_string()),
             match_title: None,
             match_executable: None,
             action: WindowAction::Float,
@@ -2548,13 +2272,13 @@ mod tests {
             match_max_height: None,
         };
 
-        assert!(rule.matches("", "Title", "app.exe", None)); // Empty class matches .*
+        let rule = compile_rule(rule);
+        assert!(rule.matches("", "Title", "app.exe", None));
         assert!(rule.matches("SomeClass", "Title", "app.exe", None));
     }
 
     #[test]
     fn test_window_rule_width_height_optional() {
-        // Width and height are optional and independent
         let toml_str = r#"
             [[window_rules]]
             match_class = "Test"
@@ -2612,10 +2336,6 @@ mod tests {
             assert_eq!(compiled_width(invalid), None);
         }
     }
-
-    // =========================================================================
-    // Config Validation Tests
-    // =========================================================================
 
     #[test]
     fn test_validate_negative_gap_clamped() {
@@ -2679,7 +2399,6 @@ mod tests {
             config.animation.easing,
             leopardwm_core_layout::Easing::EaseOut
         );
-        // Reducing motion on battery is on by default (power saving).
         assert!(config.animation.reduce_motion_on_battery);
     }
 
@@ -2688,7 +2407,6 @@ mod tests {
         let toml = "[animation]\nreduce_motion_on_battery = false\n";
         let config: Config = toml::from_str(toml).expect("parse");
         assert!(!config.animation.reduce_motion_on_battery);
-        // A config that omits the field keeps the power-saving default.
         let config: Config = toml::from_str("[animation]\n").expect("parse");
         assert!(config.animation.reduce_motion_on_battery);
     }
@@ -2819,7 +2537,6 @@ mod tests {
             leopardwm_core_layout::Easing::EaseInOut
         );
         assert_eq!(config.animation.layout_duration_ms, 80);
-        // Unspecified fields fall back to defaults.
         assert_eq!(config.animation.scroll_duration_ms, 200);
         assert_eq!(config.animation.overview_duration_ms, 150);
     }
@@ -2847,11 +2564,8 @@ mod tests {
         let mut config = Config::default();
         config.workspaces.names = vec!["web".to_string(), "".to_string(), "  chat  ".to_string()];
         assert_eq!(config.workspaces.name_for(0).as_deref(), Some("web"));
-        // Empty entry -> unnamed.
         assert_eq!(config.workspaces.name_for(1), None);
-        // Whitespace is trimmed.
         assert_eq!(config.workspaces.name_for(2).as_deref(), Some("chat"));
-        // Out of range -> unnamed.
         assert_eq!(config.workspaces.name_for(8), None);
     }
 
@@ -2917,10 +2631,6 @@ mod tests {
         );
     }
 
-    // =========================================================================
-    // Compiled Window Rule Tests
-    // =========================================================================
-
     #[test]
     fn test_compiled_window_rule_matches() {
         let config = Config {
@@ -2964,19 +2674,17 @@ mod tests {
         let compiled = config.compile_window_rules();
         assert_eq!(compiled.len(), 2 + BUILTIN_IGNORE_EXECUTABLES.len());
 
-        // First rule: class + title regex
         assert!(compiled[0].matches(
             "Chrome_WidgetWin_1",
             "YouTube - Google Chrome",
             "chrome.exe",
             None
         ));
-        assert!(!compiled[0].matches("Firefox", "YouTube", "firefox.exe", None)); // class doesn't match
-        assert!(!compiled[0].matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe", None)); // title doesn't match
+        assert!(!compiled[0].matches("Firefox", "YouTube", "firefox.exe", None));
+        assert!(!compiled[0].matches("Chrome_WidgetWin_1", "Google Chrome", "chrome.exe", None));
 
-        // Second rule: executable only
         assert!(compiled[1].matches("AnyClass", "Any Title", "notepad.exe", None));
-        assert!(compiled[1].matches("AnyClass", "Any Title", "NOTEPAD.EXE", None)); // case insensitive
+        assert!(compiled[1].matches("AnyClass", "Any Title", "NOTEPAD.EXE", None));
         assert!(!compiled[1].matches("AnyClass", "Any Title", "wordpad.exe", None));
     }
 
@@ -2985,7 +2693,7 @@ mod tests {
         let config = Config {
             window_rules: vec![
                 WindowRule {
-                    match_class: Some("[invalid(regex".to_string()), // Invalid regex
+                    match_class: Some("[invalid(regex".to_string()),
                     match_title: None,
                     match_executable: None,
                     action: WindowAction::Float,
@@ -3021,7 +2729,6 @@ mod tests {
         };
 
         let compiled = config.compile_window_rules();
-        // First rule should be skipped due to invalid regex
         assert_eq!(compiled.len(), 1 + BUILTIN_IGNORE_EXECUTABLES.len());
         assert!(compiled[0].matches("ValidClass", "Any Title", "any.exe", None));
     }
@@ -3048,31 +2755,22 @@ mod tests {
                 ..Default::default()
             };
             let config = Config {
-                window_rules: vec![rule.clone()],
+                window_rules: vec![rule],
                 ..Default::default()
             };
-            assert_eq!(rule.matches(class, "QQ NT", "qq.EXE", size), expected);
             assert_eq!(
                 config.compile_window_rules()[0].matches(class, "QQ NT", "qq.EXE", size),
                 expected
             );
         }
-        let rule = WindowRule {
+        let rule = compile_rule(WindowRule::default());
+        assert!(!rule.matches("AnyClass", "Any Title", "any.exe", None));
+        let rule = compile_rule(WindowRule {
             match_max_width: Some(400),
             match_max_height: Some(300),
             ..Default::default()
-        };
-        let config = Config {
-            window_rules: vec![rule.clone()],
-            ..Default::default()
-        };
+        });
         assert!(!rule.matches("QQ", "QQ NT", "QQ.exe", Some((100, 100))));
-        assert!(!config.compile_window_rules()[0].matches(
-            "QQ",
-            "QQ NT",
-            "QQ.exe",
-            Some((100, 100))
-        ));
     }
 
     #[test]
@@ -3265,19 +2963,17 @@ mod tests {
         }
     }
 
-    // =========================================================================
-    // Hex Color Validation Tests
-    // =========================================================================
-
     #[test]
     fn test_validate_hex_color_valid() {
-        let mut config = Config::default();
-        config.appearance.active_border_color = "ff0000".to_string();
-        let warnings = config.validate();
-        assert_eq!(config.appearance.active_border_color, "ff0000");
-        assert!(!warnings
-            .iter()
-            .any(|w| w.field == "appearance.active_border_color"));
+        for color in ["ff0000", "FF0000"] {
+            let mut config = Config::default();
+            config.appearance.active_border_color = color.to_string();
+            let warnings = config.validate();
+            assert_eq!(config.appearance.active_border_color, color);
+            assert!(!warnings
+                .iter()
+                .any(|w| w.field == "appearance.active_border_color"));
+        }
     }
 
     #[test]
@@ -3313,7 +3009,6 @@ mod tests {
         let mut config = Config::default();
         config.appearance.active_border_color = "#4285F4".to_string();
         let warnings = config.validate();
-        // Hash prefix makes it 7 chars, so it should be rejected
         assert_eq!(
             config.appearance.active_border_color,
             default_active_border_color()
@@ -3323,21 +3018,13 @@ mod tests {
             .any(|w| w.field == "appearance.active_border_color"));
     }
 
-    // =========================================================================
-    // Config Edge Case Tests
-    // =========================================================================
-
     #[test]
     fn test_empty_config_uses_defaults() {
         let config: Config = toml::from_str("").unwrap();
-        let default = Config::default();
-        assert_eq!(config.layout.gap, default.layout.gap);
-        assert_eq!(config.layout.outer_gap_left, default.layout.outer_gap_left);
-        assert_eq!(config.layout.width_presets, default.layout.width_presets);
-        assert_eq!(
-            config.appearance.active_border_color,
-            default.appearance.active_border_color
-        );
+        assert_eq!(config.layout.gap, 10);
+        assert_eq!(config.layout.outer_gap_left, 10);
+        assert_eq!(config.layout.width_presets, vec![0.333, 0.5, 0.667]);
+        assert_eq!(config.appearance.active_border_color, "4285F4");
         assert!(config.behavior.focus_new_windows);
         assert!(config.window_rules.is_empty());
     }
@@ -3354,23 +3041,19 @@ mod tests {
         "#;
         let mut config: Config = toml::from_str(toml_str).unwrap();
         let warnings = config.validate();
-        // gap=0 and outer gaps=0 are valid (not negative)
         assert_eq!(config.layout.gap, 0);
         assert_eq!(config.layout.outer_gap_left, 0);
-        assert!(!warnings.iter().any(|w| w.field == "layout.gap"));
-    }
-
-    #[test]
-    fn test_unknown_toml_keys_ignored() {
-        let toml_str = r#"
-            [layout]
-            gap = 15
-            unknown_key = "hello"
-            another_unknown = 42
-        "#;
-        // serde(default) + deny_unknown_fields is NOT set, so this should parse
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.layout.gap, 15);
+        assert_eq!(config.layout.outer_gap_right, 0);
+        assert_eq!(config.layout.outer_gap_top, 0);
+        assert_eq!(config.layout.outer_gap_bottom, 0);
+        assert!(!warnings.iter().any(|w| matches!(
+            w.field.as_str(),
+            "layout.gap"
+                | "layout.outer_gap_left"
+                | "layout.outer_gap_right"
+                | "layout.outer_gap_top"
+                | "layout.outer_gap_bottom"
+        )));
     }
 
     #[test]
@@ -3383,49 +3066,42 @@ mod tests {
     }
 
     #[test]
-    fn test_hex_color_case_insensitive() {
-        let mut config1 = Config::default();
-        config1.appearance.active_border_color = "ff0000".to_string();
-        let warnings1 = config1.validate();
-        assert!(!warnings1
-            .iter()
-            .any(|w| w.field == "appearance.active_border_color"));
-
-        let mut config2 = Config::default();
-        config2.appearance.active_border_color = "FF0000".to_string();
-        let warnings2 = config2.validate();
-        assert!(!warnings2
-            .iter()
-            .any(|w| w.field == "appearance.active_border_color"));
-    }
-
-    // =========================================================================
-    // Regex Size Limit Test
-    // =========================================================================
-
-    #[test]
     fn test_regex_size_limit_rejects_oversized_pattern() {
-        // Directly verify that RegexBuilder with size_limit rejects patterns that
-        // exceed the compiled NFA size limit. Use a very small limit to guarantee rejection.
-        let pattern = "[a-z]{100}";
-        let result = regex::RegexBuilder::new(pattern)
-            .size_limit(100) // Tiny limit to guarantee rejection
-            .build();
-        assert!(
-            result.is_err(),
-            "Pattern should be rejected with a very small size limit"
-        );
-
-        // Also verify that the same pattern succeeds without a tight limit (our production limit)
-        let result = regex::RegexBuilder::new(pattern)
-            .size_limit(1_000_000)
-            .build();
-        assert!(result.is_ok(), "Pattern should succeed with 1MB limit");
+        let config = Config {
+            window_rules: vec![
+                WindowRule {
+                    match_class: Some("[a-z]{100000}".into()),
+                    match_executable: Some("oversized-class.exe".into()),
+                    ..Default::default()
+                },
+                WindowRule {
+                    match_title: Some("[a-z]{100000}".into()),
+                    match_executable: Some("oversized-title.exe".into()),
+                    ..Default::default()
+                },
+                WindowRule {
+                    match_class: Some("^SmallClass$".into()),
+                    match_title: Some("^Small Title$".into()),
+                    match_executable: Some("small.exe".into()),
+                    action: WindowAction::Float,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let compiled = config.compile_window_rules();
+        for executable in ["oversized-class.exe", "oversized-title.exe"] {
+            assert!(!compiled
+                .iter()
+                .any(|rule| rule.match_executable.as_deref() == Some(executable)));
+        }
+        let small = compiled
+            .iter()
+            .find(|rule| rule.match_executable.as_deref() == Some("small.exe"))
+            .unwrap();
+        assert!(small.matches("SmallClass", "Small Title", "small.exe", None));
+        assert_eq!(small.action, WindowAction::Float);
     }
-
-    // =========================================================================
-    // Config Error-Path Tests
-    // =========================================================================
 
     #[test]
     fn test_invalid_toml_syntax_returns_error() {
@@ -3441,14 +3117,6 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_string_parses_to_defaults() {
-        let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.layout.gap, default_gap());
-        assert_eq!(config.layout.outer_gap_left, default_outer_gap());
-        assert_eq!(config.layout.width_presets, default_width_presets());
-    }
-
-    #[test]
     fn test_unknown_keys_are_ignored() {
         // serde(default) without deny_unknown_fields means extra keys are silently ignored
         let toml_str = r#"
@@ -3456,6 +3124,8 @@ mod tests {
             [layout]
             gap = 20
             nonexistent_field = true
+            unknown_key = "hello"
+            another_unknown = 42
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.layout.gap, 20);
