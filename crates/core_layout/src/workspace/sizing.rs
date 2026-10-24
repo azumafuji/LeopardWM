@@ -148,13 +148,8 @@ impl Workspace {
         self.toggle_maximize_column(viewport_width);
     }
 
-    /// Alias for toggle_maximized_column.
-    pub fn toggle_maximize_column(&mut self, viewport_width: i32) -> bool {
-        self.toggle_maximized_column(viewport_width)
-    }
-
     /// Toggle maximizing the focused column to fill the viewport width.
-    pub fn toggle_maximized_column(&mut self, viewport_width: i32) -> bool {
+    pub fn toggle_maximize_column(&mut self, viewport_width: i32) -> bool {
         if let Some(fs_wid) = self.fullscreen_window.take() {
             self.window_min_widths.remove(&fs_wid);
             self.window_min_heights.remove(&fs_wid);

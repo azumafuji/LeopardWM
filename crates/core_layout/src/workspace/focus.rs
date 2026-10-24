@@ -289,10 +289,9 @@ impl Workspace {
             return Err(LayoutError::DuplicateWindow(window_id));
         }
 
-        let target_row = row_idx.min(self.rows.len().saturating_sub(1));
-        let Some(row) = self.rows.get_mut(target_row) else {
+        let Some(row) = self.rows.get_mut(row_idx) else {
             return Err(LayoutError::RowOutOfBounds(
-                target_row,
+                row_idx,
                 self.rows.len().saturating_sub(1),
             ));
         };
@@ -466,7 +465,7 @@ impl Workspace {
     }
 
     /// Focus a specific row and land focus safely on its last-focused window
-    /// (or the first visible window if the remembered one is minimized, D2/D6).
+    /// (or the first visible window if the remembered one is minimized).
     pub(crate) fn land_focus_in_row(&mut self, row_idx: usize) {
         if row_idx >= self.rows.len() {
             return;
@@ -493,7 +492,7 @@ impl Workspace {
     }
 
     /// Move focus to the window above in the current column.
-    /// In multi-row layout, stepping past the top boundary moves focus to the row above (D2, D4).
+    /// In multi-row layout, stepping past the top boundary moves focus to the row above.
     pub fn focus_up(&mut self) {
         let fr = self.focused_row;
         let Some(row) = self.rows.get(fr) else {
@@ -549,7 +548,7 @@ impl Workspace {
     }
 
     /// Move focus to the window below in the current column.
-    /// In multi-row layout, stepping past the bottom boundary moves focus to the row below (D2, D4).
+    /// In multi-row layout, stepping past the bottom boundary moves focus to the row below.
     pub fn focus_down(&mut self) {
         let fr = self.focused_row;
         let Some(row) = self.rows.get(fr) else {
@@ -604,14 +603,14 @@ impl Workspace {
         }
     }
 
-    /// Focus the row above unconditionally (lands on target row's last-focused window, D2/D6).
+    /// Focus the row above unconditionally (lands on target row's last-focused window).
     pub fn focus_row_up(&mut self) {
         if self.focused_row > 0 {
             self.land_focus_in_row(self.focused_row - 1);
         }
     }
 
-    /// Focus the row below unconditionally (lands on target row's last-focused window, D2/D6).
+    /// Focus the row below unconditionally (lands on target row's last-focused window).
     pub fn focus_row_down(&mut self) {
         if self.focused_row + 1 < self.rows.len() {
             self.land_focus_in_row(self.focused_row + 1);
@@ -656,31 +655,16 @@ impl Workspace {
         };
 
         let _ = self.rows[source_row].columns[source_col].remove_at_index(source_win);
+        self.rows[source_row].on_window_removed_from_column(source_col, window_id);
+        self.pending_min_size_clears.insert(window_id);
         if self.rows[source_row].columns[source_col].is_empty() {
-            if self.rows[source_row]
-                .maximized_column
-                .as_ref()
-                .is_some_and(|m| m.sentinel_window == window_id)
-            {
-                self.rows[source_row].maximized_column = None;
-            }
             self.rows[source_row].columns.remove(source_col);
             if self.rows[source_row].focused_column > source_col {
                 self.rows[source_row].focused_column -= 1;
             }
         } else {
-            let next_sentinel = self.rows[source_row].columns[source_col]
-                .windows()
-                .first()
-                .copied();
-            if let (Some(state), Some(next)) = (
-                self.rows[source_row]
-                    .maximized_column
-                    .as_mut()
-                    .filter(|m| m.sentinel_window == window_id),
-                next_sentinel,
-            ) {
-                state.sentinel_window = next;
+            for &sibling in self.rows[source_row].columns[source_col].windows() {
+                self.pending_min_size_clears.insert(sibling);
             }
         }
         self.clamp_focus_indices_for_row(source_row);
@@ -933,21 +917,27 @@ impl Workspace {
 
     pub fn set_active_tab(&mut self, column: usize, tab_idx: usize) -> Result<(), LayoutError> {
         let fr = self.focused_row;
-        if column >= self.rows[fr].columns.len() {
+        self.set_active_tab_in_row(fr, column, tab_idx)
+    }
+
+    pub fn set_active_tab_in_row(
+        &mut self,
+        row_idx: usize,
+        column: usize,
+        tab_idx: usize,
+    ) -> Result<(), LayoutError> {
+        let max_row = self.rows.len().saturating_sub(1);
+        let Some(row) = self.rows.get_mut(row_idx) else {
+            return Err(LayoutError::RowOutOfBounds(row_idx, max_row));
+        };
+        if column >= row.columns.len() {
             return Err(LayoutError::ColumnOutOfBounds(
                 column,
-                self.rows[fr].columns.len().saturating_sub(1),
+                row.columns.len().saturating_sub(1),
             ));
         }
-        let col = &mut self.rows[fr].columns[column];
-        if !col.is_tabbed() {
-            return Err(LayoutError::WindowIndexOutOfBounds(
-                tab_idx,
-                column,
-                col.len().saturating_sub(1),
-            ));
-        }
-        if tab_idx >= col.len() {
+        let col = &mut row.columns[column];
+        if !col.is_tabbed() || tab_idx >= col.len() {
             return Err(LayoutError::WindowIndexOutOfBounds(
                 tab_idx,
                 column,
@@ -955,8 +945,8 @@ impl Workspace {
             ));
         }
         col.set_active_tab(tab_idx);
-        if column == self.rows[fr].focused_column {
-            self.rows[fr].focused_window_in_column = tab_idx;
+        if column == row.focused_column {
+            row.focused_window_in_column = tab_idx;
         }
         Ok(())
     }
@@ -1119,14 +1109,28 @@ impl Workspace {
     /// Set focus to a specific column and window index within the focused row.
     pub fn set_focus(&mut self, column: usize, window_in_column: usize) -> Result<(), LayoutError> {
         let fr = self.focused_row;
-        if column >= self.rows[fr].columns.len() {
+        self.set_focus_in_row(fr, column, window_in_column)
+    }
+
+    /// Set focus to a specific row, column, and window index within that column.
+    pub fn set_focus_in_row(
+        &mut self,
+        row_idx: usize,
+        column: usize,
+        window_in_column: usize,
+    ) -> Result<(), LayoutError> {
+        let max_row = self.rows.len().saturating_sub(1);
+        let Some(row) = self.rows.get_mut(row_idx) else {
+            return Err(LayoutError::RowOutOfBounds(row_idx, max_row));
+        };
+        if column >= row.columns.len() {
             return Err(LayoutError::ColumnOutOfBounds(
                 column,
-                self.rows[fr].columns.len().saturating_sub(1),
+                row.columns.len().saturating_sub(1),
             ));
         }
 
-        let col_len = self.rows[fr].columns[column].len();
+        let col_len = row.columns[column].len();
         if window_in_column >= col_len {
             return Err(LayoutError::WindowIndexOutOfBounds(
                 window_in_column,
@@ -1135,8 +1139,9 @@ impl Workspace {
             ));
         }
 
-        self.rows[fr].focused_column = column;
-        self.rows[fr].focused_window_in_column = window_in_column;
+        self.focused_row = row_idx;
+        self.rows[row_idx].focused_column = column;
+        self.rows[row_idx].focused_window_in_column = window_in_column;
         self.sync_active_tab_to_focus();
         Ok(())
     }

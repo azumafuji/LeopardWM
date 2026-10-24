@@ -5,6 +5,9 @@ use crate::column::Column;
 use crate::types::WindowId;
 use crate::workspace::MaximizedColumnState;
 
+/// Maximum number of rows supported in a workspace.
+pub const MAX_ROWS: usize = 4;
+
 /// An independent horizontal scrolling strip of columns in a workspace.
 ///
 /// In a multi-row workspace, each row is a separate strip with its own
@@ -116,5 +119,22 @@ impl WorkspaceRow {
             }
         }
         None
+    }
+
+    /// Update or clear `maximized_column` after `removed_wid` has been removed from `col_idx`.
+    pub(crate) fn on_window_removed_from_column(&mut self, col_idx: usize, removed_wid: WindowId) {
+        if let Some(state) = self
+            .maximized_column
+            .as_mut()
+            .filter(|m| m.sentinel_window == removed_wid)
+        {
+            if let Some(&next_sentinel) =
+                self.columns.get(col_idx).and_then(|c| c.windows().first())
+            {
+                state.sentinel_window = next_sentinel;
+            } else {
+                self.maximized_column = None;
+            }
+        }
     }
 }

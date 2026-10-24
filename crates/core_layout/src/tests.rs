@@ -6111,4 +6111,114 @@ mod tests {
         assert_eq!(ws.focused_window(), Some(3));
         assert_eq!(ws.rows()[0].columns()[1].active_tab_idx(), Some(1));
     }
+
+    #[test]
+    fn test_maximized_column_state_transferred_or_cleared_on_intra_row_moves() {
+        // 1. expel_to_right from a maximized stacked column transfers sentinel and uses original_width
+        let mut ws = Workspace::with_gaps(0, 0);
+        ws.insert_window(1, Some(500)).unwrap();
+        ws.insert_window_in_column(2, 0).unwrap();
+        ws.set_focus(0, 0).unwrap();
+        assert!(ws.toggle_maximize_column(1920));
+        assert_eq!(ws.columns()[0].width(), 1920);
+
+        ws.expel_to_right();
+        assert_eq!(ws.column_count(), 2);
+        // Remaining column (window 2) stays maximized with sentinel transferred to window 2.
+        assert_eq!(ws.columns()[0].windows(), &[2]);
+        assert_eq!(ws.columns()[0].width(), 1920);
+        // Expelled column (window 1) gets original_width (500), not 1920!
+        assert_eq!(ws.columns()[1].windows(), &[1]);
+        assert_eq!(ws.columns()[1].width(), 500);
+        // Toggling maximize on column 0 restores it to 500.
+        ws.set_focus(0, 0).unwrap();
+        assert!(!ws.toggle_maximize_column(1920));
+        assert_eq!(ws.columns()[0].width(), 500);
+
+        // 2. move_window_left emptying a maximized column clears maximized_column
+        let mut ws = Workspace::with_gaps(0, 0);
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.insert_window(2, Some(600)).unwrap();
+        ws.set_focus(1, 0).unwrap();
+        assert!(ws.toggle_maximize_column(1920));
+        ws.move_window_left();
+        assert_eq!(ws.column_count(), 1);
+        assert!(ws.rows()[0].maximized_column.is_none());
+
+        // 3. consume_from_right pulling the sentinel from a 2-window maximized column transfers sentinel
+        let mut ws = Workspace::with_gaps(0, 0);
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.insert_window(2, Some(600)).unwrap();
+        ws.insert_window_in_column(3, 1).unwrap();
+        ws.set_focus(1, 0).unwrap();
+        assert!(ws.toggle_maximize_column(1920));
+        ws.set_focus(0, 0).unwrap();
+        ws.consume_from_right();
+        assert_eq!(ws.columns()[0].windows(), &[1, 2]);
+        assert_eq!(ws.columns()[1].windows(), &[3]);
+        assert_eq!(
+            ws.rows()[0].maximized_column.as_ref().map(|m| m.sentinel_window),
+            Some(3)
+        );
+
+        // 4. remove_column_in_row clears maximized_column when removing the maximized column
+        let removed = ws.remove_column_in_row(0, 1);
+        assert!(removed.is_some());
+        assert!(ws.rows()[0].maximized_column.is_none());
+    }
+
+    #[test]
+    fn test_set_row_layout_shrink_preserves_focused_window_in_drained_row() {
+        let mut ws = Workspace::with_gaps(0, 0);
+        ws.set_row_layout(&[0.5, 0.5]);
+        ws.focus_row(0);
+        ws.insert_window(1, Some(400)).unwrap();
+        ws.insert_window(2, Some(400)).unwrap();
+
+        ws.focus_row(1);
+        ws.insert_window(10, Some(400)).unwrap();
+        ws.insert_window(11, Some(400)).unwrap();
+        ws.insert_window_in_column(12, 1).unwrap();
+        ws.set_focus(1, 1).unwrap();
+        assert_eq!(ws.focused_window(), Some(12));
+
+        // Shrink from 2 rows to 1 row while focus is in row 1 on window 12 (col 1, win 1).
+        ws.set_row_layout(&[1.0]);
+        assert_eq!(ws.row_count(), 1);
+        assert_eq!(ws.focused_row(), 0);
+        assert_eq!(ws.focused_column_index(), 3);
+        assert_eq!(ws.focused_window_index_in_column(), 1);
+        assert_eq!(ws.focused_window(), Some(12));
+    }
+
+    #[test]
+    fn test_workspace_deserialization_caps_rows_at_max_rows_and_normalizes_shares() {
+        let json = r#"{
+            "rows": [
+                {"columns": [], "focused_column": 0, "focused_window_in_column": 0, "scroll_offset": 0.0},
+                {"columns": [], "focused_column": 0, "focused_window_in_column": 0, "scroll_offset": 0.0},
+                {"columns": [], "focused_column": 0, "focused_window_in_column": 0, "scroll_offset": 0.0},
+                {"columns": [], "focused_column": 0, "focused_window_in_column": 0, "scroll_offset": 0.0},
+                {"columns": [{"windows": [99], "width": 500}], "focused_column": 0, "focused_window_in_column": 0, "scroll_offset": 0.0}
+            ],
+            "row_shares": [1.0],
+            "focused_row": 4,
+            "row_gap": -10,
+            "floating": [],
+            "gap": -5,
+            "outer_gap_left": 0,
+            "outer_gap_right": 0,
+            "outer_gap_top": 0,
+            "outer_gap_bottom": 0,
+            "default_column_width": 10
+        }"#;
+        let ws: Workspace = serde_json::from_str(json).unwrap();
+        assert_eq!(ws.row_count(), MAX_ROWS);
+        assert_eq!(ws.row_shares().len(), MAX_ROWS);
+        assert_eq!(ws.focused_row(), MAX_ROWS - 1);
+        assert_eq!(ws.row_gap(), 0);
+        assert_eq!(ws.gap(), 0);
+        // Window 99 from the 5th row was merged into the 4th row (index 3).
+        assert_eq!(ws.rows()[MAX_ROWS - 1].columns()[0].windows(), &[99]);
+    }
 }

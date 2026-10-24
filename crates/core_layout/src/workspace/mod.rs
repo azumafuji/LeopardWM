@@ -155,13 +155,13 @@ struct WorkspaceRepr {
 
 impl From<WorkspaceRepr> for Workspace {
     fn from(repr: WorkspaceRepr) -> Self {
-        let (rows, focused_row, row_shares, row_gap) = if let Some(mut r) = repr.rows {
+        let (rows, focused_row, raw_shares) = if let Some(mut r) = repr.rows {
             if r.is_empty() {
                 r.push(WorkspaceRow::default());
             }
             let focused_row = repr.focused_row.unwrap_or(0).min(r.len().saturating_sub(1));
-            let shares = repr.row_shares.unwrap_or_else(|| vec![1.0; r.len()]);
-            (r, focused_row, shares, repr.row_gap)
+            let shares = repr.row_shares.unwrap_or_default();
+            (r, focused_row, shares)
         } else {
             // Legacy single-row format
             let row = WorkspaceRow {
@@ -172,26 +172,38 @@ impl From<WorkspaceRepr> for Workspace {
                 active_animation: None,
                 maximized_column: None,
             };
-            (vec![row], 0, vec![1.0], repr.row_gap)
+            (vec![row], 0, vec![1.0])
         };
+
+        let target_row_count = rows.len().clamp(1, crate::row::MAX_ROWS);
+        let sanitized_shares: Vec<f64> = (0..target_row_count)
+            .map(|i| {
+                raw_shares
+                    .get(i)
+                    .copied()
+                    .filter(|s| s.is_finite() && *s > 0.0)
+                    .unwrap_or(1.0)
+            })
+            .collect();
 
         let mut ws = Workspace {
             rows,
             focused_row,
-            row_shares,
-            row_gap,
-            gap: repr.gap,
-            outer_gap_left: repr.outer_gap_left,
-            outer_gap_right: repr.outer_gap_right,
-            outer_gap_top: repr.outer_gap_top,
-            outer_gap_bottom: repr.outer_gap_bottom,
-            default_column_width: repr.default_column_width,
+            row_shares: vec![1.0; target_row_count],
+            row_gap: repr.row_gap.max(0),
+            gap: repr.gap.max(0),
+            outer_gap_left: repr.outer_gap_left.max(0),
+            outer_gap_right: repr.outer_gap_right.max(0),
+            outer_gap_top: repr.outer_gap_top.max(0),
+            outer_gap_bottom: repr.outer_gap_bottom.max(0),
+            default_column_width: repr.default_column_width.max(MIN_COLUMN_WIDTH),
             centering_mode: repr.centering_mode,
             floating_windows: repr.floating_windows,
             fullscreen_window: repr.fullscreen_window,
             minimized_windows: repr.minimized_windows,
             ..Default::default()
         };
+        ws.set_row_layout(&sanitized_shares);
         ws.clamp_focus_indices();
         ws
     }
@@ -625,7 +637,16 @@ impl Workspace {
         let shares: Vec<f64> = if shares.is_empty() {
             vec![1.0]
         } else {
-            shares.iter().map(|&s| s.max(0.01)).collect()
+            let sanitized: Vec<f64> = shares
+                .iter()
+                .take(crate::row::MAX_ROWS)
+                .map(|&s| if s.is_finite() { s.max(0.01) } else { 1.0 })
+                .collect();
+            if sanitized.is_empty() {
+                vec![1.0]
+            } else {
+                sanitized
+            }
         };
         let new_count = shares.len();
         let cur_count = self.rows.len();
@@ -636,6 +657,9 @@ impl Workspace {
             }
         } else if new_count < cur_count {
             let target_row_idx = new_count - 1;
+            let merged_focused_window = (self.focused_row >= new_count)
+                .then(|| self.focused_window())
+                .flatten();
             let removed_rows: Vec<WorkspaceRow> = self.rows.drain(new_count..).collect();
             for mut removed in removed_rows {
                 if let Some(state) = removed.maximized_column.take() {
@@ -658,6 +682,14 @@ impl Workspace {
                 self.rows[target_row_idx]
                     .columns
                     .append(&mut removed.columns);
+            }
+            if let Some(wid) = merged_focused_window {
+                if let Some((col_idx, win_idx)) =
+                    self.rows[target_row_idx].find_window_location(wid)
+                {
+                    self.rows[target_row_idx].focused_column = col_idx;
+                    self.rows[target_row_idx].focused_window_in_column = win_idx;
+                }
             }
             let target_col_count = self.rows[target_row_idx].columns.len();
             if target_col_count > 0 {

@@ -325,6 +325,13 @@ impl Workspace {
             return None;
         }
         let col = row.columns.remove(index);
+        if row
+            .maximized_column
+            .as_ref()
+            .is_some_and(|m| col.contains(m.sentinel_window))
+        {
+            row.maximized_column = None;
+        }
         for wid in col.windows() {
             self.minimized_windows.remove(wid);
             if self.fullscreen_window == Some(*wid) {
@@ -399,16 +406,15 @@ impl Workspace {
             return;
         };
         let row = &mut self.rows[fr];
-        let Some(wid) =
-            row.columns[row.focused_column].remove_at_index(row.focused_window_in_column)
+        let source_col = row.focused_column;
+        let Some(wid) = row.columns[source_col].remove_at_index(row.focused_window_in_column)
         else {
             return;
         };
-        let source_empty = row.columns[row.focused_column].is_empty();
-        if source_empty {
-            row.columns.remove(row.focused_column);
+        row.on_window_removed_from_column(source_col, wid);
+        if row.columns[source_col].is_empty() {
+            row.columns.remove(source_col);
         }
-        let row = &mut self.rows[fr];
         row.columns[target_idx].add_window(wid);
         row.focused_column = target_idx;
         row.focused_window_in_column = row.columns[target_idx].len() - 1;
@@ -430,17 +436,16 @@ impl Workspace {
             return;
         };
         let row = &mut self.rows[fr];
-        let Some(wid) =
-            row.columns[row.focused_column].remove_at_index(row.focused_window_in_column)
+        let source_col = row.focused_column;
+        let Some(wid) = row.columns[source_col].remove_at_index(row.focused_window_in_column)
         else {
             return;
         };
-        let source_empty = row.columns[row.focused_column].is_empty();
-        if source_empty {
-            row.columns.remove(row.focused_column);
+        row.on_window_removed_from_column(source_col, wid);
+        if row.columns[source_col].is_empty() {
+            row.columns.remove(source_col);
             target_idx -= 1;
         }
-        let row = &mut self.rows[fr];
         row.columns[target_idx].add_window(wid);
         row.focused_column = target_idx;
         row.focused_window_in_column = row.columns[target_idx].len() - 1;
@@ -454,19 +459,29 @@ impl Workspace {
         if row.columns.is_empty() || row.columns[row.focused_column].len() <= 1 {
             return;
         }
-        let Some(wid) =
-            row.columns[row.focused_column].remove_at_index(row.focused_window_in_column)
+        let source_col = row.focused_column;
+        let (width, cache) = match &row.maximized_column {
+            Some(state) if row.columns[source_col].contains(state.sentinel_window) => (
+                state.original_width,
+                state.width_fraction_cache.clone(),
+            ),
+            _ => (
+                row.columns[source_col].width(),
+                row.columns[source_col].width_fraction_cache.clone(),
+            ),
+        };
+        let Some(wid) = row.columns[source_col].remove_at_index(row.focused_window_in_column)
         else {
             return;
         };
-        let old_len = row.columns[row.focused_column].len();
+        row.on_window_removed_from_column(source_col, wid);
+        let old_len = row.columns[source_col].len();
         if row.focused_window_in_column >= old_len {
             row.focused_window_in_column = old_len.saturating_sub(1);
         }
-        let width = row.columns[row.focused_column].width();
         let mut new_col = Column::new(wid, width);
-        new_col.width_fraction_cache = row.columns[row.focused_column].width_fraction_cache.clone();
-        row.columns.insert(row.focused_column, new_col);
+        new_col.width_fraction_cache = cache;
+        row.columns.insert(source_col, new_col);
         row.focused_window_in_column = 0;
     }
 
@@ -477,19 +492,29 @@ impl Workspace {
         if row.columns.is_empty() || row.columns[row.focused_column].len() <= 1 {
             return;
         }
-        let Some(wid) =
-            row.columns[row.focused_column].remove_at_index(row.focused_window_in_column)
+        let source_col = row.focused_column;
+        let (width, cache) = match &row.maximized_column {
+            Some(state) if row.columns[source_col].contains(state.sentinel_window) => (
+                state.original_width,
+                state.width_fraction_cache.clone(),
+            ),
+            _ => (
+                row.columns[source_col].width(),
+                row.columns[source_col].width_fraction_cache.clone(),
+            ),
+        };
+        let Some(wid) = row.columns[source_col].remove_at_index(row.focused_window_in_column)
         else {
             return;
         };
-        let old_len = row.columns[row.focused_column].len();
+        row.on_window_removed_from_column(source_col, wid);
+        let old_len = row.columns[source_col].len();
         if row.focused_window_in_column >= old_len {
             row.focused_window_in_column = old_len.saturating_sub(1);
         }
-        let width = row.columns[row.focused_column].width();
         let mut new_col = Column::new(wid, width);
-        new_col.width_fraction_cache = row.columns[row.focused_column].width_fraction_cache.clone();
-        row.columns.insert(row.focused_column + 1, new_col);
+        new_col.width_fraction_cache = cache;
+        row.columns.insert(source_col + 1, new_col);
         row.focused_column += 1;
         row.focused_window_in_column = 0;
     }
@@ -529,13 +554,13 @@ impl Workspace {
         let Some(wid) = row.columns[source].remove_at_index(window_index) else {
             return;
         };
+        row.on_window_removed_from_column(source, wid);
         if row.columns[source].is_empty() {
             row.columns.remove(source);
             if source < row.focused_column {
                 row.focused_column -= 1;
             }
         }
-        let row = &mut self.rows[fr];
         row.columns[row.focused_column].add_window(wid);
         row.focused_window_in_column = row.columns[row.focused_column].len().saturating_sub(1);
         self.sync_active_tab_to_focus();
@@ -559,7 +584,7 @@ impl Workspace {
     }
 
     /// Move the focused window up in its column, or to the row above if at the top
-    /// of the column and `allow_cross_row` is true (D5).
+    /// of the column and `allow_cross_row` is true.
     pub fn move_window_up(&mut self, allow_cross_row: bool) {
         let fr = self.focused_row;
         let at_top = self
@@ -593,7 +618,7 @@ impl Workspace {
     }
 
     /// Move the focused window down in its column, or to the row below if at the bottom
-    /// of the column and `allow_cross_row` is true (D5).
+    /// of the column and `allow_cross_row` is true.
     pub fn move_window_down(&mut self, allow_cross_row: bool) {
         let fr = self.focused_row;
         let at_bottom = self.rows.get(fr).is_some_and(|r| {
@@ -696,13 +721,8 @@ impl Workspace {
     }
 
     /// Check if a scroll animation is active on a specific row.
-    pub fn is_row_animating(&self, row_idx: usize) -> bool {
-        self.rows.get(row_idx).is_some_and(|r| r.is_animating())
-    }
-
-    /// Alias for `is_row_animating`.
     pub fn is_animating_for_row(&self, row_idx: usize) -> bool {
-        self.is_row_animating(row_idx)
+        self.rows.get(row_idx).is_some_and(|r| r.is_animating())
     }
 
     /// Get current effective scroll offset for the focused row.
