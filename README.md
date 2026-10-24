@@ -231,7 +231,7 @@ Configure 1 to 4 independent horizontal scrolling rows per workspace. Each row b
 
 **Basics**
 - `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown` moves focus to the row above / below
-- `lwm move-to-row up` / `lwm move-to-row down` (or bind `move_window_to_row_up` / `move_window_to_row_down` in Settings) moves the focused window to the row above / below (preserving horizontal column index)
+- `lwm move-to-row up` / `lwm move-to-row down` (or bind `move_window_to_row_up` / `move_window_to_row_down` in Settings) moves the focused window to a new rightmost column in the row above / below
 - Vertical focus (`Ctrl+Alt+J` / `Ctrl+Alt+K`) automatically crosses row boundaries when multiple rows exist; `move_window_across_rows = true` (default `false`) also lets `Ctrl+Alt+Shift+J` / `Ctrl+Alt+Shift+K` move windows across rows at column edges
 - Window rules can direct applications to open in a specific row: `row = 1` (1-based index)
 

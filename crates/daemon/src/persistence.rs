@@ -280,7 +280,9 @@ impl AppState {
                 self.config.animation.scroll_duration_ms,
                 self.config.animation.easing,
             );
-            ws.set_scroll_offset(ws_snapshot.workspace.scroll_offset());
+            for (r_idx, saved_row) in ws_snapshot.workspace.rows().iter().enumerate() {
+                ws.set_scroll_offset_for_row(r_idx, saved_row.scroll_offset());
+            }
             ws.reconcile_scroll_bounds(vw);
 
             let entry = self.workspaces.entry(monitor_id).or_default();
@@ -374,10 +376,11 @@ impl AppState {
                         );
                         ws_vec.push(ws);
                     }
-                    let saved_offset = ws_snapshot.workspace.scroll_offset();
                     ws_vec[ws_idx]
                         .set_center_single_column(self.config.layout.center_single_column);
-                    ws_vec[ws_idx].set_scroll_offset(saved_offset);
+                    for (r_idx, saved_row) in ws_snapshot.workspace.rows().iter().enumerate() {
+                        ws_vec[ws_idx].set_scroll_offset_for_row(r_idx, saved_row.scroll_offset());
+                    }
                     ws_vec[ws_idx].reconcile_scroll_bounds(vw);
                     restored_monitors.insert(id);
                     info!(

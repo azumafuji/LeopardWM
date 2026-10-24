@@ -77,6 +77,21 @@ fn insert_admitted_tile(
                     .insert_window_at_row_column_no_focus(hwnd, target_row, width, slot)
                     .is_ok()
             }
+        } else if in_column {
+            let (col, win_slot) = workspace
+                .rows()
+                .get(target_row)
+                .map(|r| (r.focused_column(), r.focused_window_in_column() + 1))
+                .unwrap_or((0, 0));
+            let ok = workspace
+                .insert_window_in_row_column_at(hwnd, target_row, col, win_slot)
+                .is_ok();
+            if ok && take_focus {
+                if let Err(e) = workspace.focus_window(hwnd) {
+                    warn!("Focusing new in-column window {} failed: {:?}", hwnd, e);
+                }
+            }
+            ok
         } else if take_focus {
             workspace
                 .insert_window_in_row(hwnd, target_row, width)
@@ -956,7 +971,20 @@ impl AppState {
         outcome
     }
 
-    #[allow(clippy::too_many_lines)]
+    fn default_centered_floating_rect(&self, monitor_id: leopardwm_platform_win32::MonitorId) -> Rect {
+        let viewport = self
+            .monitors
+            .get(&monitor_id)
+            .map(|m| m.work_area)
+            .unwrap_or_else(|| Rect::new(0, 0, FALLBACK_VIEWPORT_WIDTH, FALLBACK_VIEWPORT_HEIGHT));
+        Rect::new(
+            viewport.x + (viewport.width - 800) / 2,
+            viewport.y + (viewport.height - 600) / 2,
+            800,
+            600,
+        )
+    }
+
     fn admit_window_after_replaced_departure(
         &mut self,
         hwnd: u64,
@@ -1102,6 +1130,7 @@ impl AppState {
                     recreated_slot.is_none() && preferred_monitor.is_some(),
                 )
             });
+            let default_float_rect = self.default_centered_floating_rect(monitor_id);
 
             let viewport_width = self.viewport_width_for(monitor_id);
 
@@ -1158,32 +1187,16 @@ impl AppState {
             {
                 let added = match action {
                     config::WindowAction::Float => {
-                        let rect = floating_rect.unwrap_or_else(|| {
-                            let viewport = self
-                                .monitors
-                                .get(&monitor_id)
-                                .map(|m| m.work_area)
-                                .unwrap_or_else(|| {
-                                    Rect::new(
-                                        0,
-                                        0,
-                                        FALLBACK_VIEWPORT_WIDTH,
-                                        FALLBACK_VIEWPORT_HEIGHT,
-                                    )
-                                });
-                            Rect::new(
-                                viewport.x + (viewport.width - 800) / 2,
-                                viewport.y + (viewport.height - 600) / 2,
-                                800,
-                                600,
-                            )
-                        });
+                        let rect = floating_rect.unwrap_or(default_float_rect);
                         workspace.add_floating(hwnd, rect).is_ok()
                     }
                     config::WindowAction::Tile => {
                         let in_column = self.config.behavior.new_window_placement
                             == config::NewWindowPlacement::InColumn
-                            && workspace.column_count() > 0;
+                            && rule_row.map_or_else(
+                                || workspace.column_count() > 0,
+                                |r| workspace.column_count_for_row(r) > 0,
+                            );
                         let ok = insert_admitted_tile(
                             workspace,
                             hwnd,
@@ -4540,5 +4553,33 @@ mod edit_config_match_tests {
         ));
         assert!(!title_names_config_file("Inbox - Mail", "config.toml"));
         assert!(!title_names_config_file("config.toml", ""));
+    }
+
+    #[test]
+    fn insert_admitted_tile_with_rule_row_respects_in_column() {
+        let mut ws = super::Workspace::new();
+        ws.set_row_layout(&[0.5, 0.5]);
+        assert!(super::insert_admitted_tile(
+            &mut ws,
+            100,
+            Some(800),
+            None,
+            Some(1),
+            false,
+            true,
+            None,
+        ));
+        assert!(super::insert_admitted_tile(
+            &mut ws,
+            101,
+            Some(800),
+            None,
+            Some(1),
+            true,
+            true,
+            None,
+        ));
+        assert_eq!(ws.column_count_for_row(1), 1);
+        assert_eq!(ws.column_for_row(1, 0).unwrap().windows(), &[100, 101]);
     }
 }

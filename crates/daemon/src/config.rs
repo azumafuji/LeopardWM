@@ -86,9 +86,6 @@ pub enum OverviewRender {
 pub struct WorkspacesConfig {
     /// Display names for workspaces 1-9, by position.
     pub names: Vec<String>,
-    /// Optional row configuration alias under [workspaces].
-    #[serde(default, skip_serializing)]
-    pub rows: Option<Vec<WorkspaceRowsConfig>>,
 }
 
 impl WorkspacesConfig {
@@ -158,10 +155,6 @@ pub struct LayoutConfig {
     #[serde(default)]
     pub rows: RowsConfig,
 
-    /// Optional alias allowing `[[layout.workspace_rows]]` directly under layout.
-    #[serde(default, skip_serializing)]
-    workspace_rows: Option<Vec<WorkspaceRowsConfig>>,
-
     // Legacy fields kept for backward-compatible deserialization; not used.
     #[serde(default, skip_serializing)]
     #[allow(dead_code)]
@@ -216,7 +209,7 @@ pub struct RowsConfig {
 
     /// Per-workspace row configurations.
     /// Can specify 1 or more workspaces and the split for those workspaces.
-    #[serde(default, alias = "splits", alias = "rules")]
+    #[serde(default)]
     pub workspaces: Vec<WorkspaceRowsConfig>,
 
     /// Global/fallback row split as percentages, fractions, or weights, top to bottom.
@@ -477,7 +470,6 @@ impl Default for LayoutConfig {
             default_width_preset: default_width_preset(),
             height_presets: default_height_presets(),
             rows: RowsConfig::default(),
-            workspace_rows: None,
             outer_gap: None,
             default_column_width: None,
             min_column_width: None,
@@ -1469,13 +1461,6 @@ impl Config {
             }
         }
 
-        if let Some(ws_rows) = self.layout.workspace_rows.take() {
-            self.layout.rows.workspaces.extend(ws_rows);
-        }
-        if let Some(ws_rows) = self.workspaces.rows.take() {
-            self.layout.rows.workspaces.extend(ws_rows);
-        }
-
         // row gap must be >= 0
         if self.layout.rows.gap < 0 {
             warnings.push(ConfigWarning {
@@ -1483,6 +1468,39 @@ impl Config {
                 message: format!("Negative row gap ({}) clamped to 0", self.layout.rows.gap),
             });
             self.layout.rows.gap = 0;
+        }
+
+        for (idx, rule) in self.window_rules.iter_mut().enumerate() {
+            match rule.row {
+                Some(_) if rule.action == WindowAction::Float => {
+                    warnings.push(ConfigWarning {
+                        field: format!("window_rules[{}].row", idx),
+                        message: "row is not applicable with action = \"float\"; ignoring"
+                            .to_string(),
+                    });
+                    rule.row = None;
+                }
+                Some(0) => {
+                    warnings.push(ConfigWarning {
+                        field: format!("window_rules[{}].row", idx),
+                        message: "row = 0 is invalid (1-based, 1..=4); ignoring".to_string(),
+                    });
+                    rule.row = None;
+                }
+                Some(n) if (n as usize) > leopardwm_core_layout::MAX_ROWS => {
+                    warnings.push(ConfigWarning {
+                        field: format!("window_rules[{}].row", idx),
+                        message: format!(
+                            "row ({}) exceeds max {}, clamped to {}",
+                            n,
+                            leopardwm_core_layout::MAX_ROWS,
+                            leopardwm_core_layout::MAX_ROWS
+                        ),
+                    });
+                    rule.row = Some(leopardwm_core_layout::MAX_ROWS as u8);
+                }
+                _ => {}
+            }
         }
 
         // width_presets must not be empty
@@ -1733,7 +1751,9 @@ impl Config {
                     );
                     None
                 }
-                Some(n) if n >= 1 => Some((n - 1) as usize),
+                Some(n) if n >= 1 => {
+                    Some(((n as usize) - 1).min(leopardwm_core_layout::MAX_ROWS - 1))
+                }
                 Some(_) => {
                     tracing::warn!("Window rule row = 0 is invalid (1-based); ignoring");
                     None
@@ -3466,7 +3486,7 @@ mod tests {
 
     #[test]
     fn test_compiled_window_rule_row_validation() {
-        let config = Config {
+        let mut config = Config {
             window_rules: vec![
                 WindowRule {
                     match_class: Some("A".to_string()),
@@ -3484,6 +3504,11 @@ mod tests {
                     row: Some(2), // float ignores row
                     ..Default::default()
                 },
+                WindowRule {
+                    match_class: Some("D".to_string()),
+                    row: Some(6), // > MAX_ROWS (4), clamped to 4 -> 0-based 3
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
@@ -3491,6 +3516,15 @@ mod tests {
         assert_eq!(compiled[0].row, Some(1));
         assert_eq!(compiled[1].row, None);
         assert_eq!(compiled[2].row, None);
+        assert_eq!(compiled[3].row, Some(3));
+
+        let warnings = config.validate();
+        assert!(warnings.iter().any(|w| w.field == "window_rules[1].row"));
+        assert!(warnings.iter().any(|w| w.field == "window_rules[2].row"));
+        assert!(warnings.iter().any(|w| w.field == "window_rules[3].row"));
+        assert_eq!(config.window_rules[1].row, None);
+        assert_eq!(config.window_rules[2].row, None);
+        assert_eq!(config.window_rules[3].row, Some(4));
     }
 
     #[test]
