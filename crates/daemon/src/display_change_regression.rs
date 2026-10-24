@@ -70,6 +70,14 @@ impl FixtureDesktop {
             }
         }
     }
+
+    pub(crate) fn desktop_handle(&self) -> usize {
+        self.desktop
+    }
+
+    pub(crate) fn set_current_thread_desktop(desktop: usize) -> bool {
+        unsafe { SetThreadDesktop(desktop as *mut _) != 0 }
+    }
 }
 
 impl Drop for FixtureDesktop {

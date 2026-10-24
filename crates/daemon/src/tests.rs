@@ -16110,47 +16110,57 @@ fn test_empty_workspace_switch_releases_hidden_console_foreground() {
 
 #[test]
 fn test_empty_workspace_switch_releases_only_transient_visible_console_foreground() {
+    use std::sync::mpsc;
+    use std::thread;
     use windows::core::w;
-    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetWindowTextW,
-        UnregisterClassW, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        PostThreadMessageW, RegisterClassW, SetWindowTextW, UnregisterClassW, MSG,
+        WINDOW_EX_STYLE, WM_QUIT, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
-    struct ConsoleWindow(HWND);
+    struct ConsoleWindow {
+        hwnd: HWND,
+        thread_id: u32,
+        join: Option<thread::JoinHandle<()>>,
+    }
+
     impl Drop for ConsoleWindow {
         fn drop(&mut self) {
             unsafe {
-                DestroyWindow(self.0).unwrap();
-                UnregisterClassW(
-                    w!("ConsoleWindowClass"),
-                    Some(GetModuleHandleW(None).unwrap().into()),
-                )
-                .unwrap();
+                let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+            if let Some(join) = self.join.take() {
+                let _ = join.join();
             }
         }
     }
 
     let _desktop = display_change_regression::FixtureDesktop::enter();
-    let instance = unsafe { GetModuleHandleW(None).unwrap() };
-    unsafe extern "system" fn console_proc(
-        hwnd: HWND,
-        message: u32,
-        wparam: windows::Win32::Foundation::WPARAM,
-        lparam: windows::Win32::Foundation::LPARAM,
-    ) -> windows::Win32::Foundation::LRESULT {
-        unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
-    }
-    let class = WNDCLASSW {
-        lpfnWndProc: Some(console_proc),
-        hInstance: instance.into(),
-        lpszClassName: w!("ConsoleWindowClass"),
-        ..Default::default()
-    };
-    assert_ne!(unsafe { RegisterClassW(&class) }, 0);
-    let console = ConsoleWindow(unsafe {
-        CreateWindowExW(
+    let desktop = _desktop.desktop_handle();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let join = thread::spawn(move || unsafe {
+        assert!(display_change_regression::FixtureDesktop::set_current_thread_desktop(desktop));
+        let instance = GetModuleHandleW(None).unwrap();
+        unsafe extern "system" fn console_proc(
+            hwnd: HWND,
+            message: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> windows::Win32::Foundation::LRESULT {
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(console_proc),
+            hInstance: instance.into(),
+            lpszClassName: w!("ConsoleWindowClass"),
+            ..Default::default()
+        };
+        assert_ne!(RegisterClassW(&class), 0);
+        let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("ConsoleWindowClass"),
             w!("Command Prompt"),
@@ -16164,16 +16174,34 @@ fn test_empty_workspace_switch_releases_only_transient_visible_console_foregroun
             Some(instance.into()),
             None,
         )
-        .unwrap()
+        .unwrap();
+        ready_tx.send((hwnd.0 as usize, GetCurrentThreadId())).unwrap();
+
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            DispatchMessageW(&msg);
+        }
+
+        let _ = DestroyWindow(hwnd);
+        let _ = UnregisterClassW(
+            w!("ConsoleWindowClass"),
+            Some(instance.into()),
+        );
     });
-    let hwnd = console.0 .0 as u64;
+    let (hwnd_val, thread_id) = ready_rx.recv().unwrap();
+    let console = ConsoleWindow {
+        hwnd: HWND(hwnd_val as *mut _),
+        thread_id,
+        join: Some(join),
+    };
+    let hwnd = console.hwnd.0 as usize as u64;
     assert!(leopardwm_platform_win32::is_window_visible(hwnd));
 
     for (title, release) in [
         (w!("Command Prompt"), false),
         (w!(r"C:\Program Files\LeopardWM\bin\lwm.exe"), true),
     ] {
-        unsafe { SetWindowTextW(console.0, title).unwrap() };
+        unsafe { SetWindowTextW(console.hwnd, title).unwrap() };
         let mut state = AppState::new_with_config(test_config(), test_monitors());
         state
             .injected_window_info
