@@ -430,7 +430,6 @@ impl AppState {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     pub(crate) fn handle_command(&mut self, cmd: IpcCommand) -> IpcResponse {
         if let Some(resp) = self.apply_floating_policy(&cmd) {
             return resp;
@@ -564,31 +563,7 @@ impl AppState {
                     info!("Resized column by {}", delta);
                 })
             }
-            IpcCommand::Scroll { delta } => {
-                #[cfg(not(test))]
-                let cursor_pos = leopardwm_platform_win32::get_cursor_pos();
-                #[cfg(test)]
-                let cursor_pos: Option<(i32, i32)> = None;
-
-                let viewport = self.layout_viewport(self.focused_monitor);
-                self.execute_workspace_command(false, false, move |ws, vw| {
-                    let mut scrolled = false;
-                    if let Some((cx, cy)) = cursor_pos {
-                        let rects = ws.row_rects(viewport);
-                        for (idx, r) in rects.iter().enumerate() {
-                            if r.contains_point(cx, cy) {
-                                ws.scroll_row_by(idx, delta, vw);
-                                scrolled = true;
-                                break;
-                            }
-                        }
-                    }
-                    if !scrolled {
-                        ws.scroll_by(delta, vw);
-                    }
-                    info!("Scrolled by {}", delta);
-                })
-            }
+            IpcCommand::Scroll { delta } => self.handle_scroll(delta),
             IpcCommand::QueryWorkspace => self.handle_query_workspace(),
             IpcCommand::QueryFocused => self.handle_query_focused(),
             IpcCommand::QueryHotkeys => self.handle_query_hotkeys(),
@@ -676,51 +651,12 @@ impl AppState {
                     info!("Equalized column widths");
                 })
             }
-            IpcCommand::CycleWidth => {
-                let presets = self.config.layout.width_presets.clone();
-                self.execute_workspace_command(true, false, |ws, vw| {
-                    ws.cycle_width(&presets, vw);
-                    ws.ensure_focused_visible_animated(vw);
-                    info!("Cycled column width");
-                })
-            }
-            IpcCommand::CycleHeight => {
-                let presets = self.config.layout.height_presets.clone();
-                self.execute_workspace_command(true, false, |ws, _vw| {
-                    ws.cycle_height(&presets);
-                    info!("Cycled window height");
-                })
-            }
-            IpcCommand::CycleWidthUp => {
-                let presets = self.config.layout.width_presets.clone();
-                self.execute_workspace_command(true, false, |ws, vw| {
-                    ws.cycle_width_up(&presets, vw);
-                    ws.ensure_focused_visible_animated(vw);
-                    info!("Cycled column width up");
-                })
-            }
-            IpcCommand::CycleWidthDown => {
-                let presets = self.config.layout.width_presets.clone();
-                self.execute_workspace_command(true, false, |ws, vw| {
-                    ws.cycle_width_down(&presets, vw);
-                    ws.ensure_focused_visible_animated(vw);
-                    info!("Cycled column width down");
-                })
-            }
-            IpcCommand::CycleHeightUp => {
-                let presets = self.config.layout.height_presets.clone();
-                self.execute_workspace_command(true, false, |ws, _vw| {
-                    ws.cycle_height_up(&presets);
-                    info!("Cycled window height up");
-                })
-            }
-            IpcCommand::CycleHeightDown => {
-                let presets = self.config.layout.height_presets.clone();
-                self.execute_workspace_command(true, false, |ws, _vw| {
-                    ws.cycle_height_down(&presets);
-                    info!("Cycled window height down");
-                })
-            }
+            IpcCommand::CycleWidth
+            | IpcCommand::CycleHeight
+            | IpcCommand::CycleWidthUp
+            | IpcCommand::CycleWidthDown
+            | IpcCommand::CycleHeightUp
+            | IpcCommand::CycleHeightDown => self.handle_preset_cycle(cmd),
             IpcCommand::EqualizeColumnHeights => {
                 self.execute_workspace_command(true, false, |ws, _vw| {
                     ws.equalize_focused_column_heights();
@@ -780,6 +716,83 @@ impl AppState {
             }
         }
         resp
+    }
+
+    fn handle_scroll(&mut self, delta: f64) -> IpcResponse {
+        #[cfg(not(test))]
+        let cursor_pos = leopardwm_platform_win32::get_cursor_pos();
+        #[cfg(test)]
+        let cursor_pos: Option<(i32, i32)> = None;
+
+        let viewport = self.layout_viewport(self.focused_monitor);
+        self.execute_workspace_command(false, false, move |ws, vw| {
+            let mut scrolled = false;
+            if let Some((cx, cy)) = cursor_pos {
+                let rects = ws.row_rects(viewport);
+                for (idx, r) in rects.iter().enumerate() {
+                    if r.contains_point(cx, cy) {
+                        ws.scroll_row_by(idx, delta, vw);
+                        scrolled = true;
+                        break;
+                    }
+                }
+            }
+            if !scrolled {
+                ws.scroll_by(delta, vw);
+            }
+            info!("Scrolled by {}", delta);
+        })
+    }
+
+    fn handle_preset_cycle(&mut self, cmd: IpcCommand) -> IpcResponse {
+        match cmd {
+            IpcCommand::CycleWidth => {
+                let presets = self.config.layout.width_presets.clone();
+                self.execute_workspace_command(true, false, |ws, vw| {
+                    ws.cycle_width(&presets, vw);
+                    ws.ensure_focused_visible_animated(vw);
+                    info!("Cycled column width");
+                })
+            }
+            IpcCommand::CycleHeight => {
+                let presets = self.config.layout.height_presets.clone();
+                self.execute_workspace_command(true, false, |ws, _vw| {
+                    ws.cycle_height(&presets);
+                    info!("Cycled window height");
+                })
+            }
+            IpcCommand::CycleWidthUp => {
+                let presets = self.config.layout.width_presets.clone();
+                self.execute_workspace_command(true, false, |ws, vw| {
+                    ws.cycle_width_up(&presets, vw);
+                    ws.ensure_focused_visible_animated(vw);
+                    info!("Cycled column width up");
+                })
+            }
+            IpcCommand::CycleWidthDown => {
+                let presets = self.config.layout.width_presets.clone();
+                self.execute_workspace_command(true, false, |ws, vw| {
+                    ws.cycle_width_down(&presets, vw);
+                    ws.ensure_focused_visible_animated(vw);
+                    info!("Cycled column width down");
+                })
+            }
+            IpcCommand::CycleHeightUp => {
+                let presets = self.config.layout.height_presets.clone();
+                self.execute_workspace_command(true, false, |ws, _vw| {
+                    ws.cycle_height_up(&presets);
+                    info!("Cycled window height up");
+                })
+            }
+            IpcCommand::CycleHeightDown => {
+                let presets = self.config.layout.height_presets.clone();
+                self.execute_workspace_command(true, false, |ws, _vw| {
+                    ws.cycle_height_down(&presets);
+                    info!("Cycled window height down");
+                })
+            }
+            _ => unreachable!(),
+        }
     }
 
     fn focus_monitor(
@@ -1931,9 +1944,10 @@ impl AppState {
         tab: usize,
         restore: impl FnOnce(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
     ) -> IpcResponse {
-        let (target, was_minimized) = match self.focused_workspace() {
+        let (row, target, was_minimized) = match self.focused_workspace() {
             None => return IpcResponse::error("No focused workspace"),
             Some(workspace) => {
+                let row = workspace.focused_row();
                 let Some(target_column) = workspace.column(column) else {
                     return IpcResponse::error(format!(
                         "set_active_tab failed: {}",
@@ -1956,7 +1970,7 @@ impl AppState {
                         ));
                     }
                 };
-                (target, workspace.is_minimized(target))
+                (row, target, workspace.is_minimized(target))
             }
         };
 
@@ -1964,7 +1978,7 @@ impl AppState {
             return IpcResponse::error(format!("restore tab failed: {}", e));
         }
 
-        self.commit_active_tab_after_restore(column, tab, target, was_minimized)
+        self.commit_active_tab_after_restore(row, column, tab, target, was_minimized)
     }
 
     /// The tab strip's Untab names its tab explicitly, so it skips the
@@ -1987,6 +2001,7 @@ impl AppState {
         &mut self,
         monitor: isize,
         workspace_idx: usize,
+        row: usize,
         column: usize,
         tab: usize,
         restore: impl FnOnce(u64) -> Result<(), leopardwm_platform_win32::Win32Error>,
@@ -1996,7 +2011,7 @@ impl AppState {
         }
         let (target, was_minimized) = {
             let workspace = self.workspaces.get(&monitor)?.get(workspace_idx)?;
-            let target_column = workspace.column(column)?;
+            let target_column = workspace.column_for_row(row, column)?;
             let target = target_column
                 .get(tab)
                 .filter(|_| target_column.is_tabbed())?;
@@ -2008,18 +2023,19 @@ impl AppState {
         }
 
         let workspace = self.workspaces.get_mut(&monitor)?.get_mut(workspace_idx)?;
-        if let Err(e) = workspace.set_focus(column, 0) {
+        if let Err(e) = workspace.set_focus_in_row(row, column, 0) {
             return Some(IpcResponse::error(format!(
                 "set focus for tab click failed: {}",
                 e
             )));
         }
         self.focused_monitor = monitor;
-        Some(self.commit_active_tab_after_restore(column, tab, target, was_minimized))
+        Some(self.commit_active_tab_after_restore(row, column, tab, target, was_minimized))
     }
 
     fn commit_active_tab_after_restore(
         &mut self,
+        row: usize,
         column: usize,
         tab: usize,
         target: u64,
@@ -2032,10 +2048,12 @@ impl AppState {
             if was_minimized {
                 workspace.mark_restored(target);
             }
-            if let Err(e) = workspace.set_active_tab(column, tab) {
+            if let Err(e) = workspace.set_active_tab_in_row(row, column, tab) {
                 return IpcResponse::error(format!("set_active_tab failed: {}", e));
             }
-            workspace.focused_column_index() == column && workspace.focused_window() == Some(target)
+            workspace.focused_row() == row
+                && workspace.focused_column_index() == column
+                && workspace.focused_window() == Some(target)
         };
 
         if let Err(e) = self.apply_layout() {
@@ -2045,13 +2063,14 @@ impl AppState {
             self.pending_tab_focus = Some(crate::state::PendingTabFocus {
                 monitor: self.focused_monitor,
                 workspace_idx: self.active_workspace_idx(self.focused_monitor),
+                row_idx: row,
                 column_idx: column,
                 tab_idx: tab,
                 set_at: std::time::Instant::now(),
             });
         }
         self.sync_foreground_window();
-        info!("Set active tab: column={}, tab={}", column, tab);
+        info!("Set active tab: row={}, column={}, tab={}", row, column, tab);
         IpcResponse::Ok
     }
 }
@@ -2573,6 +2592,7 @@ mod set_active_tab_tests {
         state.pending_tab_focus = Some(PendingTabFocus {
             monitor: 1,
             workspace_idx: 0,
+            row_idx: 0,
             column_idx: 0,
             tab_idx: 0,
             set_at: Instant::now(),
@@ -2621,7 +2641,7 @@ mod set_active_tab_tests {
         let mut state = tabbed_state();
         let mut restored = None;
 
-        let response = state.handle_tab_action_activation_with_restore(1, 0, 0, 1, |hwnd| {
+        let response = state.handle_tab_action_activation_with_restore(1, 0, 0, 0, 1, |hwnd| {
             restored = Some(hwnd);
             Ok(())
         });

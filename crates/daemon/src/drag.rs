@@ -85,7 +85,155 @@ impl AppState {
         );
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
+    fn update_shift_drag_hint_at(
+        &mut self,
+        hwnd: u64,
+        cursor_x: i32,
+        cursor_y: i32,
+        target_monitor_id: MonitorId,
+        current_col: usize,
+        source_monitor: MonitorId,
+        source_ws_idx: usize,
+    ) {
+        let mut restoration_snapshot = None;
+        let preview_is_body = self
+            .drag_state
+            .as_ref()
+            .is_some_and(|drag| drag.preview_mode == DragPreviewMode::Body);
+        let needs_source_restore = self
+            .drag_state
+            .as_ref()
+            .is_some_and(|drag| drag.removed_from_source);
+        if preview_is_body || needs_source_restore {
+            let mut snapshot = preview_is_body.then(|| self.snapshot_layout());
+            let restore = self.drag_state.as_ref().and_then(|drag| {
+                drag.removed_from_source.then(|| {
+                    (
+                        drag.source_monitor,
+                        drag.source_workspace_idx,
+                        drag.source_row,
+                        drag.current_column_index,
+                        drag.source_window_slot,
+                        drag.source_column_peers.clone(),
+                        drag.source_column_width,
+                    )
+                })
+            });
+            let placeholder_removed = self.clear_drag_placeholder();
+            let restore_happened = restore.is_some();
+            if let Some((
+                source_monitor,
+                source_ws_idx,
+                source_row,
+                cached_col,
+                source_slot,
+                peers,
+                source_col_width,
+            )) = restore
+            {
+                if let Some(ws) = self
+                    .workspaces
+                    .get_mut(&source_monitor)
+                    .and_then(|v| v.get_mut(source_ws_idx))
+                {
+                    let cached_col_intact = ws
+                        .rows()
+                        .get(source_row)
+                        .and_then(|r| r.column(cached_col))
+                        .is_some_and(|c| peers.iter().any(|&peer| c.contains(peer)));
+                    let resolved_col = if cached_col_intact {
+                        Some(cached_col)
+                    } else {
+                        peers.iter().find_map(|&peer| {
+                            ws.find_window_location_rc(peer)
+                                .filter(|(r, _, _)| *r == source_row)
+                                .map(|(_, col, _)| col)
+                        })
+                    };
+                    let inserted = match resolved_col {
+                        Some(col) => {
+                            let len = ws
+                                .rows()
+                                .get(source_row)
+                                .and_then(|r| r.column(col))
+                                .map(|c| c.len())
+                                .unwrap_or(0);
+                            ws.insert_window_in_row_column_at(
+                                hwnd,
+                                source_row,
+                                col,
+                                source_slot.min(len),
+                            )
+                            .is_ok()
+                        }
+                        None => ws
+                            .insert_window_in_row(hwnd, source_row, source_col_width)
+                            .is_ok(),
+                    };
+                    if inserted {
+                        let new_col_idx =
+                            ws.find_window_location_rc(hwnd).map(|(_, col, _)| col);
+                        if let Some(drag) = self.drag_state.as_mut() {
+                            drag.removed_from_source = false;
+                            if let Some(col) = new_col_idx {
+                                drag.current_column_index = col;
+                            }
+                        }
+                    }
+                }
+            }
+            if placeholder_removed || restore_happened {
+                if let Some(mut snapshot) = snapshot.take() {
+                    snapshot.remove(&hwnd);
+                    snapshot.remove(&DRAG_PLACEHOLDER_HWND);
+                    restoration_snapshot = Some(snapshot);
+                }
+            }
+            if let Some(drag) = self.drag_state.as_mut() {
+                drag.last_drop_target = None;
+                drag.preview_mode = DragPreviewMode::None;
+            }
+            self.pending_drag_hint = Some(DragHintAction::Hide);
+        }
+
+        let ws_idx = self.active_workspace_idx(target_monitor_id);
+        let target_row = self
+            .workspaces
+            .get(&target_monitor_id)
+            .and_then(|v| v.get(ws_idx))
+            .map(|ws| {
+                let viewport = self.layout_viewport(target_monitor_id);
+                target_row_for_cursor(ws, viewport, cursor_y)
+            })
+            .unwrap_or(0);
+        let source_row = self.drag_state.as_ref().map(|d| d.source_row).unwrap_or(0);
+
+        if target_monitor_id != source_monitor || target_row != source_row {
+            if let Some(snapshot) = restoration_snapshot {
+                self.start_layout_transition(snapshot);
+                if let Err(e) = self.apply_layout() {
+                    warn!("Failed to restore layout before Shift drag: {}", e);
+                }
+            }
+            self.shift_drag_cross_monitor_hint(cursor_x, cursor_y, target_monitor_id);
+        } else {
+            let current_col = self
+                .drag_state
+                .as_ref()
+                .map(|d| d.current_column_index)
+                .unwrap_or(current_col);
+            self.shift_drag_reorder_hint(
+                cursor_x,
+                source_monitor,
+                source_ws_idx,
+                source_row,
+                current_col,
+                restoration_snapshot,
+            );
+        }
+    }
+
     pub(crate) fn update_drag_hint_at(
         &mut self,
         hwnd: u64,
@@ -105,165 +253,15 @@ impl AppState {
         };
 
         if shift_held {
-            let mut restoration_snapshot = None;
-            let preview_is_body = self
-                .drag_state
-                .as_ref()
-                .is_some_and(|drag| drag.preview_mode == DragPreviewMode::Body);
-            let needs_source_restore = self
-                .drag_state
-                .as_ref()
-                .is_some_and(|drag| drag.removed_from_source);
-            if preview_is_body || needs_source_restore {
-                // Snapshot only while the placeholder is still present (Body
-                // mode) and the dragged HWND is absent from its source.
-                // Restoration must animate peers from this shifted geometry,
-                // while the dragged HWND remains under OS drag control and the
-                // placeholder is never sent to Win32. When an intermediate
-                // SafeBand/no-target tick already cleared the placeholder and
-                // applied its own restoration transition, only the model HWND
-                // is reinserted here — no duplicate transition/apply, and no
-                // snapping of the OS-dragged HWND.
-                let mut snapshot = preview_is_body.then(|| self.snapshot_layout());
-                let restore = self.drag_state.as_ref().and_then(|drag| {
-                    drag.removed_from_source.then(|| {
-                        (
-                            drag.source_monitor,
-                            drag.source_workspace_idx,
-                            drag.source_row,
-                            drag.current_column_index,
-                            drag.source_window_slot,
-                            drag.source_column_peers.clone(),
-                            drag.source_column_width,
-                        )
-                    })
-                });
-                let placeholder_removed = self.clear_drag_placeholder();
-                let restore_happened = restore.is_some();
-                if let Some((
-                    source_monitor,
-                    source_ws_idx,
-                    source_row,
-                    cached_col,
-                    source_slot,
-                    peers,
-                    source_col_width,
-                )) = restore
-                {
-                    if let Some(ws) = self
-                        .workspaces
-                        .get_mut(&source_monitor)
-                        .and_then(|v| v.get_mut(source_ws_idx))
-                    {
-                        // A source peer Hidden/Destroyed while unmatched may
-                        // have shifted or removed columns since this slot was
-                        // cached. Re-resolve the source column by surviving
-                        // peer membership rather than trusting the cached
-                        // index verbatim; if no source peer survives, restore
-                        // as a new column instead of landing in an unrelated
-                        // one.
-                        let cached_col_intact = ws
-                            .rows()
-                            .get(source_row)
-                            .and_then(|r| r.column(cached_col))
-                            .is_some_and(|c| peers.iter().any(|&peer| c.contains(peer)));
-                        let resolved_col = if cached_col_intact {
-                            Some(cached_col)
-                        } else {
-                            peers.iter().find_map(|&peer| {
-                                ws.find_window_location_rc(peer)
-                                    .filter(|(r, _, _)| *r == source_row)
-                                    .map(|(_, col, _)| col)
-                            })
-                        };
-                        let inserted = match resolved_col {
-                            Some(col) => {
-                                let len = ws
-                                    .rows()
-                                    .get(source_row)
-                                    .and_then(|r| r.column(col))
-                                    .map(|c| c.len())
-                                    .unwrap_or(0);
-                                ws.insert_window_in_row_column_at(
-                                    hwnd,
-                                    source_row,
-                                    col,
-                                    source_slot.min(len),
-                                )
-                                .is_ok()
-                            }
-                            None => ws
-                                .insert_window_in_row(hwnd, source_row, source_col_width)
-                                .is_ok(),
-                        };
-                        if inserted {
-                            let new_col_idx =
-                                ws.find_window_location_rc(hwnd).map(|(_, col, _)| col);
-                            if let Some(drag) = self.drag_state.as_mut() {
-                                drag.removed_from_source = false;
-                                if let Some(col) = new_col_idx {
-                                    drag.current_column_index = col;
-                                }
-                            }
-                        }
-                    }
-                }
-                if placeholder_removed || restore_happened {
-                    if let Some(mut snapshot) = snapshot.take() {
-                        snapshot.remove(&hwnd);
-                        snapshot.remove(&DRAG_PLACEHOLDER_HWND);
-                        restoration_snapshot = Some(snapshot);
-                    }
-                }
-                if let Some(drag) = self.drag_state.as_mut() {
-                    drag.last_drop_target = None;
-                    drag.preview_mode = DragPreviewMode::None;
-                }
-                self.pending_drag_hint = Some(DragHintAction::Hide);
-            }
-
-            // --- Shift+drag: column reorder mode ---
-            // Live-reorder on source monitor within the same row; cross-monitor or cross-row happens on drop.
-            let ws_idx = self.active_workspace_idx(target_monitor_id);
-            let target_row = self
-                .workspaces
-                .get(&target_monitor_id)
-                .and_then(|v| v.get(ws_idx))
-                .map(|ws| {
-                    let viewport = self.layout_viewport(target_monitor_id);
-                    target_row_for_cursor(ws, viewport, cursor_y)
-                })
-                .unwrap_or(0);
-            let source_row = self.drag_state.as_ref().map(|d| d.source_row).unwrap_or(0);
-
-            if target_monitor_id != source_monitor || target_row != source_row {
-                if let Some(snapshot) = restoration_snapshot {
-                    self.start_layout_transition(snapshot);
-                    if let Err(e) = self.apply_layout() {
-                        warn!("Failed to restore layout before Shift drag: {}", e);
-                    }
-                }
-                self.shift_drag_cross_monitor_hint(cursor_x, cursor_y, target_monitor_id);
-            } else {
-                // A same-tick source restore above may have re-resolved and
-                // updated `drag.current_column_index` (peer-lifecycle
-                // shift). Re-read it rather than the pre-restore `current_col`
-                // snapshot, or this reorder step would operate on the
-                // stale/unrelated column the restore just moved away from.
-                let current_col = self
-                    .drag_state
-                    .as_ref()
-                    .map(|d| d.current_column_index)
-                    .unwrap_or(current_col);
-                self.shift_drag_reorder_hint(
-                    cursor_x,
-                    source_monitor,
-                    source_ws_idx,
-                    source_row,
-                    current_col,
-                    restoration_snapshot,
-                );
-            }
+            self.update_shift_drag_hint_at(
+                hwnd,
+                cursor_x,
+                cursor_y,
+                target_monitor_id,
+                current_col,
+                source_monitor,
+                source_ws_idx,
+            );
         } else {
             // --- Default drag: window merge / new-column mode with live preview ---
             // Source column keeps the dragged window (preserving its space).
@@ -283,24 +281,24 @@ impl AppState {
                 self.reset_drag_preview_without_target(hwnd);
                 return;
             };
-            let target_row = target_row_for_cursor(workspace, viewport, cursor_y);
-            let column_bounds =
-                column_bounds_from_placements_for_row(workspace, viewport, target_row);
-
-            // If the cursor is over a visible tab strip, route the drop
-            // to that strip's owning column. The strip overhangs the
-            // column rect (sits in the reserved gap above the active
-            // tab), so a cursor over the strip wouldn't otherwise hit
-            // any column via `compute_target_column_index`. Tab-index
-            // within the strip is intentionally ignored — see the slot
-            // computation below for the "always append" rationale.
-            // Iterate every live strip — multiple strips can be visible
-            // simultaneously (one per tabbed column), and any of them
-            // may be under the cursor.
+            // If the cursor is over a visible tab strip on the target
+            // monitor/workspace, route the drop to that strip's owning
+            // (row, column). The strip overhangs the column rect (sits in
+            // the reserved gap above the active tab), so a cursor over the
+            // strip wouldn't otherwise hit any column via
+            // `compute_target_column_index`. Tab-index within the strip is
+            // intentionally ignored — see the slot computation below for
+            // the "always append" rationale.
             let strip_hit = self
                 .tab_strip_overlays
                 .values()
-                .find_map(|s| s.hit_test_screen(cursor_x, cursor_y));
+                .find_map(|s| s.hit_test_screen(cursor_x, cursor_y))
+                .filter(|hit| hit.monitor == target_monitor_id && hit.workspace_idx == ws_idx);
+            let target_row = strip_hit
+                .map(|hit| hit.row_idx)
+                .unwrap_or_else(|| target_row_for_cursor(workspace, viewport, cursor_y));
+            let column_bounds =
+                column_bounds_from_placements_for_row(workspace, viewport, target_row);
             let (target_col, is_new_column) = match strip_hit {
                 Some(hit) => (hit.column_idx, false),
                 None => match compute_target_column_index(&column_bounds, cursor_x) {

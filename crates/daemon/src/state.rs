@@ -496,13 +496,13 @@ pub(crate) struct AppState {
     pub(crate) tab_strip_update_count: AtomicUsize,
     pub(crate) tab_icon_cache: std::collections::HashMap<u64, Option<isize>>,
     /// Tab strip overlays — one per tabbed column across all visible
-    /// workspaces. Keyed by `(monitor, workspace_idx, column_idx)`.
+    /// workspaces. Keyed by `(monitor, workspace_idx, row_idx, column_idx)`.
     /// `helpers.rs::update_tab_strip` reconciles this map against the
     /// current set of tabbed columns on every relayout / focus change:
     /// new tabbed columns get a fresh overlay, columns that became
     /// non-tabbed (or disappeared) have their overlay dropped.
     pub(crate) tab_strip_overlays: std::collections::HashMap<
-        (isize, usize, usize),
+        (isize, usize, usize, usize),
         leopardwm_platform_win32::tab_strip::TabStripOverlay,
     >,
     /// Shared action sender for lazily created tab strips, installed by
@@ -936,6 +936,7 @@ impl PendingLastWindowDeparture {
 pub(crate) struct PendingTabFocus {
     pub(crate) monitor: MonitorId,
     pub(crate) workspace_idx: usize,
+    pub(crate) row_idx: usize,
     pub(crate) column_idx: usize,
     pub(crate) tab_idx: usize,
     pub(crate) set_at: std::time::Instant,
@@ -1477,6 +1478,7 @@ impl AppState {
         &self,
         monitor: MonitorId,
         workspace_idx: usize,
+        row_idx: usize,
         column_idx: usize,
         tab_idx: usize,
     ) -> String {
@@ -1484,7 +1486,7 @@ impl AppState {
             .workspaces
             .get(&monitor)
             .and_then(|wss| wss.get(workspace_idx))
-            .and_then(|ws| ws.column(column_idx))
+            .and_then(|ws| ws.column_for_row(row_idx, column_idx))
             .and_then(|col| col.get(tab_idx));
         match hwnd {
             Some(h) => self
@@ -1560,14 +1562,14 @@ impl AppState {
         if pending.monitor != monitor || pending.workspace_idx != workspace_idx {
             return false;
         }
-        // Verify the event's hwnd matches the expected (column, tab) in
+        // Verify the event's hwnd matches the expected (row, column, tab) in
         // the workspace state. If it doesn't, leave the flag in place so a
         // later matching event can still consume it.
         let matches = self
             .workspaces
             .get(&monitor)
             .and_then(|list| list.get(workspace_idx))
-            .and_then(|ws| ws.column(pending.column_idx))
+            .and_then(|ws| ws.column_for_row(pending.row_idx, pending.column_idx))
             .and_then(|col| col.get(pending.tab_idx))
             .is_some_and(|w| w == hwnd);
         if matches {
