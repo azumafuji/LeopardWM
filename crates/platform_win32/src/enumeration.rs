@@ -686,8 +686,6 @@ pub(crate) fn should_skip_window_by_class(class_name: &str) -> bool {
         // ApplicationFrameWindow must remain eligible so UWP application hosts can tile.
         "XamlExplorerHostIslandWindow",        // XAML islands
         "TopLevelWindowForOverflowXamlIsland", // Overflow islands
-        "RAIL_WINDOW", // WSLg RemoteApp (msrdc.exe) — RDP-projected from Linux;
-        // tiling breaks them because the remote session controls sizing
         "Ghost",  // DWM hung-window replacement — tiling duplicates the original
         "#32770", // Standard Win32 dialog (Open/Save/Print/Properties)
         "C2RCustomWindowDialog", // Office Click-to-Run dialogs have no native dialog styles or owner.
@@ -1062,6 +1060,11 @@ mod tests {
         assert!(!should_skip_window_by_class("OMain"));
         assert!(!should_skip_window_by_class("OpusApp"));
         assert!(!should_skip_window_by_class("XLMAIN"));
+    }
+
+    #[test]
+    fn test_wslg_rail_window_is_not_skipped() {
+        assert!(!should_skip_window_by_class("RAIL_WINDOW"));
     }
 
     #[test]

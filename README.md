@@ -596,7 +596,6 @@ These windows are filtered out during enumeration and never enter the layout eng
 | `WorkerW` | Desktop worker |
 | `Windows.UI.Core.CoreWindow` | UWP system windows |
 | `XamlExplorerHostIslandWindow` / `TopLevelWindowForOverflowXamlIsland` | XAML islands |
-| `RAIL_WINDOW` | WSLg RemoteApp — RDP-projected Linux windows that break when repositioned |
 | `Ghost` | DWM hung-window replacement — tiling would duplicate the original |
 | `#32770` | Standard Win32 dialog (Open/Save/Print/Properties) |
 | `Chrome_RenderWidgetHostHWND` | Internal Electron/Chrome render widget, not a real window |
